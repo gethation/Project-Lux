@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy
@@ -19,6 +20,7 @@ from .live_runner import (
 )
 from .runner import SystemRunner
 from .store import SQLiteStore
+from .terminal_ui import LiveTerminalReporter, NullLiveReporter
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,6 +62,21 @@ def build_parser() -> argparse.ArgumentParser:
     live_paper.add_argument("--resume", action="store_true")
     live_paper.add_argument("--reset-store", action="store_true")
     live_paper.add_argument("--max-iterations", type=int)
+    live_paper.add_argument(
+        "--quiet-ui",
+        action="store_true",
+        help="Disable live terminal UI and print only the final summary",
+    )
+    live_paper.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Keep live terminal UI but disable ANSI colors",
+    )
+    live_paper.add_argument(
+        "--skip-warmup",
+        action="store_true",
+        help="Require existing warmup seed bars instead of auto-building them at startup",
+    )
     return parser
 
 
@@ -145,11 +162,47 @@ def command_live_doctor(args: argparse.Namespace) -> int:
             checks.append(f"qff_active_symbol={qff_contract.symbol}")
             checks.append(f"qff_active_expiry={qff_contract.expiry}")
             checks.append(f"qff_contract_policy={qff_contract.policy_state}")
+            session_counts = getattr(qff, "last_candidate_session_counts", {})
+            if session_counts:
+                checks.append(
+                    "qff_candidate_session_counts="
+                    f"{json.dumps(session_counts, sort_keys=True)}"
+                )
+            session_summaries = getattr(qff, "last_candidate_session_summaries", {})
+            if session_summaries:
+                checks.append(
+                    "qff_candidate_session_summaries="
+                    f"{json.dumps(session_summaries, sort_keys=True)}"
+                )
+            if qff_contract.selection is not None:
+                checks.append(
+                    "qff_business_days_to_expiry="
+                    f"{qff_contract.selection.business_days_to_expiry}"
+                )
+            qff.ensure_books_subscription(qff_contract.symbol)
+            qff_quote = qff.fetch_quote(qff_contract.symbol)
             checks.append(
-                f"binance_quote={CcxtTickerMarketData('binanceusdm').fetch_quote(config.live.binance_symbol).price}"
+                "qff_book="
+                f"price={qff_quote.price} bid={qff_quote.bid} ask={qff_quote.ask} "
+                f"bid_size={qff_quote.bid_size} ask_size={qff_quote.ask_size}"
+            )
+            binance_quote = CcxtTickerMarketData("binanceusdm").fetch_quote(
+                config.live.binance_symbol
             )
             checks.append(
-                f"bitopro_quote={CcxtTickerMarketData('bitopro').fetch_quote(config.live.bitopro_symbol).price}"
+                "binance_book="
+                f"price={binance_quote.price} bid={binance_quote.bid} "
+                f"ask={binance_quote.ask} bid_size={binance_quote.bid_size} "
+                f"ask_size={binance_quote.ask_size}"
+            )
+            bitopro_quote = CcxtTickerMarketData("bitopro").fetch_quote(
+                config.live.bitopro_symbol
+            )
+            checks.append(
+                "bitopro_book="
+                f"price={bitopro_quote.price} bid={bitopro_quote.bid} "
+                f"ask={bitopro_quote.ask} bid_size={bitopro_quote.bid_size} "
+                f"ask_size={bitopro_quote.ask_size}"
             )
         finally:
             qff.close()
@@ -202,11 +255,22 @@ def command_qff_warmup_check(args: argparse.Namespace) -> int:
 
 def command_live_paper(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    result = LivePaperRunner(config).run(
-        resume=args.resume,
-        reset_store=args.reset_store,
-        max_iterations=args.max_iterations,
+    reporter = (
+        NullLiveReporter()
+        if args.quiet_ui
+        else LiveTerminalReporter(color=False if args.no_color else None)
     )
+    try:
+        result = LivePaperRunner(config, reporter=reporter).run(
+            resume=args.resume,
+            reset_store=args.reset_store,
+            max_iterations=args.max_iterations,
+            skip_warmup=args.skip_warmup,
+        )
+    except Exception as exc:
+        reporter.error(datetime.now().astimezone(), f"{type(exc).__name__}: {exc}")
+        raise
+    reporter.finish()
     print(
         "Live-paper stopped: "
         f"iterations={result.iterations}, "

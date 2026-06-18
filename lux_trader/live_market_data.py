@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import time
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from html import unescape
 from pathlib import Path
+from threading import Condition
 from typing import Any, Callable, Protocol
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -16,7 +18,7 @@ from zipfile import ZipFile
 
 import pandas as pd
 
-from .calendar import annotate_live_bar
+from .calendar import annotate_live_bar, in_night_session
 from .config import LiveMarketDataConfig
 from .models import MarketBar
 
@@ -57,6 +59,8 @@ class LiveQuote:
     price: float
     bid: float | None = None
     ask: float | None = None
+    bid_size: float | None = None
+    ask_size: float | None = None
     raw: dict[str, Any] | None = None
 
 
@@ -72,6 +76,7 @@ class MinuteBuildResult:
     bar: MarketBar | None
     skipped_reason: str | None = None
     payload: dict[str, Any] | None = None
+    quote_set: LiveQuoteSet | None = None
 
 
 @dataclass(frozen=True)
@@ -154,6 +159,38 @@ def parse_optional_float(value: Any) -> float | None:
     if pd.isna(parsed):
         return None
     return float(parsed)
+
+
+def first_book_level(levels: Any) -> tuple[float | None, float | None]:
+    if not levels:
+        return None, None
+    if isinstance(levels, dict):
+        level = levels
+    else:
+        level = levels[0]
+    if isinstance(level, dict):
+        return (
+            parse_optional_float(row_get(level, "price", "px")),
+            parse_optional_float(row_get(level, "size", "amount", "qty", "quantity")),
+        )
+    if isinstance(level, (list, tuple)):
+        price = parse_optional_float(level[0]) if len(level) >= 1 else None
+        size = parse_optional_float(level[1]) if len(level) >= 2 else None
+        return price, size
+    return None, None
+
+
+def midpoint_or_single_side(
+    bid: float | None,
+    ask: float | None,
+) -> float | None:
+    if bid is not None and ask is not None:
+        return (bid + ask) / 2.0
+    if bid is not None:
+        return bid
+    if ask is not None:
+        return ask
+    return None
 
 
 def third_wednesday(year: int, month: int) -> date:
@@ -326,6 +363,7 @@ class LiveMinuteBarBuilder:
                 "missing_required_quote",
                 {"minute": self.current_minute.isoformat()},
             )
+        quote_set = LiveQuoteSet(qff=qff, tsm=tsm, usdttwd=usdttwd) if qff else None
 
         close_time = self.current_minute + timedelta(minutes=1)
         for name, quote in (("tsm", tsm), ("usdttwd", usdttwd)):
@@ -335,6 +373,7 @@ class LiveMinuteBarBuilder:
                     None,
                     "market_data_stale",
                     {"source": name, "age_seconds": age},
+                    quote_set,
                 )
 
         qff_is_fresh = False
@@ -348,13 +387,22 @@ class LiveMinuteBarBuilder:
         timestamps = [ensure_taipei(quote.timestamp) for quote in skew_quotes]
         skew = (max(timestamps) - min(timestamps)).total_seconds()
         if skew > self.max_leg_timestamp_skew_seconds:
-            return MinuteBuildResult(None, "leg_timestamp_skew", {"skew_seconds": skew})
+            return MinuteBuildResult(
+                None,
+                "leg_timestamp_skew",
+                {"skew_seconds": skew},
+                quote_set,
+            )
 
         qff_close = qff.price if qff is not None and qff_is_fresh else None
         if qff_close is not None:
             self.last_qff_close = qff_close
         if self.last_qff_close is None:
-            return MinuteBuildResult(None, "missing_qff_forward_fill")
+            return MinuteBuildResult(
+                None,
+                "missing_qff_forward_fill",
+                quote_set=quote_set,
+            )
 
         tsm_twd_fair = tsm.price * usdttwd.price / 5.0
         spread = (
@@ -372,7 +420,8 @@ class LiveMinuteBarBuilder:
                     tsm_twd_fair=tsm_twd_fair,
                     spread=spread,
                 )
-            )
+            ),
+            quote_set=quote_set,
         )
 
 
@@ -386,20 +435,57 @@ class CcxtTickerMarketData:
         self.exchange_id = exchange_id
 
     def fetch_quote(self, symbol: str) -> LiveQuote:
-        ticker = self.exchange.fetch_ticker(symbol)
-        price = parse_optional_float(ticker.get("last")) or parse_optional_float(
-            ticker.get("close")
-        )
+        observed_at = datetime.now(TAIPEI_TZ)
+        order_book: dict[str, Any] = {}
+        ticker: dict[str, Any] | None = None
+        book_error: str | None = None
+        book_limit_used = 1
+        try:
+            fetched_book = self.exchange.fetch_order_book(symbol, limit=1)
+            order_book = dict(fetched_book or {})
+        except Exception as exc:
+            book_error = str(exc)
+            if "not valid depth limit" in book_error or '"code":-4021' in book_error:
+                book_limit_used = 5
+                fetched_book = self.exchange.fetch_order_book(symbol, limit=5)
+                order_book = dict(fetched_book or {})
+                book_error = None
+
+        bid, bid_size = first_book_level(order_book.get("bids"))
+        ask, ask_size = first_book_level(order_book.get("asks"))
+        price = midpoint_or_single_side(bid, ask)
         if price is None:
-            raise RuntimeError(f"{self.exchange_id} ticker has no usable price: {ticker}")
+            ticker = self.exchange.fetch_ticker(symbol)
+            price = parse_optional_float(ticker.get("last")) or parse_optional_float(
+                ticker.get("close")
+            )
+        if price is None:
+            raise RuntimeError(
+                f"{self.exchange_id} order book has no usable price: "
+                f"order_book={order_book}, ticker={ticker}"
+            )
         return LiveQuote(
             source=self.exchange_id,
             symbol=symbol,
-            timestamp=parse_timestamp(ticker.get("timestamp")),
+            timestamp=(
+                parse_timestamp(order_book.get("timestamp"))
+                if order_book.get("timestamp") is not None
+                else observed_at
+            ),
             price=price,
-            bid=parse_optional_float(ticker.get("bid")),
-            ask=parse_optional_float(ticker.get("ask")),
-            raw=dict(ticker),
+            bid=bid,
+            ask=ask,
+            bid_size=bid_size,
+            ask_size=ask_size,
+            raw={
+                "order_book": order_book,
+                "ticker": ticker,
+                "book_error": book_error,
+                "book_limit_used": book_limit_used,
+                "book_missing": bid is None or ask is None,
+                "bid_size": bid_size,
+                "ask_size": ask_size,
+            },
         )
 
     def fetch_ohlcv_1m(
@@ -619,11 +705,84 @@ class CsvQffWarmupProvider:
         ].copy()
 
 
+def candidate_rows(data: Any) -> list[Any]:
+    if data is None:
+        return []
+    if isinstance(data, dict):
+        for key in ("data", "items", "tickers", "contracts", "result"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return list(value)
+        return [data] if data else []
+    if isinstance(data, (str, bytes)):
+        return []
+    try:
+        return list(data)
+    except TypeError:
+        return [data]
+
+
+def dedupe_candidates(candidates: list[Any]) -> list[Any]:
+    seen: set[str] = set()
+    unique: list[Any] = []
+    for candidate in candidates:
+        raw = row_to_dict(candidate)
+        symbol = str(row_get(raw, "symbol", "code", "id", "ticker") or "").strip()
+        key = symbol or repr(raw)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def summarize_candidate_response(result: Any, rows: list[Any]) -> str:
+    result_type = type(result).__name__
+    if isinstance(result, dict):
+        keys = sorted(str(key) for key in result.keys())[:8]
+        status = row_get(result, "status", "code", "message")
+        sample = summarize_candidate_row(rows[0]) if rows else "none"
+        return (
+            f"type=dict keys={keys} status={status!r} "
+            f"count={len(rows)} sample={sample}"
+        )
+    sample = summarize_candidate_row(rows[0]) if rows else "none"
+    return f"type={result_type} count={len(rows)} sample={sample}"
+
+
+def summarize_candidate_row(row: Any) -> str:
+    raw = row_to_dict(row)
+    compact = {
+        str(key): raw[key]
+        for key in list(raw.keys())[:8]
+        if key in raw
+    }
+    text = repr(compact)
+    if len(text) > 400:
+        return text[:397] + "..."
+    return text
+
+
 class FubonQffMarketData:
-    def __init__(self, env_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        env_path: Path | None = None,
+        *,
+        book_wait_timeout_seconds: float = 5.0,
+    ) -> None:
         self.env_path = env_path
         self.sdk = None
         self.intraday = None
+        self.websocket = None
+        self.book_wait_timeout_seconds = book_wait_timeout_seconds
+        self._book_condition = Condition()
+        self._latest_books: dict[str, LiveQuote] = {}
+        self._book_subscription_ids: dict[str, str] = {}
+        self._book_subscribed_symbols: set[str] = set()
+        self._websocket_connected = False
+        self._websocket_handlers_registered = False
+        self.last_candidate_session_counts: dict[str, int] = {}
+        self.last_candidate_session_summaries: dict[str, str] = {}
 
     def connect(self) -> None:
         from fubon_neo.sdk import FubonSDK, Mode
@@ -655,8 +814,14 @@ class FubonQffMarketData:
             sdk.init_realtime(mode)
         self.sdk = sdk
         self.intraday = sdk.marketdata.rest_client.futopt.intraday
+        self.websocket = sdk.marketdata.websocket_client.futopt
 
     def close(self) -> None:
+        if self.websocket is not None:
+            try:
+                self.websocket.disconnect()
+            except Exception:
+                pass
         if self.sdk is not None:
             self.sdk.logout()
 
@@ -667,24 +832,146 @@ class FubonQffMarketData:
 
     def fetch_candidates(self, product: str) -> list[Any]:
         intraday = self._require_intraday()
-        errors: list[str] = []
+        candidates: list[Any] = []
+        errors: dict[str, str] = {}
+        counts: dict[str, int] = {}
+        summaries: dict[str, str] = {}
         for session in ("REGULAR", "AFTERHOURS"):
             try:
                 result = intraday.tickers(
                     type="FUTURE", exchange="TAIFEX", session=session, product=product
                 )
                 data = result.get("data", result) if isinstance(result, dict) else result
-                return list(data or [])
+                rows = candidate_rows(data)
+                counts[session] = len(rows)
+                summaries[session] = summarize_candidate_response(result, rows)
+                candidates.extend(rows)
             except Exception as exc:
-                errors.append(f"{session}: {exc}")
-        raise RuntimeError(f"Fubon QFF ticker lookup failed: {errors}")
+                counts[session] = 0
+                errors[session] = str(exc)
+                summaries[session] = f"error={exc}"
+        self.last_candidate_session_counts = counts
+        self.last_candidate_session_summaries = summaries
+        if candidates:
+            return dedupe_candidates(candidates)
+        raise RuntimeError(
+            "Fubon QFF ticker lookup returned no candidates. "
+            f"session_counts={counts}; session_summaries={summaries}; errors={errors}"
+        )
 
     def select_front_month_symbol(self, product: str) -> str:
         return select_qff_front_month(self.fetch_candidates(product), product=product).symbol
 
     def fetch_quote(self, symbol: str) -> LiveQuote:
+        try:
+            self.ensure_books_subscription(symbol)
+        except Exception:
+            pass
+        quote = self._wait_for_book_quote(symbol)
+        if quote is not None:
+            return quote
+        return self._fetch_rest_quote_for_diagnostics(symbol)
+
+    def ensure_books_subscription(
+        self,
+        symbol: str,
+        *,
+        after_hours: bool | None = None,
+    ) -> None:
+        self._require_intraday()
+        if self.websocket is None:
+            raise RuntimeError("Fubon futopt websocket client is not available")
+        with self._book_condition:
+            if symbol in self._book_subscribed_symbols:
+                return
+        self._ensure_websocket_connected()
+        params: dict[str, Any] = {
+            "channel": "books",
+            "symbol": symbol,
+            "afterHours": self._after_hours_now() if after_hours is None else after_hours,
+        }
+        self.websocket.subscribe(params)
+        with self._book_condition:
+            self._book_subscribed_symbols.add(symbol)
+
+    def unsubscribe_books(self, symbol: str) -> None:
+        if self.websocket is None:
+            return
+        with self._book_condition:
+            if symbol not in self._book_subscribed_symbols:
+                return
+            subscription_id = self._book_subscription_ids.pop(symbol, None)
+            self._book_subscribed_symbols.discard(symbol)
+            self._latest_books.pop(symbol, None)
+        try:
+            if subscription_id:
+                self.websocket.unsubscribe({"id": subscription_id})
+            else:
+                self.websocket.unsubscribe({"channel": "books", "symbol": symbol})
+        except Exception:
+            pass
+
+    def _ensure_websocket_connected(self) -> None:
+        if self.websocket is None:
+            raise RuntimeError("Fubon futopt websocket client is not available")
+        if not self._websocket_handlers_registered:
+            self.websocket.on("message", self._handle_websocket_message)
+            self.websocket.on("error", self._handle_websocket_error)
+            self._websocket_handlers_registered = True
+        if not self._websocket_connected:
+            self.websocket.connect()
+            self._websocket_connected = True
+
+    def _handle_websocket_error(self, error: Any) -> None:
+        with self._book_condition:
+            self._book_condition.notify_all()
+
+    def _handle_websocket_message(self, raw_message: Any) -> None:
+        try:
+            message = decode_websocket_message(raw_message)
+        except Exception:
+            return
+        if not isinstance(message, dict):
+            return
+        self._remember_book_subscription(message)
+        quote = parse_fubon_books_quote(message)
+        if quote is None:
+            return
+        with self._book_condition:
+            self._latest_books[quote.symbol] = quote
+            self._book_condition.notify_all()
+
+    def _remember_book_subscription(self, message: dict[str, Any]) -> None:
+        event = str(row_get(message, "event") or "").lower()
+        if event not in {"subscribed", "subscribed_books"}:
+            return
+        data = row_get(message, "data")
+        rows = data if isinstance(data, list) else [data or message]
+        with self._book_condition:
+            for row in rows:
+                if row is None:
+                    continue
+                symbol = row_get(row, "symbol")
+                subscription_id = row_get(row, "id")
+                channel = str(row_get(row, "channel") or row_get(message, "channel") or "")
+                if symbol and subscription_id and channel.lower() == "books":
+                    self._book_subscription_ids[str(symbol)] = str(subscription_id)
+
+    def _wait_for_book_quote(self, symbol: str) -> LiveQuote | None:
+        deadline = time.monotonic() + self.book_wait_timeout_seconds
+        with self._book_condition:
+            quote = self._latest_books.get(symbol)
+            while quote is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._book_condition.wait(remaining)
+                quote = self._latest_books.get(symbol)
+            return quote
+
+    def _fetch_rest_quote_for_diagnostics(self, symbol: str) -> LiveQuote:
         intraday = self._require_intraday()
-        raw = intraday.quote(symbol=symbol)
+        raw = self._fetch_intraday_quote(intraday, symbol)
         payload = raw.get("data", raw) if isinstance(raw, dict) else row_to_dict(raw)
         price = first_float(
             payload,
@@ -697,6 +984,7 @@ class FubonQffMarketData:
         )
         if price is None:
             raise RuntimeError(f"Fubon quote has no usable price: {payload}")
+        last_trade = row_to_dict(row_get(payload, "lastTrade") or {})
         return LiveQuote(
             source="fubon_qff",
             symbol=symbol,
@@ -704,10 +992,28 @@ class FubonQffMarketData:
                 row_get(payload, "dateTime", "time", "timestamp", "lastUpdated")
             ),
             price=price,
-            bid=first_float(payload, "bidPrice", "bestBidPrice", "bid"),
-            ask=first_float(payload, "askPrice", "bestAskPrice", "ask"),
-            raw=payload,
+            bid=None,
+            ask=None,
+            raw={
+                "rest_quote": payload,
+                "rest_last_trade_bid": first_float(last_trade, "bid"),
+                "rest_last_trade_ask": first_float(last_trade, "ask"),
+                "book_missing": True,
+            },
         )
+
+    def _fetch_intraday_quote(self, intraday: Any, symbol: str) -> Any:
+        if self._after_hours_now():
+            try:
+                return intraday.quote(symbol=symbol, session="afterhours")
+            except TypeError:
+                pass
+            except Exception:
+                pass
+        return intraday.quote(symbol=symbol)
+
+    def _after_hours_now(self) -> bool:
+        return in_night_session(datetime.now(TAIPEI_TZ))
 
     def fetch_1m(self, symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
         intraday = self._require_intraday()
@@ -975,6 +1281,62 @@ def normalize_candle_rows(
         (pd.DatetimeIndex(frame["timestamp"]) >= start_ts)
         & (pd.DatetimeIndex(frame["timestamp"]) <= end_ts)
     ].copy()
+
+
+def decode_websocket_message(raw_message: Any) -> Any:
+    if isinstance(raw_message, bytes):
+        raw_message = raw_message.decode("utf-8", errors="replace")
+    if isinstance(raw_message, str):
+        return json.loads(raw_message)
+    return raw_message
+
+
+def parse_fubon_books_quote(message: dict[str, Any]) -> LiveQuote | None:
+    channel = str(row_get(message, "channel") or "").lower()
+    event = str(row_get(message, "event") or "").lower()
+    data = row_get(message, "data")
+    if data is None:
+        data = message
+    if isinstance(data, list):
+        if not data:
+            return None
+        data = data[0]
+    if not isinstance(data, dict):
+        data = row_to_dict(data)
+    data_channel = str(row_get(data, "channel") or channel).lower()
+    if data_channel and data_channel != "books":
+        return None
+    if event and event not in {"data", "snapshot", "books"} and not row_get(data, "bids"):
+        return None
+
+    symbol = str(row_get(data, "symbol", "code", "id") or "").strip()
+    if not symbol:
+        return None
+    bid, bid_size = first_book_level(row_get(data, "bids", "bid"))
+    ask, ask_size = first_book_level(row_get(data, "asks", "ask"))
+    price = midpoint_or_single_side(bid, ask)
+    if price is None:
+        return None
+    timestamp = parse_timestamp(
+        row_get(data, "time", "dateTime", "timestamp", "lastUpdated")
+        or row_get(message, "time", "dateTime", "timestamp")
+    )
+    return LiveQuote(
+        source="fubon_qff",
+        symbol=symbol,
+        timestamp=timestamp,
+        price=price,
+        bid=bid,
+        ask=ask,
+        bid_size=bid_size,
+        ask_size=ask_size,
+        raw={
+            "books": data,
+            "message": message,
+            "bid_size": bid_size,
+            "ask_size": ask_size,
+        },
+    )
 
 
 def first_float(row: dict[str, Any], *names: str) -> float | None:

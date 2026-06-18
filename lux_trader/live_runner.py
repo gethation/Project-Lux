@@ -28,8 +28,14 @@ from .live_market_data import (
     floor_minute,
 )
 from .store import SQLiteStore
-from .models import StrategyState
+from .models import Direction, IndicatorSnapshot, StrategyState
 from .strategy import PairStrategy, StrategyRuntimeState
+from .terminal_ui import (
+    NullLiveReporter,
+    compact_reason,
+    compact_warning_code,
+)
+from .tradable_spread import TradableSpreadSnapshot, estimate_tradable_spreads
 
 
 @dataclass(frozen=True)
@@ -251,6 +257,7 @@ class LivePaperRunner:
         usdttwd_provider: QuoteProvider | None = None,
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], None] | None = None,
+        reporter: Any | None = None,
     ) -> None:
         self.config = config
         self.qff_provider = qff_provider
@@ -258,6 +265,7 @@ class LivePaperRunner:
         self.usdttwd_provider = usdttwd_provider
         self.clock = clock or (lambda: datetime.now().astimezone())
         self.sleeper = sleeper or time.sleep
+        self.reporter = reporter or NullLiveReporter()
 
     def run(
         self,
@@ -265,11 +273,13 @@ class LivePaperRunner:
         resume: bool = False,
         reset_store: bool = False,
         max_iterations: int | None = None,
+        skip_warmup: bool = False,
     ) -> LivePaperResult:
         if self.config.safety.allow_live_order:
             raise RuntimeError("Refusing live-paper with allow_live_order=true")
         store = SQLiteStore(self.config.store_path)
         live_run_id: int | None = None
+        qff_provider_to_close: Any | None = None
         try:
             if reset_store:
                 store.reset()
@@ -279,17 +289,25 @@ class LivePaperRunner:
                     "Store already has live bars. Use --resume or --reset-store."
                 )
 
+            started_at = ensure_taipei(self.clock())
+            self.reporter.event(started_at, "startup", "store_ready")
+            self.reporter.event(started_at, "startup", "init_fubon")
             qff_provider = self.qff_provider or FubonQffMarketData(
                 self.config.live.fubon_env_path
             )
+            if self.qff_provider is None:
+                qff_provider_to_close = qff_provider
+            self.reporter.event(started_at, "startup", "init_binance")
             tsm_provider = self.tsm_provider or CcxtTickerMarketData("binanceusdm")
+            self.reporter.event(started_at, "startup", "init_bitopro")
             usdttwd_provider = self.usdttwd_provider or CcxtTickerMarketData("bitopro")
-            started_at = ensure_taipei(self.clock())
+            self.reporter.event(started_at, "startup", "resolve_qff")
             initial_contract = resolve_qff_contract(
                 self.config,
                 qff_provider,
                 now=started_at,
             )
+            self.reporter.event(started_at, "startup", f"qff={initial_contract.symbol}")
 
             resume_state = store.load_resume_state() if resume else None
             strategy_state = (
@@ -302,6 +320,12 @@ class LivePaperRunner:
             initialize_contract_state(strategy_state, initial_contract)
             qff_symbol = strategy_state.trading_qff_symbol or initial_contract.symbol
             qff_expiry = strategy_state.trading_qff_expiry or initial_contract.expiry
+            subscribe_qff_books_if_supported(
+                qff_provider,
+                qff_symbol,
+                self.reporter,
+                started_at,
+            )
 
             indicator, seed_bars = load_or_build_live_indicator(
                 store,
@@ -313,7 +337,11 @@ class LivePaperRunner:
                 tsm_provider=tsm_provider,
                 usdttwd_provider=usdttwd_provider,
                 end=started_at,
+                allow_rebuild=not skip_warmup,
+                reporter=self.reporter,
+                auto_warmup_context="before_live",
             )
+            self.reporter.event(started_at, "startup", f"seed_ready_{len(seed_bars)}")
             strategy = PairStrategy(
                 self.config.strategy,
                 self.config.fees,
@@ -335,9 +363,10 @@ class LivePaperRunner:
                 started_at=started_at,
                 mode="live-paper",
                 qff_symbol=qff_symbol,
-                payload={"resume": resume},
+                payload={"resume": resume, "skip_warmup": skip_warmup},
             )
             store.commit()
+            self.reporter.event(started_at, "startup", "live_loop")
 
             while max_iterations is None or iterations < max_iterations:
                 observed_at = ensure_taipei(self.clock())
@@ -345,6 +374,18 @@ class LivePaperRunner:
                     qff=qff_provider.fetch_quote(qff_symbol),
                     tsm=tsm_provider.fetch_quote(self.config.live.binance_symbol),
                     usdttwd=usdttwd_provider.fetch_quote(self.config.live.bitopro_symbol),
+                )
+                live_spread_snapshot = estimate_tradable_spreads(
+                    quote_set,
+                    observed_at,
+                    indicator,
+                    stale_seconds=self.config.live.stale_seconds,
+                    last_qff_close=builder.last_qff_close,
+                )
+                self.reporter.live(
+                    observed_at,
+                    live_spread_snapshot,
+                    strategy.state.state,
                 )
                 for quote in (quote_set.qff, quote_set.tsm, quote_set.usdttwd):
                     store.record_market_tick(quote, observed_at)
@@ -360,6 +401,14 @@ class LivePaperRunner:
                 if build_result is not None:
                     if build_result.skipped_reason is not None:
                         skipped_minutes += 1
+                        self.reporter.warn(
+                            observed_at,
+                            compact_warning_code(
+                                build_result.skipped_reason,
+                                build_result.payload,
+                            ),
+                            "skipped_minute",
+                        )
                         store.record_event(
                             next_row_index,
                             floor_minute(observed_at),
@@ -378,6 +427,11 @@ class LivePaperRunner:
                             ),
                         )
                         if store.bar_exists_for_timestamp(bar.timestamp):
+                            self.reporter.event(
+                                bar.timestamp,
+                                "duplicate_minute",
+                                "already_processed",
+                            )
                             store.record_event(
                                 next_row_index,
                                 bar.timestamp,
@@ -402,6 +456,11 @@ class LivePaperRunner:
                                     cancel_entry_pending_for_contract_switch(
                                         strategy.state
                                     )
+                                    self.reporter.event(
+                                        bar.timestamp,
+                                        "entry_cancel",
+                                        "contract_switch",
+                                    )
                                     store.record_event(
                                         bar.row_index,
                                         bar.timestamp,
@@ -410,8 +469,14 @@ class LivePaperRunner:
                                         {
                                             "old_qff_symbol": qff_symbol,
                                             "new_qff_symbol": eligible_contract.symbol,
-                                        },
-                                    )
+                                    },
+                                )
+                                self.reporter.event(
+                                    bar.timestamp,
+                                    "contract_switch",
+                                    f"{qff_symbol}->{eligible_contract.symbol}",
+                                )
+                                previous_qff_symbol = qff_symbol
                                 store.record_event(
                                     bar.row_index,
                                     bar.timestamp,
@@ -421,6 +486,10 @@ class LivePaperRunner:
                                         "old_qff_symbol": qff_symbol,
                                         "new_qff_symbol": eligible_contract.symbol,
                                     },
+                                )
+                                unsubscribe_qff_books_if_supported(
+                                    qff_provider,
+                                    previous_qff_symbol,
                                 )
                                 qff_symbol, qff_expiry, indicator, seed_bars = (
                                     switch_to_contract(
@@ -433,6 +502,12 @@ class LivePaperRunner:
                                         usdttwd_provider=usdttwd_provider,
                                         end=bar.timestamp,
                                     )
+                                )
+                                subscribe_qff_books_if_supported(
+                                    qff_provider,
+                                    qff_symbol,
+                                    self.reporter,
+                                    bar.timestamp,
                                 )
                                 builder = LiveMinuteBarBuilder(
                                     stale_seconds=self.config.live.stale_seconds,
@@ -467,6 +542,30 @@ class LivePaperRunner:
                                     ),
                                 )
                             snapshot = indicator.update(bar)
+                            tradable_snapshot = build_tradable_snapshot_for_bar(
+                                build_result.quote_set,
+                                bar,
+                                snapshot,
+                                indicator,
+                                self.config,
+                            )
+                            (
+                                decision_snapshot,
+                                decision_spread_type,
+                                decision_zscore,
+                                missing_signal_book,
+                            ) = build_live_decision_snapshot(
+                                self.config,
+                                strategy.state,
+                                snapshot,
+                                tradable_snapshot,
+                            )
+                            if missing_signal_book:
+                                self.reporter.warn(
+                                    bar.timestamp,
+                                    "missing_book",
+                                    "skip_signal",
+                                )
                             if should_force_exit_for_contract_policy(
                                 self.config,
                                 strategy.state,
@@ -474,8 +573,13 @@ class LivePaperRunner:
                             ):
                                 result = strategy.force_exit(
                                     bar,
-                                    snapshot,
+                                    decision_snapshot,
                                     exit_reason="rollover_force_exit",
+                                )
+                                self.reporter.event(
+                                    bar.timestamp,
+                                    "force_exit",
+                                    "expiry_buffer",
                                 )
                                 store.record_event(
                                     bar.row_index,
@@ -488,9 +592,9 @@ class LivePaperRunner:
                                     },
                                 )
                                 if result is None:
-                                    result = strategy.on_bar(bar, snapshot)
+                                    result = strategy.on_bar(bar, decision_snapshot)
                             else:
-                                result = strategy.on_bar(bar, snapshot)
+                                result = strategy.on_bar(bar, decision_snapshot)
                             for order in result.orders:
                                 store.record_order(order)
                             for fill in result.fills:
@@ -514,7 +618,25 @@ class LivePaperRunner:
                                 result.running_max_equity,
                                 result.drawdown_twd,
                                 result.drawdown_pct,
+                                tradable_snapshot=tradable_snapshot,
+                                decision_spread_type=decision_spread_type,
+                                decision_zscore=decision_zscore,
                             )
+                            self.reporter.bar(
+                                bar.timestamp,
+                                tradable_snapshot,
+                                strategy.state.state,
+                                result.action,
+                                result.reason,
+                                result.unrealized_pnl,
+                                result.equity,
+                            )
+                            if result.action.value != "none":
+                                self.reporter.event(
+                                    bar.timestamp,
+                                    result.action.value,
+                                    compact_reason(result.reason),
+                                )
                             store.save_state(
                                 bar.row_index,
                                 bar.timestamp,
@@ -531,6 +653,11 @@ class LivePaperRunner:
                                     expiry=strategy.state.eligible_active_qff_expiry,
                                     policy_state="active",
                                 )
+                                previous_qff_symbol = qff_symbol
+                                unsubscribe_qff_books_if_supported(
+                                    qff_provider,
+                                    previous_qff_symbol,
+                                )
                                 qff_symbol, qff_expiry, indicator, seed_bars = (
                                     switch_to_contract(
                                         store,
@@ -542,6 +669,12 @@ class LivePaperRunner:
                                         usdttwd_provider=usdttwd_provider,
                                         end=bar.timestamp,
                                     )
+                                )
+                                subscribe_qff_books_if_supported(
+                                    qff_provider,
+                                    qff_symbol,
+                                    self.reporter,
+                                    bar.timestamp,
                                 )
                                 builder = LiveMinuteBarBuilder(
                                     stale_seconds=self.config.live.stale_seconds,
@@ -556,6 +689,11 @@ class LivePaperRunner:
                                     "contract_switch_completed",
                                     "QFF contract switched after flat state",
                                     {"qff_symbol": qff_symbol},
+                                )
+                                self.reporter.event(
+                                    bar.timestamp,
+                                    "contract_switch_done",
+                                    qff_symbol,
                                 )
                                 store.save_state(
                                     bar.row_index,
@@ -602,6 +740,39 @@ class LivePaperRunner:
                 except Exception:
                     store.rollback()
             store.close()
+            if qff_provider_to_close is not None:
+                close = getattr(qff_provider_to_close, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+
+
+def subscribe_qff_books_if_supported(
+    provider: object,
+    symbol: str,
+    reporter: Any,
+    timestamp: datetime,
+) -> None:
+    subscribe = getattr(provider, "ensure_books_subscription", None)
+    if not callable(subscribe):
+        return
+    try:
+        reporter.event(timestamp, "startup", f"subscribe_books_{symbol}")
+        subscribe(symbol)
+    except Exception as exc:
+        reporter.warn(
+            timestamp,
+            "qff_books",
+            f"subscribe_failed:{type(exc).__name__}",
+        )
+
+
+def unsubscribe_qff_books_if_supported(provider: object, symbol: str) -> None:
+    unsubscribe = getattr(provider, "unsubscribe_books", None)
+    if callable(unsubscribe):
+        unsubscribe(symbol)
 
 
 def initialize_contract_state(
@@ -675,6 +846,120 @@ def should_force_exit_for_contract_policy(
     )
 
 
+def build_tradable_snapshot_for_bar(
+    quote_set: LiveQuoteSet | None,
+    bar: Any,
+    snapshot: IndicatorSnapshot,
+    indicator: IndicatorEngine,
+    config: AppConfig,
+) -> TradableSpreadSnapshot:
+    if quote_set is None:
+        return TradableSpreadSnapshot(
+            mid_spread=snapshot.spread,
+            mid_zscore=snapshot.zscore,
+            short_spread=None,
+            short_zscore=None,
+            long_spread=None,
+            long_zscore=None,
+            missing_reason="missing_quote",
+        )
+    tradable_snapshot = estimate_tradable_spreads(
+        quote_set,
+        bar.timestamp + timedelta(minutes=1),
+        indicator,
+        stale_seconds=config.live.stale_seconds,
+        last_qff_close=bar.qff_close_filled,
+    )
+    return replace(
+        tradable_snapshot,
+        mid_spread=snapshot.spread,
+        mid_zscore=snapshot.zscore,
+    )
+
+
+def build_live_decision_snapshot(
+    config: AppConfig,
+    state: StrategyRuntimeState,
+    snapshot: IndicatorSnapshot,
+    tradable_snapshot: TradableSpreadSnapshot,
+) -> tuple[IndicatorSnapshot, str | None, float | None, bool]:
+    if state.state == StrategyState.FLAT and snapshot.entry_allowed:
+        candidates: list[tuple[str, float, float | None]] = []
+        missing_signal_book = False
+        if tradable_snapshot.short_zscore is None:
+            missing_signal_book = True
+        elif tradable_snapshot.short_zscore > config.strategy.entry_z:
+            candidates.append(
+                (
+                    "shortSpread",
+                    tradable_snapshot.short_zscore,
+                    tradable_snapshot.short_spread,
+                )
+            )
+        if tradable_snapshot.long_zscore is None:
+            missing_signal_book = True
+        elif tradable_snapshot.long_zscore < -config.strategy.entry_z:
+            candidates.append(
+                (
+                    "longSpread",
+                    tradable_snapshot.long_zscore,
+                    tradable_snapshot.long_spread,
+                )
+            )
+        if not candidates:
+            return (
+                replace(snapshot, zscore=None, zscore_valid=False),
+                None,
+                None,
+                missing_signal_book,
+            )
+        decision_type, decision_zscore, decision_spread = max(
+            candidates,
+            key=lambda item: abs(item[1]),
+        )
+        return (
+            replace(
+                snapshot,
+                spread=decision_spread if decision_spread is not None else snapshot.spread,
+                zscore=decision_zscore,
+                zscore_valid=True,
+            ),
+            decision_type,
+            decision_zscore,
+            False,
+        )
+
+    if state.state == StrategyState.OPEN and state.position_direction is not None:
+        if state.position_direction == Direction.SHORT_TSM_LONG_QFF:
+            decision_type = "longSpread"
+            decision_spread = tradable_snapshot.long_spread
+            decision_zscore = tradable_snapshot.long_zscore
+        else:
+            decision_type = "shortSpread"
+            decision_spread = tradable_snapshot.short_spread
+            decision_zscore = tradable_snapshot.short_zscore
+        if decision_zscore is None:
+            return (
+                replace(snapshot, zscore=None, zscore_valid=False),
+                decision_type,
+                None,
+                True,
+            )
+        return (
+            replace(
+                snapshot,
+                spread=decision_spread if decision_spread is not None else snapshot.spread,
+                zscore=decision_zscore,
+                zscore_valid=True,
+            ),
+            decision_type,
+            decision_zscore,
+            False,
+        )
+
+    return snapshot, "mid", snapshot.zscore, False
+
+
 def switch_to_contract(
     store: SQLiteStore,
     config: AppConfig,
@@ -727,6 +1012,9 @@ def load_or_build_live_indicator(
     usdttwd_provider: OhlcvProvider,
     end: datetime,
     force_rebuild: bool = False,
+    allow_rebuild: bool = True,
+    reporter: Any | None = None,
+    auto_warmup_context: str | None = None,
 ) -> tuple[IndicatorEngine, list[Any]]:
     seed_bars = []
     if not force_rebuild:
@@ -735,6 +1023,30 @@ def load_or_build_live_indicator(
             qff_symbol=qff_symbol,
         )
     if len(seed_bars) < config.strategy.zscore_window:
+        if not allow_rebuild:
+            raise RuntimeError(
+                "Warmup seed is missing or insufficient for live-paper startup: "
+                f"found {len(seed_bars)} bars for {qff_symbol}, "
+                f"need {config.strategy.zscore_window}. "
+                "Remove --skip-warmup or run warmup-live first."
+            )
+        if auto_warmup_context is not None:
+            if reporter is not None:
+                reporter.event(end, "warmup_auto", "start")
+            store.record_event(
+                -1,
+                end,
+                "warmup_auto_before_live",
+                "live-paper auto warmup started",
+                {
+                    "qff_symbol": qff_symbol,
+                    "qff_expiry": qff_expiry,
+                    "contract_policy_state": policy_state,
+                    "existing_seed_bars": len(seed_bars),
+                    "required_seed_bars": config.strategy.zscore_window,
+                    "context": auto_warmup_context,
+                },
+            )
         fallback: QffWarmupProvider | None
         if config.live.taifex_use_network:
             fallback = TaifexQffTradeDownloader(config.live.taifex_cache_dir)
@@ -761,6 +1073,23 @@ def load_or_build_live_indicator(
                 f"need {config.strategy.zscore_window}"
             )
         store.replace_warmup_bars(seed_bars)
+        if auto_warmup_context is not None:
+            if reporter is not None:
+                reporter.event(end, "warmup_auto", f"done_{len(seed_bars)}")
+            store.record_event(
+                seed_bars[-1].row_index,
+                seed_bars[-1].timestamp,
+                "warmup_auto_before_live",
+                "live-paper auto warmup bars written",
+                {
+                    "bars": len(seed_bars),
+                    "qff_symbol": qff_symbol,
+                    "qff_expiry": qff_expiry,
+                    "contract_policy_state": policy_state,
+                    "context": auto_warmup_context,
+                    "force_rebuild": force_rebuild,
+                },
+            )
 
     indicator = IndicatorEngine(window=config.strategy.zscore_window)
     for seed_bar in seed_bars:

@@ -11,6 +11,7 @@ from .config import FeeConfig, StrategyConfig
 from .indicator import IndicatorEngine
 from .models import Fill, IndicatorSnapshot, MarketBar, OrderResult
 from .strategy import StrategyRuntimeState
+from .tradable_spread import TradableSpreadSnapshot
 
 
 def json_default(value: Any) -> Any:
@@ -149,6 +150,12 @@ class SQLiteStore:
                 qff_symbol TEXT,
                 qff_expiry TEXT,
                 contract_policy_state TEXT,
+                short_spread REAL,
+                short_zscore REAL,
+                long_spread REAL,
+                long_zscore REAL,
+                decision_spread_type TEXT,
+                decision_zscore REAL,
                 state TEXT NOT NULL,
                 position TEXT NOT NULL,
                 tsm_units REAL NOT NULL,
@@ -258,6 +265,15 @@ class SQLiteStore:
             self._ensure_column(table, "qff_symbol", "TEXT")
             self._ensure_column(table, "qff_expiry", "TEXT")
             self._ensure_column(table, "contract_policy_state", "TEXT")
+        for column in (
+            "short_spread",
+            "short_zscore",
+            "long_spread",
+            "long_zscore",
+            "decision_zscore",
+        ):
+            self._ensure_column("bars", column, "REAL")
+        self._ensure_column("bars", "decision_spread_type", "TEXT")
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
         columns = {
@@ -492,8 +508,15 @@ class SQLiteStore:
         running_max_equity: float,
         drawdown_twd: float,
         drawdown_pct: float,
+        tradable_snapshot: TradableSpreadSnapshot | None = None,
+        decision_spread_type: str | None = None,
+        decision_zscore: float | None = None,
     ) -> None:
         position = strategy.position_direction.value if strategy.position_direction else "flat"
+        short_spread = tradable_snapshot.short_spread if tradable_snapshot else None
+        short_zscore = tradable_snapshot.short_zscore if tradable_snapshot else None
+        long_spread = tradable_snapshot.long_spread if tradable_snapshot else None
+        long_zscore = tradable_snapshot.long_zscore if tradable_snapshot else None
         self.connection.execute(
             """
             INSERT OR REPLACE INTO bars (
@@ -501,11 +524,13 @@ class SQLiteStore:
                 spread_zscore, zscore_valid, entry_allowed, close_allowed,
                 friday_night_close_only, qff_close_filled, tsm_twd_fair,
                 qff_symbol, qff_expiry, contract_policy_state,
+                short_spread, short_zscore, long_spread, long_zscore,
+                decision_spread_type, decision_zscore,
                 state, position, tsm_units, qff_units, qff_contracts,
                 actual_leg_notional_twd, realized_pnl, realized_fee_twd,
                 unrealized_pnl, equity, running_max_equity, drawdown_twd,
                 drawdown_pct
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 bar.row_index,
@@ -523,6 +548,12 @@ class SQLiteStore:
                 bar.qff_symbol,
                 bar.qff_expiry,
                 bar.contract_policy_state,
+                short_spread,
+                short_zscore,
+                long_spread,
+                long_zscore,
+                decision_spread_type,
+                decision_zscore,
                 strategy.state.value,
                 position,
                 strategy.tsm_units,
