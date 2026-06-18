@@ -56,17 +56,39 @@ Phase 2 live market data with paper orders:
 
 ```powershell
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config config.live.example.toml
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader warmup-live --config config.live.example.toml --reset-store
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-paper --config config.live.example.toml --resume
+& 'D:\Users\miniconda3\condabin\conda.bat' run --no-capture-output -n Quant python -u -m lux_trader live-paper --config config.live.example.toml --reset-store
+& 'D:\Users\miniconda3\condabin\conda.bat' run --no-capture-output -n Quant python -u -m lux_trader live-paper --config config.live.example.toml --resume
 ```
 
-`live-paper` polls QFF, Binance TSM, and USDT/TWD quotes once per second, but only
-evaluates the strategy after a completed minute. QFF active-symbol selection uses the
-expiry buffer policy: choose the earliest QFF contract with at least 5 business days
-to expiry; if an old contract is already open, keep it until an exit signal or the
-T-1 13:35 force-exit safety valve. It still uses `PaperBroker`; no live order path
-exists in this phase. Set `LUX_LIVE_MARKETDATA=1` before `live-doctor` only when you
-intentionally want a real market-data smoke test.
+`live-paper` is the normal Phase 2 system entrypoint. On startup it checks whether the
+SQLite store already has enough seed bars for the selected QFF contract; if not, it
+auto-runs the live warmup flow before polling quotes. Use `--skip-warmup` only when
+you explicitly want startup to fail unless existing seed bars are already present.
+`warmup-live` is still available as a debug/acceptance tool for manually rebuilding
+seed bars without starting the live loop:
+
+```powershell
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader warmup-live --config config.live.example.toml --reset-store
+```
+
+After startup, `live-paper` polls QFF, Binance TSM, and USDT/TWD quotes once per
+second, but only evaluates the strategy after a completed minute. QFF active-symbol
+selection uses the expiry buffer policy: choose the earliest QFF contract with at
+least 5 business days to expiry; if an old contract is already open, keep it until an
+exit signal or the T-1 13:35 force-exit safety valve. It still uses `PaperBroker`; no
+live order path exists in this phase. Set `LUX_LIVE_MARKETDATA=1` before `live-doctor`
+only when you intentionally want a real market-data smoke test.
+
+By default, `live-paper` shows a compact terminal UI: same-minute `LIVE` snapshots
+refresh on one line, finalized `BAR` rows and warnings/events are printed on separate
+lines. Use `--quiet-ui` to disable it or `--no-color` to keep the UI without ANSI
+colors. Live entry/exit signals use bid/ask-adjusted tradable spreads while `mid`
+remains available as the PoC/reference spread:
+
+```text
+09:12:04 LIVE mid=1.84 shortSpread(spread=1.62,z=1.51) longSpread(spread=2.06,z=1.93) FLAT
+09:14 BAR  mid=2.24 z=2.06 shortSpread(spread=2.18,z=2.00) longSpread(spread=2.31,z=2.17) ENTRY_PENDING entry_signal/zscore_crossed pnl=0 eq=1,000,000
+```
 
 ## Warmup-live testing
 
@@ -84,7 +106,7 @@ writes to `data\warmup_smoke.sqlite3`.
 ```powershell
 $env:LUX_LIVE_MARKETDATA='1'
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config config.live.smoke.local.toml
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader qff-warmup-check --config config.live.smoke.local.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader qff-warmup-check --config config.live.smoke.local.toml --output-csv=
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/test_live_smoke.py -q -m live_marketdata
 Remove-Item Env:\LUX_LIVE_MARKETDATA
 ```
@@ -95,6 +117,12 @@ contract, reads Fubon 1m candles, downloads TAIFEX previous-30-trading-day CSV Z
 `warmup-live` through `WarmupRunner`. `qff-warmup-check` can be used alone to validate
 the Fubon + TAIFEX QFF leg before touching Binance/BitoPro. Passing criteria are 1440
 `warmup_bars` and zero `bars`, `orders`, `fills`, or `trades`.
+
+The full startup smoke in `tests/test_live_smoke.py` uses
+`data\live_paper_startup_smoke.sqlite3`: it starts `live-paper` from an empty store,
+expects `warmup_auto start/done_1440`, polls real quotes long enough to finalize or
+skip a minute with a recorded warning, then runs a second `--resume` style pass and
+checks that warmup is not rebuilt.
 
 ## Safety
 
