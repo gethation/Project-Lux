@@ -3,6 +3,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from datetime import date
 
 
 @dataclass(frozen=True)
@@ -31,12 +32,40 @@ class SafetyConfig:
 
 
 @dataclass(frozen=True)
+class ContractPolicyConfig:
+    enabled: bool
+    min_business_days_to_expiry: int
+    force_exit_business_days_before_expiry: int
+    force_exit_time: str
+    holidays: tuple[date, ...]
+
+
+@dataclass(frozen=True)
+class LiveMarketDataConfig:
+    polling_seconds: float
+    minute_finalize_delay_seconds: float
+    stale_seconds: float
+    max_leg_timestamp_skew_seconds: float
+    warmup_minutes: int
+    qff_product: str
+    qff_symbol: str
+    binance_symbol: str
+    bitopro_symbol: str
+    fubon_env_path: Path | None
+    taifex_qff_1m_csv: Path | None
+    taifex_use_network: bool
+    taifex_cache_dir: Path
+
+
+@dataclass(frozen=True)
 class AppConfig:
     input_csv: Path
     store_path: Path
     strategy: StrategyConfig
     fees: FeeConfig
     safety: SafetyConfig
+    contract_policy: ContractPolicyConfig
+    live: LiveMarketDataConfig
 
 
 def load_config(path: Path) -> AppConfig:
@@ -47,11 +76,18 @@ def load_config(path: Path) -> AppConfig:
     strategy = raw.get("strategy", {})
     fees = raw.get("fees", {})
     safety = raw.get("safety", {})
+    contract_policy = raw.get("contract_policy", {})
+    live = raw.get("live_market_data", {})
 
-    input_csv = Path(paths["input_csv"]).expanduser()
+    input_csv = Path(paths.get("input_csv", "")).expanduser()
     store_path = Path(paths["store_path"]).expanduser()
     if not store_path.is_absolute():
         store_path = root / store_path
+    fubon_env_path = optional_path(live.get("fubon_env_path"), root)
+    taifex_qff_1m_csv = optional_path(live.get("taifex_qff_1m_csv"), root)
+    taifex_cache_dir = required_path(
+        live.get("taifex_cache_dir", r"data\taifex_cache"), root
+    )
 
     return AppConfig(
         input_csv=input_csv,
@@ -77,4 +113,61 @@ def load_config(path: Path) -> AppConfig:
                 safety.get("expected_zscore_tolerance", 1e-7)
             ),
         ),
+        contract_policy=ContractPolicyConfig(
+            enabled=bool(contract_policy.get("enabled", True)),
+            min_business_days_to_expiry=int(
+                contract_policy.get("min_business_days_to_expiry", 5)
+            ),
+            force_exit_business_days_before_expiry=int(
+                contract_policy.get("force_exit_business_days_before_expiry", 1)
+            ),
+            force_exit_time=str(contract_policy.get("force_exit_time", "13:35")),
+            holidays=parse_holidays(contract_policy.get("holidays", [])),
+        ),
+        live=LiveMarketDataConfig(
+            polling_seconds=float(live.get("polling_seconds", 1.0)),
+            minute_finalize_delay_seconds=float(
+                live.get("minute_finalize_delay_seconds", 1.0)
+            ),
+            stale_seconds=float(live.get("stale_seconds", 10.0)),
+            max_leg_timestamp_skew_seconds=float(
+                live.get("max_leg_timestamp_skew_seconds", 10.0)
+            ),
+            warmup_minutes=int(live.get("warmup_minutes", 1440)),
+            qff_product=str(live.get("qff_product", "QFF")).strip().upper(),
+            qff_symbol=str(live.get("qff_symbol", "auto")).strip(),
+            binance_symbol=str(live.get("binance_symbol", "TSM/USDT:USDT")).strip(),
+            bitopro_symbol=str(live.get("bitopro_symbol", "USDT/TWD")).strip(),
+            fubon_env_path=fubon_env_path,
+            taifex_qff_1m_csv=taifex_qff_1m_csv,
+            taifex_use_network=bool(live.get("taifex_use_network", True)),
+            taifex_cache_dir=taifex_cache_dir,
+        ),
     )
+
+
+def parse_holidays(values: object) -> tuple[date, ...]:
+    if values is None:
+        return ()
+    if not isinstance(values, list):
+        raise RuntimeError("contract_policy.holidays must be a list of YYYY-MM-DD strings")
+    return tuple(date.fromisoformat(str(value)) for value in values)
+
+
+def required_path(value: object, root: Path) -> Path:
+    path = Path(str(value).strip()).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    return path
+
+
+def optional_path(value: object, root: Path) -> Path | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    return path

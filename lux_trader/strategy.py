@@ -62,6 +62,13 @@ class StrategyRuntimeState:
     realized_fee_twd: float = 0.0
     running_max_equity: float = 0.0
     open_trade: dict[str, Any] | None = None
+    trading_qff_symbol: str | None = None
+    trading_qff_expiry: str | None = None
+    eligible_active_qff_symbol: str | None = None
+    eligible_active_qff_expiry: str | None = None
+    pending_symbol_switch: bool = False
+    last_warmup_symbol: str | None = None
+    contract_policy_state: str | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         return {
@@ -93,6 +100,13 @@ class StrategyRuntimeState:
             "realized_fee_twd": self.realized_fee_twd,
             "running_max_equity": self.running_max_equity,
             "open_trade": self._serialize_trade(self.open_trade),
+            "trading_qff_symbol": self.trading_qff_symbol,
+            "trading_qff_expiry": self.trading_qff_expiry,
+            "eligible_active_qff_symbol": self.eligible_active_qff_symbol,
+            "eligible_active_qff_expiry": self.eligible_active_qff_expiry,
+            "pending_symbol_switch": self.pending_symbol_switch,
+            "last_warmup_symbol": self.last_warmup_symbol,
+            "contract_policy_state": self.contract_policy_state,
         }
 
     @staticmethod
@@ -131,6 +145,13 @@ class StrategyRuntimeState:
         state.realized_fee_twd = float(payload.get("realized_fee_twd", 0.0))
         state.running_max_equity = float(payload.get("running_max_equity", 0.0))
         state.open_trade = deserialize_trade(payload.get("open_trade"))
+        state.trading_qff_symbol = payload.get("trading_qff_symbol")
+        state.trading_qff_expiry = payload.get("trading_qff_expiry")
+        state.eligible_active_qff_symbol = payload.get("eligible_active_qff_symbol")
+        state.eligible_active_qff_expiry = payload.get("eligible_active_qff_expiry")
+        state.pending_symbol_switch = bool(payload.get("pending_symbol_switch", False))
+        state.last_warmup_symbol = payload.get("last_warmup_symbol")
+        state.contract_policy_state = payload.get("contract_policy_state")
         return state
 
 
@@ -284,6 +305,22 @@ class PairStrategy:
         self.state.state = StrategyState.FORCED_CLOSED
         return self._bar_result(action, reason, bar, orders, fills, trade)
 
+    def force_exit(
+        self,
+        bar: MarketBar,
+        snapshot: IndicatorSnapshot,
+        *,
+        exit_reason: str,
+    ) -> BarResult | None:
+        if self.state.position_direction is None or self.state.open_trade is None:
+            return None
+        action, reason, orders, fills, trade = self._fill_exit(
+            bar=bar,
+            snapshot=snapshot,
+            exit_reason=exit_reason,
+        )
+        return self._bar_result(action, reason, bar, orders, fills, trade)
+
     def _fill_entry(
         self,
         bar: MarketBar,
@@ -347,6 +384,9 @@ class PairStrategy:
             "entry_qff_fee_twd": costs["qff_fee_twd"],
             "entry_qff_tax_twd": costs["qff_tax_twd"],
             "entry_fee_twd": costs["total_fee_twd"],
+            "qff_symbol": bar.qff_symbol,
+            "qff_expiry": bar.qff_expiry,
+            "contract_policy_state": bar.contract_policy_state,
         }
         self._clear_candidate()
         self.state.state = StrategyState.OPEN
@@ -476,23 +516,29 @@ class PairStrategy:
         requests = [
             OrderRequest(
                 broker=BrokerName.BINANCE_TSM,
-                symbol="TSM/USDT:USDT",
+            symbol="TSM/USDT:USDT",
                 side=OrderSide.BUY if tsm_units > 0 else OrderSide.SELL,
                 quantity=abs(tsm_units),
                 price=bar.tsm_twd_fair,
                 timestamp=bar.timestamp,
                 row_index=bar.row_index,
                 fee_twd=tsm_fee,
+                qff_symbol=bar.qff_symbol,
+                qff_expiry=bar.qff_expiry,
+                contract_policy_state=bar.contract_policy_state,
             ),
             OrderRequest(
                 broker=BrokerName.FUBON_QFF,
-                symbol="QFF",
+                symbol=bar.qff_symbol or "QFF",
                 side=OrderSide.BUY if qff_contracts > 0 else OrderSide.SELL,
                 quantity=abs(qff_contracts),
                 price=bar.qff_close_filled,
                 timestamp=bar.timestamp,
                 row_index=bar.row_index,
                 fee_twd=qff_fee,
+                qff_symbol=bar.qff_symbol,
+                qff_expiry=bar.qff_expiry,
+                contract_policy_state=bar.contract_policy_state,
             ),
         ]
         orders: list[OrderResult] = []

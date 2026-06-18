@@ -73,5 +73,20 @@ def is_close_only(timestamp: datetime, close_allowed: bool) -> bool:
     return close_allowed and in_night_session(timestamp) and session_start_date(timestamp).weekday() == 4
 
 
+def annotate_live_bar(bar: MarketBar) -> MarketBar:
+    close_allowed = in_day_session(bar.timestamp) or in_night_session(bar.timestamp)
+    friday_night = (
+        close_allowed
+        and in_night_session(bar.timestamp)
+        and session_start_date(bar.timestamp).weekday() == 4
+    )
+    return replace(
+        bar,
+        close_allowed=close_allowed,
+        entry_allowed=close_allowed and not friday_night,
+        friday_night_close_only=close_allowed and friday_night,
+    )
+
+
 def market_time(hour: int, minute: int) -> time:
     return time(hour=hour, minute=minute)

@@ -1,6 +1,10 @@
 .env
 .env.*
 *.pfx
+*.p12
+*.local.toml
+.idea/
+.vs/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -9,8 +13,11 @@ __pycache__/
 data/*.db
 data/*.sqlite
 data/*.sqlite3
+data/taifex_cache/
+data/qff_warmup_check_*.csv
 logs/*
 !logs/.gitkeep
+log/
 dist/
 build/
 *.egg-info/

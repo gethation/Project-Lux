@@ -61,6 +61,9 @@ class MarketBar:
     entry_allowed: bool = False
     close_allowed: bool = False
     friday_night_close_only: bool = False
+    qff_symbol: str | None = None
+    qff_expiry: str | None = None
+    contract_policy_state: str | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +118,9 @@ class OrderRequest:
     timestamp: datetime
     row_index: int
     fee_twd: float = 0.0
+    qff_symbol: str | None = None
+    qff_expiry: str | None = None
+    contract_policy_state: str | None = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +142,9 @@ class Fill:
     fee_twd: float
     timestamp: datetime
     row_index: int
+    qff_symbol: str | None = None
+    qff_expiry: str | None = None
+    contract_policy_state: str | None = None
 
 
 def dataclass_to_jsonable(value: Any) -> Any:

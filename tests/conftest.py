@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from lux_trader.config import AppConfig, FeeConfig, SafetyConfig, StrategyConfig
+from lux_trader.config import (
+    AppConfig,
+    ContractPolicyConfig,
+    FeeConfig,
+    LiveMarketDataConfig,
+    SafetyConfig,
+    StrategyConfig,
+)
 
 
 POC_CSV = Path(
@@ -56,5 +63,27 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             allow_live_order=False,
             validate_expected_zscore=validate_expected_zscore,
             expected_zscore_tolerance=1e-7,
+        ),
+        contract_policy=ContractPolicyConfig(
+            enabled=True,
+            min_business_days_to_expiry=5,
+            force_exit_business_days_before_expiry=1,
+            force_exit_time="13:35",
+            holidays=(),
+        ),
+        live=LiveMarketDataConfig(
+            polling_seconds=1.0,
+            minute_finalize_delay_seconds=1.0,
+            stale_seconds=10.0,
+            max_leg_timestamp_skew_seconds=10.0,
+            warmup_minutes=1440,
+            qff_product="QFF",
+            qff_symbol="auto",
+            binance_symbol="TSM/USDT:USDT",
+            bitopro_symbol="USDT/TWD",
+            fubon_env_path=None,
+            taifex_qff_1m_csv=None,
+            taifex_use_network=False,
+            taifex_cache_dir=tmp_path / "taifex_cache",
         ),
     )

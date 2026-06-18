@@ -94,6 +94,9 @@ class SQLiteStore:
                 quantity REAL NOT NULL,
                 price REAL NOT NULL,
                 status TEXT NOT NULL,
+                qff_symbol TEXT,
+                qff_expiry TEXT,
+                contract_policy_state TEXT,
                 payload_json TEXT NOT NULL
             );
 
@@ -108,6 +111,9 @@ class SQLiteStore:
                 quantity REAL NOT NULL,
                 price REAL NOT NULL,
                 fee_twd REAL NOT NULL,
+                qff_symbol TEXT,
+                qff_expiry TEXT,
+                contract_policy_state TEXT,
                 payload_json TEXT NOT NULL,
                 FOREIGN KEY(order_id) REFERENCES orders(order_id)
             );
@@ -140,6 +146,9 @@ class SQLiteStore:
                 friday_night_close_only INTEGER NOT NULL,
                 qff_close_filled REAL NOT NULL,
                 tsm_twd_fair REAL NOT NULL,
+                qff_symbol TEXT,
+                qff_expiry TEXT,
+                contract_policy_state TEXT,
                 state TEXT NOT NULL,
                 position TEXT NOT NULL,
                 tsm_units REAL NOT NULL,
@@ -201,15 +210,89 @@ class SQLiteStore:
                 total_pnl REAL NOT NULL,
                 exit_reason TEXT NOT NULL,
                 holding_minutes INTEGER NOT NULL,
+                qff_symbol TEXT,
+                qff_expiry TEXT,
+                contract_policy_state TEXT,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS market_ticks (
+                tick_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observed_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                quote_timestamp TEXT NOT NULL,
+                price REAL NOT NULL,
+                bid REAL,
+                ask REAL,
+                raw_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS warmup_bars (
+                timestamp TEXT PRIMARY KEY,
+                qff_close REAL,
+                qff_close_filled REAL NOT NULL,
+                tsm_twd_fair REAL NOT NULL,
+                spread REAL NOT NULL,
+                qff_symbol TEXT,
+                qff_expiry TEXT,
+                contract_policy_state TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS live_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                mode TEXT NOT NULL,
+                qff_symbol TEXT,
+                status TEXT NOT NULL,
                 payload_json TEXT NOT NULL
             );
             """
         )
+        self._ensure_live_metadata_columns()
         self.connection.commit()
+
+    def _ensure_live_metadata_columns(self) -> None:
+        for table in ("orders", "fills", "bars", "trades", "warmup_bars"):
+            self._ensure_column(table, "qff_symbol", "TEXT")
+            self._ensure_column(table, "qff_expiry", "TEXT")
+            self._ensure_column(table, "contract_policy_state", "TEXT")
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        columns = {
+            str(row["name"])
+            for row in self.connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            self.connection.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            )
 
     def has_bars(self) -> bool:
         row = self.connection.execute("SELECT COUNT(*) AS count FROM bars").fetchone()
         return bool(row["count"])
+
+    def has_warmup_bars(self) -> bool:
+        row = self.connection.execute(
+            "SELECT COUNT(*) AS count FROM warmup_bars"
+        ).fetchone()
+        return bool(row["count"])
+
+    def latest_bar_row_index(self) -> int:
+        row = self.connection.execute(
+            "SELECT MAX(row_index) AS row_index FROM bars"
+        ).fetchone()
+        if row is None or row["row_index"] is None:
+            return -1
+        return int(row["row_index"])
+
+    def bar_exists_for_timestamp(self, timestamp: datetime) -> bool:
+        row = self.connection.execute(
+            "SELECT 1 FROM bars WHERE timestamp = ? LIMIT 1",
+            (timestamp_text(timestamp),),
+        ).fetchone()
+        return row is not None
 
     def load_resume_state(self) -> ResumeState | None:
         row = self.connection.execute(
@@ -281,8 +364,9 @@ class SQLiteStore:
             """
             INSERT OR REPLACE INTO orders (
                 order_id, row_index, timestamp, broker, symbol, side,
-                quantity, price, status, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                quantity, price, status, qff_symbol, qff_expiry,
+                contract_policy_state, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 order.order_id,
@@ -294,6 +378,9 @@ class SQLiteStore:
                 request.quantity,
                 request.price,
                 order.status.value,
+                request.qff_symbol,
+                request.qff_expiry,
+                request.contract_policy_state,
                 json.dumps(
                     {
                         "order_id": order.order_id,
@@ -309,8 +396,9 @@ class SQLiteStore:
             """
             INSERT OR REPLACE INTO fills (
                 fill_id, order_id, row_index, timestamp, broker, symbol,
-                side, quantity, price, fee_twd, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                side, quantity, price, fee_twd, qff_symbol, qff_expiry,
+                contract_policy_state, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 fill.fill_id,
@@ -323,6 +411,9 @@ class SQLiteStore:
                 fill.quantity,
                 fill.price,
                 fill.fee_twd,
+                fill.qff_symbol,
+                fill.qff_expiry,
+                fill.contract_policy_state,
                 json.dumps({"fill_id": fill.fill_id}, default=json_default),
             ),
         )
@@ -377,8 +468,11 @@ class SQLiteStore:
             "total_pnl",
             "exit_reason",
             "holding_minutes",
+            "qff_symbol",
+            "qff_expiry",
+            "contract_policy_state",
         ]
-        values = [payload[column] for column in columns]
+        values = [payload.get(column) for column in columns]
         placeholders = ", ".join("?" for _ in columns)
         self.connection.execute(
             f"""
@@ -406,11 +500,12 @@ class SQLiteStore:
                 row_index, timestamp, spread, spread_mean, spread_std,
                 spread_zscore, zscore_valid, entry_allowed, close_allowed,
                 friday_night_close_only, qff_close_filled, tsm_twd_fair,
+                qff_symbol, qff_expiry, contract_policy_state,
                 state, position, tsm_units, qff_units, qff_contracts,
                 actual_leg_notional_twd, realized_pnl, realized_fee_twd,
                 unrealized_pnl, equity, running_max_equity, drawdown_twd,
                 drawdown_pct
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 bar.row_index,
@@ -425,6 +520,9 @@ class SQLiteStore:
                 int(snapshot.friday_night_close_only),
                 bar.qff_close_filled,
                 bar.tsm_twd_fair,
+                bar.qff_symbol,
+                bar.qff_expiry,
+                bar.contract_policy_state,
                 strategy.state.value,
                 position,
                 strategy.tsm_units,
@@ -460,6 +558,155 @@ class SQLiteStore:
                 strategy.realized_pnl,
                 unrealized_pnl,
                 equity,
+            ),
+        )
+
+    def record_market_tick(self, quote: Any, observed_at: datetime) -> None:
+        raw = getattr(quote, "raw", None) or {}
+        self.connection.execute(
+            """
+            INSERT INTO market_ticks (
+                observed_at, source, symbol, quote_timestamp, price, bid, ask, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                timestamp_text(observed_at),
+                str(quote.source),
+                str(quote.symbol),
+                timestamp_text(quote.timestamp),
+                float(quote.price),
+                quote.bid,
+                quote.ask,
+                json.dumps(raw, default=json_default),
+            ),
+        )
+
+    def record_warmup_bars(self, bars: list[MarketBar]) -> None:
+        self.connection.executemany(
+            """
+            INSERT OR REPLACE INTO warmup_bars (
+                timestamp, qff_close, qff_close_filled, tsm_twd_fair, spread,
+                qff_symbol, qff_expiry, contract_policy_state
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    timestamp_text(bar.timestamp),
+                    bar.qff_close,
+                    bar.qff_close_filled,
+                    bar.tsm_twd_fair,
+                    bar.spread,
+                    bar.qff_symbol,
+                    bar.qff_expiry,
+                    bar.contract_policy_state,
+                )
+                for bar in bars
+            ],
+        )
+
+    def replace_warmup_bars(self, bars: list[MarketBar]) -> None:
+        self.connection.execute("DELETE FROM warmup_bars")
+        self.record_warmup_bars(bars)
+
+    def load_indicator_seed_bars(
+        self,
+        limit: int,
+        *,
+        qff_symbol: str | None = None,
+    ) -> list[MarketBar]:
+        rows = []
+        warmup_where = ""
+        warmup_params: tuple[Any, ...] = ()
+        bars_where = ""
+        bars_params: tuple[Any, ...] = ()
+        if qff_symbol is not None:
+            warmup_where = "WHERE qff_symbol = ?"
+            warmup_params = (qff_symbol,)
+            bars_where = "WHERE qff_symbol = ?"
+            bars_params = (qff_symbol,)
+        rows.extend(
+            self.connection.execute(
+                f"""
+                SELECT timestamp, qff_close, qff_close_filled, tsm_twd_fair, spread,
+                       qff_symbol, qff_expiry, contract_policy_state
+                FROM warmup_bars
+                {warmup_where}
+                """,
+                warmup_params,
+            ).fetchall()
+        )
+        rows.extend(
+            self.connection.execute(
+                f"""
+                SELECT timestamp, qff_close_filled AS qff_close,
+                       qff_close_filled, tsm_twd_fair, spread,
+                       qff_symbol, qff_expiry, contract_policy_state
+                FROM bars
+                {bars_where}
+                """,
+                bars_params,
+            ).fetchall()
+        )
+        by_timestamp: dict[str, sqlite3.Row] = {str(row["timestamp"]): row for row in rows}
+        ordered = sorted(by_timestamp.items(), key=lambda item: item[0])[-limit:]
+        return [
+            MarketBar(
+                row_index=index - len(ordered),
+                timestamp=datetime.fromisoformat(timestamp),
+                qff_close=row["qff_close"],
+                qff_close_filled=float(row["qff_close_filled"]),
+                tsm_twd_fair=float(row["tsm_twd_fair"]),
+                spread=float(row["spread"]),
+                qff_symbol=row["qff_symbol"],
+                qff_expiry=row["qff_expiry"],
+                contract_policy_state=row["contract_policy_state"],
+            )
+            for index, (timestamp, row) in enumerate(ordered)
+        ]
+
+    def start_live_run(
+        self,
+        *,
+        started_at: datetime,
+        mode: str,
+        qff_symbol: str | None,
+        payload: dict[str, Any] | None = None,
+    ) -> int:
+        cursor = self.connection.execute(
+            """
+            INSERT INTO live_runs (
+                started_at, mode, qff_symbol, status, payload_json
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                timestamp_text(started_at),
+                mode,
+                qff_symbol,
+                "running",
+                json.dumps(payload or {}, default=json_default),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    def finish_live_run(
+        self,
+        run_id: int,
+        *,
+        finished_at: datetime,
+        status: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        self.connection.execute(
+            """
+            UPDATE live_runs
+            SET finished_at = ?, status = ?, payload_json = ?
+            WHERE run_id = ?
+            """,
+            (
+                timestamp_text(finished_at),
+                status,
+                json.dumps(payload or {}, default=json_default),
+                run_id,
             ),
         )
 
