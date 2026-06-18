@@ -1,0 +1,16 @@
+.env
+.env.*
+*.pfx
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+logs/*
+!logs/.gitkeep
+dist/
+build/
+*.egg-info/
