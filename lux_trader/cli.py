@@ -4,13 +4,18 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy
 import pandas
 
 from .config import load_config
+from .execution_intent import (
+    ExecutionPlanType,
+    pair_execution_plan_from_order_requests,
+)
+from .execution_recorder import DryRunExecutionRecorder
 from .live_market_data import CcxtTickerMarketData, FubonQffMarketData
 from .live_runner import (
     LivePaperRunner,
@@ -18,7 +23,7 @@ from .live_runner import (
     WarmupRunner,
     resolve_qff_contract,
 )
-from .models import BrokerName
+from .models import BrokerName, Direction, OrderRequest, OrderSide
 from .reconciliation import (
     BrokerPositionSnapshot,
     BrokerReconciler,
@@ -85,6 +90,37 @@ def build_parser() -> argparse.ArgumentParser:
         default="matched",
         help="Fake broker scenario for the Phase 3 skeleton",
     )
+
+    dry_run_doctor = subparsers.add_parser(
+        "dry-run-doctor",
+        help="Check dry-run execution recorder skeleton config",
+    )
+    dry_run_doctor.add_argument("--config", type=Path, required=True)
+
+    execution_summary = subparsers.add_parser(
+        "execution-summary",
+        help="Print dry-run execution intent summary",
+    )
+    execution_summary.add_argument("--config", type=Path, required=True)
+
+    live_dry_run = subparsers.add_parser(
+        "live-dry-run",
+        help="Run dry-run execution intent skeleton",
+    )
+    live_dry_run.add_argument("--config", type=Path, required=True)
+    live_dry_run.add_argument(
+        "--fake",
+        action="store_true",
+        help="Use deterministic fake execution intents",
+    )
+    live_dry_run.add_argument(
+        "--fake-case",
+        choices=("valid", "rejected"),
+        default="valid",
+        help="Fake dry-run scenario for the Phase 4 skeleton",
+    )
+    live_dry_run.add_argument("--max-bars", type=int, default=1)
+    live_dry_run.add_argument("--reset-store", action="store_true")
 
     live_doctor = subparsers.add_parser("live-doctor", help="Check live-paper config")
     live_doctor.add_argument("--config", type=Path, required=True)
@@ -401,6 +437,145 @@ def reconciliation_qff_symbol(config: object, strategy_state: object) -> str:
     return str(trading_symbol or config.live.qff_symbol)
 
 
+def command_dry_run_doctor(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    if config.safety.allow_live_order:
+        raise SystemExit("allow_live_order must remain false for dry-run-doctor")
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        summary = store.build_execution_summary()
+    finally:
+        store.close()
+    checks = [
+        f"store_path={config.store_path}",
+        f"execution_plans={summary['plan_count']}",
+        f"execution_legs={summary['leg_count']}",
+        f"execution_checks={summary['check_count']}",
+        f"live_order={config.safety.allow_live_order}",
+        "private_api=disabled",
+    ]
+    print("Dry-run doctor checks passed")
+    for check in checks:
+        print(f"- {check}")
+    return 0
+
+
+def command_execution_summary(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        print(json.dumps(store.build_execution_summary(), indent=2))
+    finally:
+        store.close()
+    return 0
+
+
+def command_live_dry_run(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    if config.safety.allow_live_order:
+        raise SystemExit("allow_live_order must remain false for live-dry-run")
+    if not args.fake:
+        raise SystemExit("Commit 2 skeleton only supports live-dry-run --fake")
+    if args.max_bars is not None and args.max_bars < 1:
+        raise SystemExit("--max-bars must be >= 1")
+
+    store = SQLiteStore(config.store_path)
+    recorded_plans = []
+    try:
+        if args.reset_store:
+            store.reset()
+        store.initialize()
+        recorder = DryRunExecutionRecorder(
+            store,
+            allow_live_order=config.safety.allow_live_order,
+        )
+        timestamp = datetime.now().astimezone().replace(microsecond=0)
+        max_bars = int(args.max_bars or 1)
+        for index in range(max_bars):
+            plan = build_fake_execution_plan(
+                config,
+                fake_case=args.fake_case,
+                timestamp=timestamp + timedelta(minutes=index),
+                row_index=index,
+            )
+            recorded_plans.append(recorder.record_plan(plan))
+        store.commit()
+    except Exception:
+        store.rollback()
+        raise
+    finally:
+        store.close()
+
+    failed = [plan for plan in recorded_plans if not plan.accepted]
+    latest_status = recorded_plans[-1].status.value if recorded_plans else "none"
+    print(
+        "Live dry-run skeleton complete: "
+        f"plans={len(recorded_plans)}, "
+        f"status={latest_status}, "
+        f"failed={len(failed)}"
+    )
+    for plan in recorded_plans:
+        print(
+            f"- {plan.plan_id} {plan.plan_type.value} "
+            f"{plan.direction.value} status={plan.status.value} "
+            f"failed_checks={sum(1 for check in plan.checks if not check.passed)}"
+        )
+    return 1 if failed else 0
+
+
+def build_fake_execution_plan(
+    config: object,
+    *,
+    fake_case: str,
+    timestamp: datetime,
+    row_index: int,
+):
+    qff_symbol = str(config.live.qff_symbol)
+    if qff_symbol.lower() == "auto":
+        qff_symbol = "QFFG6"
+    binance_side = OrderSide.SELL
+    if fake_case == "rejected":
+        binance_side = OrderSide.BUY
+    requests = (
+        OrderRequest(
+            broker=BrokerName.BINANCE_TSM,
+            symbol=config.live.binance_symbol,
+            side=binance_side,
+            quantity=125.5,
+            price=720.0,
+            timestamp=timestamp,
+            row_index=row_index,
+            fee_twd=12.3,
+            qff_symbol=qff_symbol,
+            qff_expiry="2026-02-18",
+            contract_policy_state="fake",
+        ),
+        OrderRequest(
+            broker=BrokerName.FUBON_QFF,
+            symbol=qff_symbol,
+            side=OrderSide.BUY,
+            quantity=3,
+            price=1180.0,
+            timestamp=timestamp,
+            row_index=row_index,
+            fee_twd=45.6,
+            qff_symbol=qff_symbol,
+            qff_expiry="2026-02-18",
+            contract_policy_state="fake",
+        ),
+    )
+    return pair_execution_plan_from_order_requests(
+        plan_type=ExecutionPlanType.ENTRY,
+        direction=Direction.SHORT_TSM_LONG_QFF,
+        requests=requests,
+        reason=f"fake_{fake_case}",
+        decision_zscore=2.14,
+        decision_spread_type="shortSpread",
+    )
+
+
 def command_live_doctor(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     if config.safety.allow_live_order:
@@ -562,6 +737,12 @@ def main(argv: list[str] | None = None) -> int:
         return command_broker_doctor(args)
     if args.command == "reconcile-brokers":
         return command_reconcile_brokers(args)
+    if args.command == "dry-run-doctor":
+        return command_dry_run_doctor(args)
+    if args.command == "execution-summary":
+        return command_execution_summary(args)
+    if args.command == "live-dry-run":
+        return command_live_dry_run(args)
     if args.command == "live-doctor":
         return command_live_doctor(args)
     if args.command == "warmup-live":

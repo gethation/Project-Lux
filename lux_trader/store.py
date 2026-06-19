@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import FeeConfig, StrategyConfig
 from .indicator import IndicatorEngine
+from .execution_intent import PairExecutionPlan
 from .models import Fill, IndicatorSnapshot, MarketBar, OrderResult
 from .reconciliation import ReconciliationReport
 from .strategy import StrategyRuntimeState
@@ -290,6 +291,52 @@ class SQLiteStore:
                 actual_quantity REAL,
                 payload_json TEXT NOT NULL,
                 FOREIGN KEY(run_id) REFERENCES broker_reconciliation_runs(run_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS execution_plans (
+                plan_id TEXT PRIMARY KEY,
+                row_index INTEGER NOT NULL,
+                timestamp TEXT NOT NULL,
+                plan_type TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                status TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                decision_zscore REAL,
+                decision_spread_type TEXT,
+                qff_symbol TEXT,
+                qff_expiry TEXT,
+                contract_policy_state TEXT,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS execution_legs (
+                leg_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id TEXT NOT NULL,
+                row_index INTEGER NOT NULL,
+                timestamp TEXT NOT NULL,
+                broker TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                price REAL NOT NULL,
+                fee_twd REAL NOT NULL,
+                qff_symbol TEXT,
+                qff_expiry TEXT,
+                contract_policy_state TEXT,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(plan_id) REFERENCES execution_plans(plan_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS execution_checks (
+                check_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id TEXT NOT NULL,
+                check_type TEXT NOT NULL,
+                passed INTEGER NOT NULL,
+                broker TEXT,
+                symbol TEXT,
+                message TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(plan_id) REFERENCES execution_plans(plan_id)
             );
             """
         )
@@ -856,6 +903,165 @@ class SQLiteStore:
         if row is None:
             return None
         return ReconciliationReport.from_jsonable(json.loads(row["report_json"]))
+
+    def record_execution_plan(self, plan: PairExecutionPlan) -> None:
+        payload = plan.to_jsonable()
+        self.connection.execute(
+            "DELETE FROM execution_legs WHERE plan_id = ?",
+            (plan.plan_id,),
+        )
+        self.connection.execute(
+            "DELETE FROM execution_checks WHERE plan_id = ?",
+            (plan.plan_id,),
+        )
+        self.connection.execute(
+            """
+            INSERT OR REPLACE INTO execution_plans (
+                plan_id, row_index, timestamp, plan_type, direction, status,
+                reason, decision_zscore, decision_spread_type, qff_symbol,
+                qff_expiry, contract_policy_state, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                plan.plan_id,
+                plan.row_index,
+                timestamp_text(plan.timestamp),
+                plan.plan_type.value,
+                plan.direction.value,
+                plan.status.value,
+                plan.reason,
+                plan.decision_zscore,
+                plan.decision_spread_type,
+                plan.qff_symbol,
+                plan.qff_expiry,
+                plan.contract_policy_state,
+                json.dumps(payload, default=json_default),
+            ),
+        )
+        self.connection.executemany(
+            """
+            INSERT INTO execution_legs (
+                plan_id, row_index, timestamp, broker, symbol, side, quantity,
+                price, fee_twd, qff_symbol, qff_expiry,
+                contract_policy_state, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    plan.plan_id,
+                    leg.row_index,
+                    timestamp_text(leg.timestamp),
+                    leg.broker.value,
+                    leg.symbol,
+                    leg.side.value,
+                    leg.quantity,
+                    leg.price,
+                    leg.fee_twd,
+                    leg.qff_symbol,
+                    leg.qff_expiry,
+                    leg.contract_policy_state,
+                    json.dumps(leg_payload, default=json_default),
+                )
+                for leg, leg_payload in zip(plan.legs, payload["legs"])
+            ],
+        )
+        self.connection.executemany(
+            """
+            INSERT INTO execution_checks (
+                plan_id, check_type, passed, broker, symbol, message, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    plan.plan_id,
+                    check.check_type,
+                    int(check.passed),
+                    check.broker.value if check.broker else None,
+                    check.symbol,
+                    check.message,
+                    json.dumps(check_payload, default=json_default),
+                )
+                for check, check_payload in zip(plan.checks, payload["checks"])
+            ],
+        )
+
+    def load_latest_execution_plan_payload(self) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            """
+            SELECT payload_json
+            FROM execution_plans
+            ORDER BY timestamp DESC, row_index DESC, plan_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["payload_json"])
+
+    def build_execution_summary(self) -> dict[str, Any]:
+        plan_count = int(
+            self.connection.execute(
+                "SELECT COUNT(*) AS count FROM execution_plans"
+            ).fetchone()["count"]
+            or 0
+        )
+        leg_count = int(
+            self.connection.execute(
+                "SELECT COUNT(*) AS count FROM execution_legs"
+            ).fetchone()["count"]
+            or 0
+        )
+        check_count = int(
+            self.connection.execute(
+                "SELECT COUNT(*) AS count FROM execution_checks"
+            ).fetchone()["count"]
+            or 0
+        )
+        failed_check_count = int(
+            self.connection.execute(
+                "SELECT COUNT(*) AS count FROM execution_checks WHERE passed = 0"
+            ).fetchone()["count"]
+            or 0
+        )
+        status_rows = self.connection.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM execution_plans
+            GROUP BY status
+            ORDER BY status
+            """
+        ).fetchall()
+        latest = self.connection.execute(
+            """
+            SELECT plan_id, timestamp, row_index, plan_type, direction, status,
+                   reason, qff_symbol
+            FROM execution_plans
+            ORDER BY timestamp DESC, row_index DESC, plan_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        table_counts = {
+            table: int(
+                self.connection.execute(
+                    f"SELECT COUNT(*) AS count FROM {table}"
+                ).fetchone()["count"]
+                or 0
+            )
+            for table in ("orders", "fills", "trades")
+        }
+        return {
+            "plan_count": plan_count,
+            "leg_count": leg_count,
+            "check_count": check_count,
+            "failed_check_count": failed_check_count,
+            "status_counts": {
+                str(row["status"]): int(row["count"]) for row in status_rows
+            },
+            "latest_plan": dict(latest) if latest is not None else None,
+            "orders": table_counts["orders"],
+            "fills": table_counts["fills"],
+            "trades": table_counts["trades"],
+        }
 
     def commit(self) -> None:
         self.connection.commit()

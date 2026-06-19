@@ -272,10 +272,45 @@ pytest tests/test_readonly_brokers_smoke.py -q -m readonly_broker: 2 passed
 
 ### Phase 4 預計工作
 
-- 讓策略產生真實 order intent。
-- 建立 dry-run execution recorder。
-- 驗證雙腿 intent 一致性、數量、方向、價格。
-- 模擬任一腿失敗、延遲、取消、partial fill 的狀態處理。
+Phase 4 目標是建立 dry-run execution：策略產生接近真實下單的雙腿 order intent，但只驗證與記錄，不送出任何 Fubon/Binance 真實委託。`live-paper` 繼續維持 PaperBroker fill 模式；Phase 4 會新增獨立 dry-run execution 流程，避免 paper fill 與真實 order intent 混在同一條路徑。
+
+- Commit 1：已完成 execution intent domain，包含 `PairExecutionPlan`、`ExecutionLeg`、`ExecutionCheck`、`ExecutionPlanStatus`、entry/exit 雙腿 side mapping、`OrderRequest -> ExecutionLeg/Plan` 轉換，以及 dry-run validator。
+- Commit 2：已完成 SQLite recorder 與 CLI skeleton，新增 execution intent tables，並用 fake mode 跑通 intent 產生、驗證、落庫與 summary。
+- Commit 3：重構 strategy order builder，把目前 `PairStrategy` 直接呼叫 `broker.place_order()` 的路徑拆出純 order request builder；PaperBroker 行為必須維持不變。
+- Commit 4：新增 `live-dry-run` 真實 market data 流程，重用 Phase 2 auto warmup、quote polling、bid/ask tradable spread、calendar 與 contract policy；產生 intent 後只記錄並預設進 `PAUSED`。
+- Commit 5：新增 dry-run failure simulation，覆蓋任一腿失敗、延遲、取消、partial fill；任何不完整雙腿結果都只記錄並讓系統進 `PAUSED`，不自動補單。
+- Commit 6：完成真實 read-only + dry-run smoke，先跑 Phase 3 broker reconciliation，再跑 dry-run intent；驗收時 `orders=0`、`fills=0`、`trades=0`。
+
+Commit 1 execution intent domain 紀錄：
+
+```text
+commit: f30d72d feat: add execution intent domain
+pytest tests/test_execution_intent.py -q: 11 passed
+pytest -q: 93 passed, 6 skipped
+```
+
+Commit 1 validator 覆蓋：
+
+- 有效雙腿 intent 通過 validation。
+- entry/exit、`SHORT_TSM_LONG_QFF` / `LONG_TSM_SHORT_QFF` side mapping 正確。
+- missing leg、wrong side、zero quantity、QFF 非整數口數、wrong QFF symbol 會 rejected。
+- `allow_live_order=true` 會 rejected，Phase 4 仍不得啟用真實送單。
+
+Commit 2 SQLite recorder + CLI skeleton 紀錄：
+
+```text
+新增 tables: execution_plans, execution_legs, execution_checks
+新增 CLI: dry-run-doctor, live-dry-run --fake, execution-summary
+pytest tests/test_execution_intent.py tests/test_execution_recorder_cli.py -q: 18 passed
+pytest -q: 100 passed, 6 skipped
+```
+
+Commit 2 驗收：
+
+- fake `live-dry-run` 可產生 valid execution intent，validation 通過後以 `recorded` 狀態寫入 SQLite。
+- rejected fake case 會寫入 execution checks 並以 nonzero exit code 結束。
+- dry-run recorder 不寫入 `orders`、`fills`、`trades`。
+- `allow_live_order=true` 會被 `live-dry-run` 拒絕。
 
 ## 8. Safety 原則
 
