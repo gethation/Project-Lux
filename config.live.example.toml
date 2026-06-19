@@ -42,3 +42,9 @@ fubon_env_path = '.env'
 taifex_use_network = true
 taifex_cache_dir = 'data\taifex_cache'
 taifex_qff_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
+
+[broker_reconciliation]
+enabled = false
+fail_on_mismatch = false
+tsm_units_tolerance = 0.000001
+qff_contract_tolerance = 0

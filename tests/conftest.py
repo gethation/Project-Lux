@@ -6,6 +6,7 @@ import pytest
 
 from lux_trader.config import (
     AppConfig,
+    BrokerReconciliationConfig,
     ContractPolicyConfig,
     FeeConfig,
     LiveMarketDataConfig,
@@ -85,5 +86,11 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             taifex_qff_1m_csv=None,
             taifex_use_network=False,
             taifex_cache_dir=tmp_path / "taifex_cache",
+        ),
+        broker_reconciliation=BrokerReconciliationConfig(
+            enabled=False,
+            fail_on_mismatch=False,
+            tsm_units_tolerance=1e-6,
+            qff_contract_tolerance=0,
         ),
     )

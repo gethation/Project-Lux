@@ -10,6 +10,7 @@ from typing import Any
 from .config import FeeConfig, StrategyConfig
 from .indicator import IndicatorEngine
 from .models import Fill, IndicatorSnapshot, MarketBar, OrderResult
+from .reconciliation import ReconciliationReport
 from .strategy import StrategyRuntimeState
 from .tradable_spread import TradableSpreadSnapshot
 
@@ -254,6 +255,41 @@ class SQLiteStore:
                 qff_symbol TEXT,
                 status TEXT NOT NULL,
                 payload_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS broker_reconciliation_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                status TEXT NOT NULL,
+                expected_json TEXT NOT NULL,
+                report_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS broker_snapshots (
+                snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                broker TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                fetched_at TEXT NOT NULL,
+                position_count INTEGER NOT NULL,
+                open_order_count INTEGER NOT NULL,
+                margin_count INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES broker_reconciliation_runs(run_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS broker_reconciliation_issues (
+                issue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                issue_type TEXT NOT NULL,
+                broker TEXT NOT NULL,
+                symbol TEXT,
+                message TEXT NOT NULL,
+                expected_quantity REAL,
+                actual_quantity REAL,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES broker_reconciliation_runs(run_id)
             );
             """
         )
@@ -740,6 +776,86 @@ class SQLiteStore:
                 run_id,
             ),
         )
+
+    def record_reconciliation_report(self, report: ReconciliationReport) -> int:
+        report_payload = report.to_jsonable()
+        cursor = self.connection.execute(
+            """
+            INSERT INTO broker_reconciliation_runs (
+                timestamp, status, expected_json, report_json
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                timestamp_text(report.timestamp),
+                report.status.value,
+                json.dumps(report_payload["expected"], default=json_default),
+                json.dumps(report_payload, default=json_default),
+            ),
+        )
+        run_id = int(cursor.lastrowid)
+        self.connection.executemany(
+            """
+            INSERT INTO broker_snapshots (
+                run_id, broker, account_id, fetched_at, position_count,
+                open_order_count, margin_count, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    run_id,
+                    snapshot.broker.value,
+                    snapshot.account_id,
+                    timestamp_text(snapshot.fetched_at),
+                    len(snapshot.positions),
+                    len(snapshot.open_orders),
+                    len(snapshot.margins),
+                    json.dumps(snapshot_payload, default=json_default),
+                )
+                for snapshot, snapshot_payload in zip(
+                    report.snapshots,
+                    report_payload["snapshots"],
+                )
+            ],
+        )
+        self.connection.executemany(
+            """
+            INSERT INTO broker_reconciliation_issues (
+                run_id, status, issue_type, broker, symbol, message,
+                expected_quantity, actual_quantity, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    run_id,
+                    issue.status.value,
+                    issue.issue_type,
+                    issue.broker.value,
+                    issue.symbol,
+                    issue.message,
+                    issue.expected_quantity,
+                    issue.actual_quantity,
+                    json.dumps(issue_payload, default=json_default),
+                )
+                for issue, issue_payload in zip(
+                    report.issues,
+                    report_payload["issues"],
+                )
+            ],
+        )
+        return run_id
+
+    def load_latest_reconciliation_report(self) -> ReconciliationReport | None:
+        row = self.connection.execute(
+            """
+            SELECT report_json
+            FROM broker_reconciliation_runs
+            ORDER BY run_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        return ReconciliationReport.from_jsonable(json.loads(row["report_json"]))
 
     def commit(self) -> None:
         self.connection.commit()

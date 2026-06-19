@@ -20,3 +20,9 @@ qff_contract_multiplier = 100.0
 allow_live_order = false
 validate_expected_zscore = true
 expected_zscore_tolerance = 0.0000001
+
+[broker_reconciliation]
+enabled = false
+fail_on_mismatch = false
+tsm_units_tolerance = 0.000001
+qff_contract_tolerance = 0

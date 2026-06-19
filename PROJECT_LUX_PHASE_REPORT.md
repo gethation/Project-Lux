@@ -247,10 +247,18 @@ duplicate_bars=0
 
 ### Phase 3 預計工作
 
-- 建立 Fubon read-only broker。
-- 建立 Binance read-only broker。
-- 啟動時查 broker 實際部位、委託、資金/保證金。
-- Store 與 broker 狀態不一致時拒絕啟動或進 `PAUSED`。
+- Commit 1：建立 read-only broker domain skeleton，包含 snapshot/reconciliation 型別、fake broker 與 mismatch 判斷單元測試。
+- Commit 2：新增 SQLite reconciliation tables 與 `broker-doctor` / `reconcile-brokers` CLI skeleton，先用 fake/stub 跑通資料流。
+- Commit 3：接 Fubon read-only adapter，查 `margin_equity`、`single_position`、today orders；真實 smoke 需 `LUX_READONLY_BROKER=1`。
+- Commit 4：接 Binance read-only adapter，從 `.env` 讀 `BINANCE_API_KEY` / `BINANCE_SECRET`，查 balance、positions、open orders。
+- Commit 5：完成 Fubon + Binance + Store reconciliation acceptance；第一版 mismatch 只 warning + record，不阻擋 `live-paper`。
+
+Commit 1-2 skeleton 指令：
+
+```powershell
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader broker-doctor --config config.live.example.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config config.live.example.toml --fake
+```
 
 ### Phase 4 預計工作
 

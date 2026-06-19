@@ -18,6 +18,13 @@ from .live_runner import (
     WarmupRunner,
     resolve_qff_contract,
 )
+from .models import BrokerName
+from .reconciliation import (
+    BrokerPositionSnapshot,
+    BrokerReconciler,
+    FakeReadOnlyBroker,
+    ReconciliationStatus,
+)
 from .runner import SystemRunner
 from .store import SQLiteStore
 from .terminal_ui import LiveTerminalReporter, NullLiveReporter
@@ -38,6 +45,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser("doctor", help="Check MVP configuration")
     doctor.add_argument("--config", type=Path, required=True)
+
+    broker_doctor = subparsers.add_parser(
+        "broker-doctor",
+        help="Check read-only broker reconciliation skeleton config",
+    )
+    broker_doctor.add_argument("--config", type=Path, required=True)
+
+    reconcile_brokers = subparsers.add_parser(
+        "reconcile-brokers",
+        help="Run read-only broker/store reconciliation",
+    )
+    reconcile_brokers.add_argument("--config", type=Path, required=True)
+    reconcile_brokers.add_argument(
+        "--fake",
+        action="store_true",
+        help="Use deterministic fake read-only brokers",
+    )
+    reconcile_brokers.add_argument(
+        "--fake-case",
+        choices=("matched", "mismatch", "error"),
+        default="matched",
+        help="Fake broker scenario for the Phase 3 skeleton",
+    )
 
     live_doctor = subparsers.add_parser("live-doctor", help="Check live-paper config")
     live_doctor.add_argument("--config", type=Path, required=True)
@@ -131,6 +161,151 @@ def command_doctor(args: argparse.Namespace) -> int:
     for check in checks:
         print(f"- {check}")
     return 0
+
+
+def command_broker_doctor(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    if config.safety.allow_live_order:
+        raise SystemExit("allow_live_order must remain false for broker-doctor")
+    config.store_path.parent.mkdir(parents=True, exist_ok=True)
+    probe = config.store_path.parent / ".project_lux_broker_write_probe"
+    probe.write_text("ok", encoding="utf-8")
+    probe.unlink()
+    checks = [
+        f"store_path={config.store_path}",
+        f"reconciliation_enabled={config.broker_reconciliation.enabled}",
+        f"fail_on_mismatch={config.broker_reconciliation.fail_on_mismatch}",
+        f"tsm_units_tolerance={config.broker_reconciliation.tsm_units_tolerance}",
+        f"qff_contract_tolerance={config.broker_reconciliation.qff_contract_tolerance}",
+        "private_api=disabled",
+    ]
+    print("Broker doctor checks passed")
+    for check in checks:
+        print(f"- {check}")
+    return 0
+
+
+def command_reconcile_brokers(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    if config.safety.allow_live_order:
+        raise SystemExit("allow_live_order must remain false for reconcile-brokers")
+    if not args.fake:
+        raise SystemExit("Phase 3 skeleton supports only reconcile-brokers --fake")
+
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        resume_state = store.load_resume_state()
+        strategy_state = resume_state.strategy if resume_state is not None else None
+        timestamp = datetime.now().astimezone()
+        brokers = build_fake_reconciliation_brokers(
+            config,
+            strategy_state,
+            fake_case=args.fake_case,
+            timestamp=timestamp,
+        )
+        report = BrokerReconciler(
+            tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
+            qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
+        ).reconcile(
+            strategy_state=strategy_state,
+            brokers=brokers,
+            tsm_symbol=config.live.binance_symbol,
+            qff_symbol=reconciliation_qff_symbol(config, strategy_state),
+            timestamp=timestamp,
+        )
+        run_id = store.record_reconciliation_report(report)
+        store.commit()
+    except Exception:
+        store.rollback()
+        raise
+    finally:
+        store.close()
+
+    print(
+        "Broker reconciliation complete: "
+        f"run_id={run_id}, status={report.status.value}, issues={len(report.issues)}"
+    )
+    for issue in report.issues:
+        print(
+            f"- {issue.status.value} {issue.issue_type} "
+            f"{issue.broker.value} {issue.symbol or '-'} {issue.message}"
+        )
+    return 1 if report.status == ReconciliationStatus.ERROR else 0
+
+
+def build_fake_reconciliation_brokers(
+    config: object,
+    strategy_state: object,
+    *,
+    fake_case: str,
+    timestamp: datetime,
+) -> tuple[FakeReadOnlyBroker, FakeReadOnlyBroker]:
+    reconciler = BrokerReconciler(
+        tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
+        qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
+    )
+    expected = reconciler.expected_from_strategy(
+        strategy_state,
+        tsm_symbol=config.live.binance_symbol,
+        qff_symbol=reconciliation_qff_symbol(config, strategy_state),
+        timestamp=timestamp,
+    )
+    if fake_case == "error":
+        return (
+            FakeReadOnlyBroker(
+                BrokerName.BINANCE_TSM,
+                fetch_error=RuntimeError("fake broker fetch failed"),
+            ),
+            FakeReadOnlyBroker(BrokerName.FUBON_QFF, fetched_at=timestamp),
+        )
+
+    tsm_quantity = expected.expected_tsm_units
+    qff_quantity = float(expected.expected_qff_contracts)
+    if fake_case == "mismatch":
+        qff_quantity = qff_quantity + 1.0 if qff_quantity != 0 else 1.0
+
+    tsm_positions = (
+        (
+            BrokerPositionSnapshot(
+                broker=BrokerName.BINANCE_TSM,
+                symbol=config.live.binance_symbol,
+                quantity=tsm_quantity,
+            ),
+        )
+        if tsm_quantity != 0
+        else ()
+    )
+    qff_positions = (
+        (
+            BrokerPositionSnapshot(
+                broker=BrokerName.FUBON_QFF,
+                symbol=expected.qff_symbol,
+                quantity=qff_quantity,
+            ),
+        )
+        if qff_quantity != 0
+        else ()
+    )
+    return (
+        FakeReadOnlyBroker(
+            BrokerName.BINANCE_TSM,
+            account_id="FAKE-BINANCE",
+            positions=tsm_positions,
+            fetched_at=timestamp,
+        ),
+        FakeReadOnlyBroker(
+            BrokerName.FUBON_QFF,
+            account_id="FAKE-FUBON",
+            positions=qff_positions,
+            fetched_at=timestamp,
+        ),
+    )
+
+
+def reconciliation_qff_symbol(config: object, strategy_state: object) -> str:
+    trading_symbol = getattr(strategy_state, "trading_qff_symbol", None)
+    return str(trading_symbol or config.live.qff_symbol)
 
 
 def command_live_doctor(args: argparse.Namespace) -> int:
@@ -290,6 +465,10 @@ def main(argv: list[str] | None = None) -> int:
         return command_summary(args)
     if args.command == "doctor":
         return command_doctor(args)
+    if args.command == "broker-doctor":
+        return command_broker_doctor(args)
+    if args.command == "reconcile-brokers":
+        return command_reconcile_brokers(args)
     if args.command == "live-doctor":
         return command_live_doctor(args)
     if args.command == "warmup-live":

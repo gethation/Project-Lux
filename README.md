@@ -124,6 +124,19 @@ expects `warmup_auto start/done_1440`, polls real quotes long enough to finalize
 skip a minute with a recorded warning, then runs a second `--resume` style pass and
 checks that warmup is not rebuilt.
 
+## Broker Reconciliation Skeleton
+
+Phase 3 starts with a read-only broker reconciliation skeleton that does not touch
+Fubon or Binance private APIs. Use fake brokers to validate the local data flow:
+
+```powershell
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader broker-doctor --config config.live.example.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config config.live.example.toml --fake
+```
+
+`reconcile-brokers --fake` writes a reconciliation report to SQLite. Mismatches are
+recorded as `warning` and do not block `live-paper` in this phase.
+
 ## Safety
 
 This milestone has no live trading path. `doctor` fails if live trading is enabled in

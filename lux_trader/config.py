@@ -58,6 +58,14 @@ class LiveMarketDataConfig:
 
 
 @dataclass(frozen=True)
+class BrokerReconciliationConfig:
+    enabled: bool
+    fail_on_mismatch: bool
+    tsm_units_tolerance: float
+    qff_contract_tolerance: int
+
+
+@dataclass(frozen=True)
 class AppConfig:
     input_csv: Path
     store_path: Path
@@ -66,6 +74,7 @@ class AppConfig:
     safety: SafetyConfig
     contract_policy: ContractPolicyConfig
     live: LiveMarketDataConfig
+    broker_reconciliation: BrokerReconciliationConfig
 
 
 def load_config(path: Path) -> AppConfig:
@@ -78,6 +87,7 @@ def load_config(path: Path) -> AppConfig:
     safety = raw.get("safety", {})
     contract_policy = raw.get("contract_policy", {})
     live = raw.get("live_market_data", {})
+    broker_reconciliation = raw.get("broker_reconciliation", {})
 
     input_csv = Path(paths.get("input_csv", "")).expanduser()
     store_path = Path(paths["store_path"]).expanduser()
@@ -142,6 +152,18 @@ def load_config(path: Path) -> AppConfig:
             taifex_qff_1m_csv=taifex_qff_1m_csv,
             taifex_use_network=bool(live.get("taifex_use_network", True)),
             taifex_cache_dir=taifex_cache_dir,
+        ),
+        broker_reconciliation=BrokerReconciliationConfig(
+            enabled=bool(broker_reconciliation.get("enabled", False)),
+            fail_on_mismatch=bool(
+                broker_reconciliation.get("fail_on_mismatch", False)
+            ),
+            tsm_units_tolerance=float(
+                broker_reconciliation.get("tsm_units_tolerance", 1e-6)
+            ),
+            qff_contract_tolerance=int(
+                broker_reconciliation.get("qff_contract_tolerance", 0)
+            ),
         ),
     )
 
