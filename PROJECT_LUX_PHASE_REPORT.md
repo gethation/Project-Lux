@@ -278,7 +278,7 @@ Phase 4 目標是建立 dry-run execution：策略產生接近真實下單的雙
 - Commit 2：已完成 SQLite recorder 與 CLI skeleton，新增 execution intent tables，並用 fake mode 跑通 intent 產生、驗證、落庫與 summary。
 - Commit 3：已完成 strategy order builder refactor，把目前 `PairStrategy` 直接呼叫 `broker.place_order()` 的路徑拆出純 order request builder；PaperBroker 行為維持不變。
 - Commit 4：已完成 `live-dry-run` 真實 market data 流程，重用 Phase 2 auto warmup、quote polling、bid/ask tradable spread、calendar 與 contract policy；產生 intent 後只記錄並預設進 `PAUSED`。
-- Commit 5：新增 dry-run failure simulation，覆蓋任一腿失敗、延遲、取消、partial fill；任何不完整雙腿結果都只記錄並讓系統進 `PAUSED`，不自動補單。
+- Commit 5：已完成 dry-run failure simulation，覆蓋任一腿失敗、延遲、取消、partial fill；任何不完整雙腿結果都只記錄 recommended `PAUSED`，不自動補單。
 - Commit 6：完成真實 read-only + dry-run smoke，先跑 Phase 3 broker reconciliation，再跑 dry-run intent；驗收時 `orders=0`、`fills=0`、`trades=0`。
 
 Commit 1 execution intent domain 紀錄：
@@ -341,6 +341,24 @@ Commit 4 驗收：
 - `ENTRY_PENDING` / `EXIT_PENDING` 不再呼叫 PaperBroker fill，而是產生 `PairExecutionPlan` 並寫入 execution tables。
 - dry-run intent 產生後策略狀態預設進 `PAUSED`，避免重複產生 intent。
 - `orders`、`fills`、`trades` 保持 0；完整資料寫入 `execution_plans`、`execution_legs`、`execution_checks` 與 `events`。
+
+Commit 5 failure simulation 紀錄：
+
+```text
+新增 ExecutionSimulationScenario: leg_failure, delay, cancel, partial_fill
+新增 table: execution_simulations
+新增 CLI: simulate-execution --scenario ... [--fake-plan]
+pytest tests/test_execution_recorder_cli.py tests/test_execution_intent.py -q: 22 passed
+pytest -q: 107 passed, 6 skipped
+```
+
+Commit 5 驗收：
+
+- simulator 可針對 recorded `PairExecutionPlan` 模擬任一腿失敗、延遲、取消與 partial fill。
+- simulation 只寫入 `execution_simulations` / `events`，不寫入 `orders`、`fills`、`trades`。
+- `simulate-execution --fake-plan` 可建立 deterministic plan 後直接模擬。
+- 不使用 `--fake-plan` 時，CLI 會讀取 store 最新 execution plan 進行模擬。
+- 所有 failure simulation payload 都帶 `recommended_state=paused`，後續 execution gate 可據此阻擋自動補單。
 
 ## 8. Safety 原則
 

@@ -10,6 +10,7 @@ from typing import Any
 from .config import FeeConfig, StrategyConfig
 from .indicator import IndicatorEngine
 from .execution_intent import PairExecutionPlan
+from .execution_simulator import ExecutionSimulationResult
 from .models import Fill, IndicatorSnapshot, MarketBar, OrderResult
 from .reconciliation import ReconciliationReport
 from .strategy import StrategyRuntimeState
@@ -335,6 +336,20 @@ class SQLiteStore:
                 broker TEXT,
                 symbol TEXT,
                 message TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(plan_id) REFERENCES execution_plans(plan_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS execution_simulations (
+                simulation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                scenario TEXT NOT NULL,
+                status TEXT NOT NULL,
+                broker TEXT,
+                symbol TEXT,
+                message TEXT NOT NULL,
+                recommended_state TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 FOREIGN KEY(plan_id) REFERENCES execution_plans(plan_id)
             );
@@ -998,6 +1013,45 @@ class SQLiteStore:
             return None
         return json.loads(row["payload_json"])
 
+    def record_execution_simulation(
+        self,
+        result: ExecutionSimulationResult,
+    ) -> int:
+        payload = result.to_jsonable()
+        cursor = self.connection.execute(
+            """
+            INSERT INTO execution_simulations (
+                plan_id, timestamp, scenario, status, broker, symbol, message,
+                recommended_state, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                result.plan_id,
+                timestamp_text(result.timestamp),
+                result.scenario.value,
+                result.status.value,
+                result.broker.value if result.broker else None,
+                result.symbol,
+                result.message,
+                result.recommended_state,
+                json.dumps(payload, default=json_default),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    def load_latest_execution_simulation_payload(self) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            """
+            SELECT payload_json
+            FROM execution_simulations
+            ORDER BY simulation_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["payload_json"])
+
     def build_execution_summary(self) -> dict[str, Any]:
         plan_count = int(
             self.connection.execute(
@@ -1020,6 +1074,12 @@ class SQLiteStore:
         failed_check_count = int(
             self.connection.execute(
                 "SELECT COUNT(*) AS count FROM execution_checks WHERE passed = 0"
+            ).fetchone()["count"]
+            or 0
+        )
+        simulation_count = int(
+            self.connection.execute(
+                "SELECT COUNT(*) AS count FROM execution_simulations"
             ).fetchone()["count"]
             or 0
         )
@@ -1054,6 +1114,7 @@ class SQLiteStore:
             "leg_count": leg_count,
             "check_count": check_count,
             "failed_check_count": failed_check_count,
+            "simulation_count": simulation_count,
             "status_counts": {
                 str(row["status"]): int(row["count"]) for row in status_rows
             },

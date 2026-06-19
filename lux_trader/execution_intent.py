@@ -279,6 +279,57 @@ def execution_leg_from_order_request(request: OrderRequest) -> ExecutionLeg:
     )
 
 
+def execution_leg_from_jsonable(payload: dict[str, Any]) -> ExecutionLeg:
+    return ExecutionLeg(
+        broker=BrokerName(payload["broker"]),
+        symbol=str(payload["symbol"]),
+        side=OrderSide(payload["side"]),
+        quantity=float(payload["quantity"]),
+        price=float(payload["price"]),
+        timestamp=datetime.fromisoformat(str(payload["timestamp"])),
+        row_index=int(payload["row_index"]),
+        fee_twd=float(payload.get("fee_twd", 0.0)),
+        qff_symbol=payload.get("qff_symbol"),
+        qff_expiry=payload.get("qff_expiry"),
+        contract_policy_state=payload.get("contract_policy_state"),
+        raw=payload.get("raw"),
+    )
+
+
+def execution_check_from_jsonable(payload: dict[str, Any]) -> ExecutionCheck:
+    broker = payload.get("broker")
+    return ExecutionCheck(
+        check_type=str(payload["check_type"]),
+        passed=bool(payload["passed"]),
+        message=str(payload["message"]),
+        broker=BrokerName(broker) if broker else None,
+        symbol=payload.get("symbol"),
+        payload=payload.get("payload"),
+    )
+
+
+def pair_execution_plan_from_jsonable(payload: dict[str, Any]) -> PairExecutionPlan:
+    return PairExecutionPlan(
+        plan_id=str(payload["plan_id"]),
+        plan_type=ExecutionPlanType(payload["plan_type"]),
+        direction=Direction(payload["direction"]),
+        timestamp=datetime.fromisoformat(str(payload["timestamp"])),
+        row_index=int(payload["row_index"]),
+        legs=tuple(execution_leg_from_jsonable(leg) for leg in payload.get("legs", [])),
+        status=ExecutionPlanStatus(payload.get("status", ExecutionPlanStatus.CREATED.value)),
+        reason=str(payload.get("reason", "")),
+        decision_zscore=payload.get("decision_zscore"),
+        decision_spread_type=payload.get("decision_spread_type"),
+        qff_symbol=payload.get("qff_symbol"),
+        qff_expiry=payload.get("qff_expiry"),
+        contract_policy_state=payload.get("contract_policy_state"),
+        checks=tuple(
+            execution_check_from_jsonable(check)
+            for check in payload.get("checks", [])
+        ),
+    )
+
+
 def pair_execution_plan_from_order_requests(
     *,
     plan_type: ExecutionPlanType,

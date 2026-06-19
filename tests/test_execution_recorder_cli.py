@@ -10,9 +10,15 @@ from lux_trader.cli import (
     command_dry_run_doctor,
     command_execution_summary,
     command_live_dry_run,
+    command_simulate_execution,
 )
 from lux_trader.execution_intent import ExecutionLeg, ExecutionPlanType, PairExecutionPlan
 from lux_trader.execution_recorder import DryRunExecutionRecorder
+from lux_trader.execution_simulator import (
+    DryRunExecutionSimulator,
+    ExecutionSimulationScenario,
+    ExecutionSimulationStatus,
+)
 from lux_trader.models import BrokerName, Direction, OrderSide
 from lux_trader.store import SQLiteStore
 
@@ -107,6 +113,7 @@ def test_store_initializes_execution_tables(tmp_path: Path) -> None:
     assert "execution_plans" in tables
     assert "execution_legs" in tables
     assert "execution_checks" in tables
+    assert "execution_simulations" in tables
 
 
 def test_recorder_records_valid_plan_without_orders_fills_or_trades(
@@ -234,6 +241,134 @@ def test_execution_summary_cli_prints_json(tmp_path: Path, capsys) -> None:
     assert exit_code == 0
     assert payload["plan_count"] == 1
     assert payload["status_counts"] == {"recorded": 1}
+
+
+def test_execution_simulator_covers_failure_scenarios() -> None:
+    plan = short_entry_plan()
+
+    results = {
+        scenario: DryRunExecutionSimulator(timestamp=plan.timestamp).simulate(
+            plan,
+            scenario,
+        )
+        for scenario in ExecutionSimulationScenario
+    }
+
+    assert (
+        results[ExecutionSimulationScenario.LEG_FAILURE].status
+        == ExecutionSimulationStatus.SIMULATED_FAILED
+    )
+    assert (
+        results[ExecutionSimulationScenario.DELAY].status
+        == ExecutionSimulationStatus.SIMULATED_DELAYED
+    )
+    assert (
+        results[ExecutionSimulationScenario.CANCEL].status
+        == ExecutionSimulationStatus.SIMULATED_CANCELED
+    )
+    partial = results[ExecutionSimulationScenario.PARTIAL_FILL]
+    assert partial.status == ExecutionSimulationStatus.SIMULATED_PARTIAL_FILL
+    assert partial.payload is not None
+    assert partial.payload["filled_quantity"] == partial.payload["remaining_quantity"]
+
+
+def test_store_records_execution_simulation(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "project_lux.sqlite3")
+    try:
+        store.initialize()
+        plan = DryRunExecutionRecorder(store).record_plan(short_entry_plan())
+        result = DryRunExecutionSimulator(timestamp=plan.timestamp).simulate(
+            plan,
+            ExecutionSimulationScenario.LEG_FAILURE,
+        )
+        simulation_id = store.record_execution_simulation(result)
+        store.commit()
+
+        assert simulation_id == 1
+        assert count_table(store.connection, "execution_simulations") == 1
+        latest = store.load_latest_execution_simulation_payload()
+        summary = store.build_execution_summary()
+        assert latest is not None
+        assert latest["scenario"] == "leg_failure"
+        assert latest["status"] == "simulated_failed"
+        assert summary["simulation_count"] == 1
+        assert summary["orders"] == 0
+        assert summary["fills"] == 0
+        assert summary["trades"] == 0
+    finally:
+        store.close()
+
+
+def test_simulate_execution_cli_fake_plan_records_simulation(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "simulate-execution",
+            "--config",
+            str(write_config(tmp_path)),
+            "--scenario",
+            "partial_fill",
+            "--fake-plan",
+            "--reset-store",
+        ]
+    )
+
+    exit_code = command_simulate_execution(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "scenario=partial_fill" in output
+    assert "status=simulated_partial_fill" in output
+
+    connection = sqlite3.connect(tmp_path / "project_lux.sqlite3")
+    try:
+        assert count_table(connection, "execution_plans") == 1
+        assert count_table(connection, "execution_simulations") == 1
+        assert count_table(connection, "orders") == 0
+        assert count_table(connection, "fills") == 0
+        assert count_table(connection, "trades") == 0
+    finally:
+        connection.close()
+
+
+def test_simulate_execution_cli_uses_latest_plan(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    parser = build_parser()
+    config_path = write_config(tmp_path)
+    command_live_dry_run(
+        parser.parse_args(
+            [
+                "live-dry-run",
+                "--config",
+                str(config_path),
+                "--fake",
+                "--reset-store",
+            ]
+        )
+    )
+    capsys.readouterr()
+
+    exit_code = command_simulate_execution(
+        parser.parse_args(
+            [
+                "simulate-execution",
+                "--config",
+                str(config_path),
+                "--scenario",
+                "leg_failure",
+            ]
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "scenario=leg_failure" in output
+    assert "status=simulated_failed" in output
 
 
 def test_live_dry_run_rejects_allow_live_order(tmp_path: Path) -> None:

@@ -13,9 +13,11 @@ import pandas
 from .config import load_config
 from .execution_intent import (
     ExecutionPlanType,
+    pair_execution_plan_from_jsonable,
     pair_execution_plan_from_order_requests,
 )
 from .execution_recorder import DryRunExecutionRecorder
+from .execution_simulator import DryRunExecutionSimulator, ExecutionSimulationScenario
 from .live_market_data import CcxtTickerMarketData, FubonQffMarketData
 from .live_runner import (
     LiveDryRunRunner,
@@ -139,6 +141,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Require existing warmup seed bars instead of auto-building them at startup",
     )
+
+    simulate_execution = subparsers.add_parser(
+        "simulate-execution",
+        help="Simulate dry-run execution failure scenarios",
+    )
+    simulate_execution.add_argument("--config", type=Path, required=True)
+    simulate_execution.add_argument(
+        "--scenario",
+        choices=tuple(scenario.value for scenario in ExecutionSimulationScenario),
+        required=True,
+    )
+    simulate_execution.add_argument(
+        "--fake-plan",
+        action="store_true",
+        help="Create a deterministic fake execution plan before simulating",
+    )
+    simulate_execution.add_argument("--reset-store", action="store_true")
 
     live_doctor = subparsers.add_parser("live-doctor", help="Check live-paper config")
     live_doctor.add_argument("--config", type=Path, required=True)
@@ -618,6 +637,62 @@ def build_fake_execution_plan(
     )
 
 
+def command_simulate_execution(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    if config.safety.allow_live_order:
+        raise SystemExit("allow_live_order must remain false for simulate-execution")
+
+    store = SQLiteStore(config.store_path)
+    try:
+        if args.reset_store:
+            store.reset()
+        store.initialize()
+        if args.fake_plan:
+            plan = DryRunExecutionRecorder(
+                store,
+                allow_live_order=config.safety.allow_live_order,
+            ).record_plan(
+                build_fake_execution_plan(
+                    config,
+                    fake_case="valid",
+                    timestamp=datetime.now().astimezone().replace(microsecond=0),
+                    row_index=0,
+                )
+            )
+        else:
+            payload = store.load_latest_execution_plan_payload()
+            if payload is None:
+                raise SystemExit(
+                    "No execution plan found. Use --fake-plan or run live-dry-run first."
+                )
+            plan = pair_execution_plan_from_jsonable(payload)
+        result = DryRunExecutionSimulator().simulate(plan, args.scenario)
+        simulation_id = store.record_execution_simulation(result)
+        store.record_event(
+            plan.row_index,
+            result.timestamp,
+            "execution_simulation",
+            result.message,
+            result.to_jsonable(),
+        )
+        store.commit()
+    except Exception:
+        store.rollback()
+        raise
+    finally:
+        store.close()
+
+    print(
+        "Execution simulation complete: "
+        f"simulation_id={simulation_id}, "
+        f"plan_id={result.plan_id}, "
+        f"scenario={result.scenario.value}, "
+        f"status={result.status.value}, "
+        f"recommended_state={result.recommended_state}"
+    )
+    return 0
+
+
 def command_live_doctor(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     if config.safety.allow_live_order:
@@ -785,6 +860,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_execution_summary(args)
     if args.command == "live-dry-run":
         return command_live_dry_run(args)
+    if args.command == "simulate-execution":
+        return command_simulate_execution(args)
     if args.command == "live-doctor":
         return command_live_doctor(args)
     if args.command == "warmup-live":
