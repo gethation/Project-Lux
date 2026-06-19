@@ -177,3 +177,26 @@ def test_reconcile_brokers_fake_error_exits_nonzero(
     assert exit_code == 1
     assert "status=error" in output
     assert "broker_fetch_failed" in output
+
+
+def test_reconcile_brokers_readonly_requires_env_flag(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("LUX_READONLY_BROKER", raising=False)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "reconcile-brokers",
+            "--config",
+            str(write_config(tmp_path)),
+            "--readonly",
+        ]
+    )
+
+    try:
+        command_reconcile_brokers(args)
+    except SystemExit as exc:
+        assert "LUX_READONLY_BROKER=1" in str(exc)
+    else:
+        raise AssertionError("Expected SystemExit")

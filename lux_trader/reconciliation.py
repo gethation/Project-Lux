@@ -341,7 +341,9 @@ def to_jsonable(value: Any) -> Any:
         return value.value
     if isinstance(value, datetime):
         return value.isoformat()
-    return value
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return repr(value)
 
 
 def snapshot_from_jsonable(payload: dict[str, Any]) -> BrokerAccountSnapshot:

@@ -23,8 +23,10 @@ from .reconciliation import (
     BrokerPositionSnapshot,
     BrokerReconciler,
     FakeReadOnlyBroker,
+    ReadOnlyBroker,
     ReconciliationStatus,
 )
+from .readonly_brokers import BinanceReadOnlyBroker, FubonReadOnlyBroker
 from .runner import SystemRunner
 from .store import SQLiteStore
 from .terminal_ui import LiveTerminalReporter, NullLiveReporter
@@ -61,6 +63,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--fake",
         action="store_true",
         help="Use deterministic fake read-only brokers",
+    )
+    reconcile_brokers.add_argument(
+        "--readonly",
+        action="store_true",
+        help="Use real Fubon and Binance read-only brokers",
+    )
+    reconcile_brokers.add_argument(
+        "--fubon-readonly",
+        action="store_true",
+        help="Use real Fubon read-only broker",
+    )
+    reconcile_brokers.add_argument(
+        "--fake-binance",
+        action="store_true",
+        help="Use fake Binance broker with real Fubon",
     )
     reconcile_brokers.add_argument(
         "--fake-case",
@@ -179,6 +196,22 @@ def command_broker_doctor(args: argparse.Namespace) -> int:
         f"qff_contract_tolerance={config.broker_reconciliation.qff_contract_tolerance}",
         "private_api=disabled",
     ]
+    brokers: tuple[ReadOnlyBroker, ...] = ()
+    if readonly_broker_enabled():
+        brokers = build_real_readonly_brokers(config)
+        checks[-1] = "private_api=readonly"
+        try:
+            for broker in brokers:
+                snapshot = broker.fetch_snapshot()
+                checks.append(
+                    f"{snapshot.broker.value}_snapshot="
+                    f"account={snapshot.account_id} "
+                    f"positions={len(snapshot.positions)} "
+                    f"open_orders={len(snapshot.open_orders)} "
+                    f"margins={len(snapshot.margins)}"
+                )
+        finally:
+            close_brokers(brokers)
     print("Broker doctor checks passed")
     for check in checks:
         print(f"- {check}")
@@ -189,20 +222,19 @@ def command_reconcile_brokers(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     if config.safety.allow_live_order:
         raise SystemExit("allow_live_order must remain false for reconcile-brokers")
-    if not args.fake:
-        raise SystemExit("Phase 3 skeleton supports only reconcile-brokers --fake")
 
     store = SQLiteStore(config.store_path)
+    brokers: tuple[ReadOnlyBroker, ...] = ()
     try:
         store.initialize()
         resume_state = store.load_resume_state()
         strategy_state = resume_state.strategy if resume_state is not None else None
         timestamp = datetime.now().astimezone()
-        brokers = build_fake_reconciliation_brokers(
+        brokers = build_reconciliation_brokers(
+            args,
             config,
             strategy_state,
-            fake_case=args.fake_case,
-            timestamp=timestamp,
+            timestamp,
         )
         report = BrokerReconciler(
             tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
@@ -220,6 +252,7 @@ def command_reconcile_brokers(args: argparse.Namespace) -> int:
         store.rollback()
         raise
     finally:
+        close_brokers(brokers)
         store.close()
 
     print(
@@ -301,6 +334,66 @@ def build_fake_reconciliation_brokers(
             fetched_at=timestamp,
         ),
     )
+
+
+def build_reconciliation_brokers(
+    args: argparse.Namespace,
+    config: object,
+    strategy_state: object,
+    timestamp: datetime,
+) -> tuple[ReadOnlyBroker, ...]:
+    if args.fake:
+        return build_fake_reconciliation_brokers(
+            config,
+            strategy_state,
+            fake_case=args.fake_case,
+            timestamp=timestamp,
+        )
+    if args.readonly:
+        require_readonly_broker_enabled()
+        return build_real_readonly_brokers(config)
+    if args.fubon_readonly and args.fake_binance:
+        require_readonly_broker_enabled()
+        fake_binance = build_fake_reconciliation_brokers(
+            config,
+            strategy_state,
+            fake_case=args.fake_case,
+            timestamp=timestamp,
+        )[0]
+        return (
+            FubonReadOnlyBroker(config.live.fubon_env_path),
+            fake_binance,
+        )
+    raise SystemExit(
+        "Use --fake, --readonly, or --fubon-readonly --fake-binance"
+    )
+
+
+def build_real_readonly_brokers(config: object) -> tuple[ReadOnlyBroker, ReadOnlyBroker]:
+    return (
+        FubonReadOnlyBroker(config.live.fubon_env_path),
+        BinanceReadOnlyBroker(
+            config.live.binance_symbol,
+            config.live.fubon_env_path,
+        ),
+    )
+
+
+def close_brokers(brokers: tuple[ReadOnlyBroker, ...]) -> None:
+    for broker in brokers:
+        try:
+            broker.close()
+        except Exception:
+            pass
+
+
+def readonly_broker_enabled() -> bool:
+    return os.getenv("LUX_READONLY_BROKER", "").strip() == "1"
+
+
+def require_readonly_broker_enabled() -> None:
+    if not readonly_broker_enabled():
+        raise SystemExit("Set LUX_READONLY_BROKER=1 to use real read-only brokers")
 
 
 def reconciliation_qff_symbol(config: object, strategy_state: object) -> str:
