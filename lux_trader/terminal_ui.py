@@ -231,7 +231,7 @@ class LiveTerminalReporter:
             return self._paint(text, "dim")
         if action_text in {"entry_signal", "exit_signal"}:
             return self._paint(text, "yellow")
-        if action_text in {"entry_fill", "exit_fill"}:
+        if action_text in {"entry_fill", "exit_fill", "dry_run_intent"}:
             return self._paint(text, "green")
         if action_text in {"entry_cancel", "rollover_force_exit", "force_close"}:
             return self._paint(text, "yellow")
@@ -273,6 +273,10 @@ def compact_reason(reason: str) -> str:
         "entry_delay_exceeded": "delay_exceeded",
         "rollover_force_exit": "expiry_buffer",
         "live minute skipped": "skipped_minute",
+        "dry_run_entry_intent_recorded": "entry_intent_recorded",
+        "dry_run_entry_intent_rejected": "entry_intent_rejected",
+        "dry_run_exit_intent_recorded": "exit_intent_recorded",
+        "dry_run_exit_intent_rejected": "exit_intent_rejected",
     }
     return mapping.get(reason, reason)
 

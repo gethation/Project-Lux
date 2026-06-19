@@ -44,6 +44,7 @@ class StrategyAction(StrEnum):
     ENTRY_CANCEL = "entry_cancel"
     EXIT_SIGNAL = "exit_signal"
     EXIT_FILL = "exit_fill"
+    DRY_RUN_INTENT = "dry_run_intent"
     FORCE_CLOSE = "force_close"
     ERROR = "error"
 

@@ -534,6 +534,15 @@ class PairStrategy:
             qff_fee=costs["qff_fee_twd"] + costs["qff_tax_twd"],
         )
 
+    def mark_to_market_result(
+        self,
+        *,
+        action: StrategyAction,
+        reason: str,
+        bar: MarketBar,
+    ) -> BarResult:
+        return self._bar_result(action, reason, bar, [], [], None)
+
     def _submit_order_requests(
         self,
         requests: list[OrderRequest],

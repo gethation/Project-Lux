@@ -26,6 +26,7 @@ from lux_trader.live_market_data import (
     select_qff_front_month,
 )
 from lux_trader.live_runner import (
+    LiveDryRunRunner,
     LivePaperRunner,
     QffContractResolution,
     QffWarmupCheckRunner,
@@ -980,6 +981,105 @@ def test_live_paper_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
     assert result.bars_processed == 0
     assert result.skipped_minutes == 1
     assert "WARN stale_tsm skipped_minute" in terminal_output.getvalue()
+
+
+def test_live_dry_run_records_intent_without_orders_fills_or_trades(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    config = replace(config, strategy=replace(config.strategy, entry_z=1.0))
+    qff = FakeQffProvider(
+        rows(
+            [
+                ("2026-06-18T08:42:00+08:00", 100.0),
+                ("2026-06-18T08:43:00+08:00", 100.0),
+                ("2026-06-18T08:44:00+08:00", 100.0),
+            ]
+        ),
+        quotes=[
+            quote("qff", "2026-06-18T08:45:30+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("qff", "2026-06-18T08:45:59+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("qff", "2026-06-18T08:46:01+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("qff", "2026-06-18T08:46:59+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("qff", "2026-06-18T08:47:01+08:00", 100.0, bid=99.9, ask=100.1),
+        ],
+    )
+    tsm = FakeOhlcvProvider(
+        rows(
+            [
+                ("2026-06-18T08:42:00+08:00", 20.0),
+                ("2026-06-18T08:43:00+08:00", 20.0),
+                ("2026-06-18T08:44:00+08:00", 20.0),
+            ]
+        ),
+        quotes=[
+            quote("tsm", "2026-06-18T08:45:30+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("tsm", "2026-06-18T08:45:59+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("tsm", "2026-06-18T08:46:01+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("tsm", "2026-06-18T08:46:59+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("tsm", "2026-06-18T08:47:01+08:00", 20.0, bid=19.99, ask=20.01),
+        ],
+    )
+    usd = FakeOhlcvProvider(
+        rows(
+            [
+                ("2026-06-18T08:42:00+08:00", 25.0),
+                ("2026-06-18T08:43:00+08:00", 25.0),
+                ("2026-06-18T08:44:00+08:00", 25.0),
+            ]
+        ),
+        quotes=[
+            quote("usd", "2026-06-18T08:45:30+08:00", 30.0, bid=29.99, ask=30.01),
+            quote("usd", "2026-06-18T08:45:59+08:00", 30.0, bid=29.99, ask=30.01),
+            quote("usd", "2026-06-18T08:46:01+08:00", 30.0, bid=29.99, ask=30.01),
+            quote("usd", "2026-06-18T08:46:59+08:00", 30.0, bid=29.99, ask=30.01),
+            quote("usd", "2026-06-18T08:47:01+08:00", 30.0, bid=29.99, ask=30.01),
+        ],
+    )
+    clocks = iter(
+        [
+            ts("2026-06-18T08:45:00+08:00"),
+            ts("2026-06-18T08:45:30+08:00"),
+            ts("2026-06-18T08:45:59+08:00"),
+            ts("2026-06-18T08:46:01+08:00"),
+            ts("2026-06-18T08:46:59+08:00"),
+            ts("2026-06-18T08:47:01+08:00"),
+            ts("2026-06-18T08:47:02+08:00"),
+        ]
+    )
+    terminal_output = io.StringIO()
+
+    result = LiveDryRunRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        clock=lambda: next(clocks),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(terminal_output, color=False),
+    ).run(reset_store=True, max_iterations=5)
+
+    assert result.bars_processed == 2
+    assert result.plans_recorded == 1
+    output = terminal_output.getvalue()
+    assert "dry_run_intent" in output
+    assert "EVENT dry_run intent_recorded" in output
+
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        assert count_table(store, "execution_plans") == 1
+        assert count_table(store, "execution_legs") == 2
+        assert count_table(store, "orders") == 0
+        assert count_table(store, "fills") == 0
+        assert count_table(store, "trades") == 0
+        state = store.load_resume_state()
+        assert state is not None
+        assert state.strategy.state == StrategyState.PAUSED
+        plan = store.load_latest_execution_plan_payload()
+        assert plan is not None
+        assert plan["status"] == "recorded"
+        assert plan["plan_type"] == "entry"
+    finally:
+        store.close()
 
 
 def test_live_paper_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:

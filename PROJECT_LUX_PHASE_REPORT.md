@@ -276,8 +276,8 @@ Phase 4 目標是建立 dry-run execution：策略產生接近真實下單的雙
 
 - Commit 1：已完成 execution intent domain，包含 `PairExecutionPlan`、`ExecutionLeg`、`ExecutionCheck`、`ExecutionPlanStatus`、entry/exit 雙腿 side mapping、`OrderRequest -> ExecutionLeg/Plan` 轉換，以及 dry-run validator。
 - Commit 2：已完成 SQLite recorder 與 CLI skeleton，新增 execution intent tables，並用 fake mode 跑通 intent 產生、驗證、落庫與 summary。
-- Commit 3：重構 strategy order builder，把目前 `PairStrategy` 直接呼叫 `broker.place_order()` 的路徑拆出純 order request builder；PaperBroker 行為必須維持不變。
-- Commit 4：新增 `live-dry-run` 真實 market data 流程，重用 Phase 2 auto warmup、quote polling、bid/ask tradable spread、calendar 與 contract policy；產生 intent 後只記錄並預設進 `PAUSED`。
+- Commit 3：已完成 strategy order builder refactor，把目前 `PairStrategy` 直接呼叫 `broker.place_order()` 的路徑拆出純 order request builder；PaperBroker 行為維持不變。
+- Commit 4：已完成 `live-dry-run` 真實 market data 流程，重用 Phase 2 auto warmup、quote polling、bid/ask tradable spread、calendar 與 contract policy；產生 intent 後只記錄並預設進 `PAUSED`。
 - Commit 5：新增 dry-run failure simulation，覆蓋任一腿失敗、延遲、取消、partial fill；任何不完整雙腿結果都只記錄並讓系統進 `PAUSED`，不自動補單。
 - Commit 6：完成真實 read-only + dry-run smoke，先跑 Phase 3 broker reconciliation，再跑 dry-run intent；驗收時 `orders=0`、`fills=0`、`trades=0`。
 
@@ -311,6 +311,36 @@ Commit 2 驗收：
 - rejected fake case 會寫入 execution checks 並以 nonzero exit code 結束。
 - dry-run recorder 不寫入 `orders`、`fills`、`trades`。
 - `allow_live_order=true` 會被 `live-dry-run` 拒絕。
+
+Commit 3 strategy order builder refactor 紀錄：
+
+```text
+commit: f2c9512 feat: refactor strategy order builders
+pytest tests/test_strategy_store.py tests/test_replay_integration.py -q: 7 passed
+pytest -q: 102 passed, 6 skipped
+```
+
+Commit 3 驗收：
+
+- `PairStrategy` 可單獨 build entry/exit 雙腿 `OrderRequest`，不必立即呼叫 broker。
+- TSM symbol 從 hardcode 拆成 strategy 建構參數，預設仍是 `TSM/USDT:USDT`。
+- replay / PaperBroker path 仍使用同一組 builder 後 submit，既有回測結果不變。
+
+Commit 4 live-dry-run real market data 紀錄：
+
+```text
+新增 LiveDryRunRunner
+新增 CLI real mode: live-dry-run --config ... --reset-store --max-iterations ...
+pytest tests/test_live_market_data.py -q: 41 passed
+pytest -q: 103 passed, 6 skipped
+```
+
+Commit 4 驗收：
+
+- `live-dry-run` 不加 `--fake` 時會走真實 market data runner，沿用 startup auto warmup、quote polling、minute finalize 與 bid/ask tradable spread decision。
+- `ENTRY_PENDING` / `EXIT_PENDING` 不再呼叫 PaperBroker fill，而是產生 `PairExecutionPlan` 並寫入 execution tables。
+- dry-run intent 產生後策略狀態預設進 `PAUSED`，避免重複產生 intent。
+- `orders`、`fills`、`trades` 保持 0；完整資料寫入 `execution_plans`、`execution_legs`、`execution_checks` 與 `events`。
 
 ## 8. Safety 原則
 

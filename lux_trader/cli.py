@@ -18,6 +18,7 @@ from .execution_intent import (
 from .execution_recorder import DryRunExecutionRecorder
 from .live_market_data import CcxtTickerMarketData, FubonQffMarketData
 from .live_runner import (
+    LiveDryRunRunner,
     LivePaperRunner,
     QffWarmupCheckRunner,
     WarmupRunner,
@@ -108,6 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run dry-run execution intent skeleton",
     )
     live_dry_run.add_argument("--config", type=Path, required=True)
+    live_dry_run.add_argument("--resume", action="store_true")
+    live_dry_run.add_argument("--reset-store", action="store_true")
+    live_dry_run.add_argument("--max-iterations", type=int)
     live_dry_run.add_argument(
         "--fake",
         action="store_true",
@@ -120,7 +124,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fake dry-run scenario for the Phase 4 skeleton",
     )
     live_dry_run.add_argument("--max-bars", type=int, default=1)
-    live_dry_run.add_argument("--reset-store", action="store_true")
+    live_dry_run.add_argument(
+        "--quiet-ui",
+        action="store_true",
+        help="Disable live terminal UI and print only the final summary",
+    )
+    live_dry_run.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Keep live terminal UI but disable ANSI colors",
+    )
+    live_dry_run.add_argument(
+        "--skip-warmup",
+        action="store_true",
+        help="Require existing warmup seed bars instead of auto-building them at startup",
+    )
 
     live_doctor = subparsers.add_parser("live-doctor", help="Check live-paper config")
     live_doctor.add_argument("--config", type=Path, required=True)
@@ -477,7 +495,31 @@ def command_live_dry_run(args: argparse.Namespace) -> int:
     if config.safety.allow_live_order:
         raise SystemExit("allow_live_order must remain false for live-dry-run")
     if not args.fake:
-        raise SystemExit("Commit 2 skeleton only supports live-dry-run --fake")
+        reporter = (
+            NullLiveReporter()
+            if args.quiet_ui
+            else LiveTerminalReporter(color=False if args.no_color else None)
+        )
+        try:
+            result = LiveDryRunRunner(config, reporter=reporter).run(
+                resume=args.resume,
+                reset_store=args.reset_store,
+                max_iterations=args.max_iterations,
+                skip_warmup=args.skip_warmup,
+            )
+        except Exception as exc:
+            reporter.error(datetime.now().astimezone(), f"{type(exc).__name__}: {exc}")
+            raise
+        reporter.finish()
+        print(
+            "Live dry-run stopped: "
+            f"iterations={result.iterations}, "
+            f"bars_processed={result.bars_processed}, "
+            f"skipped_minutes={result.skipped_minutes}, "
+            f"plans_recorded={result.plans_recorded}, "
+            f"qff_symbol={result.qff_symbol}"
+        )
+        return 0
     if args.max_bars is not None and args.max_bars < 1:
         raise SystemExit("--max-bars must be >= 1")
 
