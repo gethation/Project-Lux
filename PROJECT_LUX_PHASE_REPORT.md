@@ -279,7 +279,7 @@ Phase 4 目標是建立 dry-run execution：策略產生接近真實下單的雙
 - Commit 3：已完成 strategy order builder refactor，把目前 `PairStrategy` 直接呼叫 `broker.place_order()` 的路徑拆出純 order request builder；PaperBroker 行為維持不變。
 - Commit 4：已完成 `live-dry-run` 真實 market data 流程，重用 Phase 2 auto warmup、quote polling、bid/ask tradable spread、calendar 與 contract policy；產生 intent 後只記錄並預設進 `PAUSED`。
 - Commit 5：已完成 dry-run failure simulation，覆蓋任一腿失敗、延遲、取消、partial fill；任何不完整雙腿結果都只記錄 recommended `PAUSED`，不自動補單。
-- Commit 6：完成真實 read-only + dry-run smoke，先跑 Phase 3 broker reconciliation，再跑 dry-run intent；驗收時 `orders=0`、`fills=0`、`trades=0`。
+- Commit 6：已完成真實 read-only + dry-run smoke，先跑 Phase 3 broker reconciliation，再跑 dry-run intent；驗收時 `orders=0`、`fills=0`、`trades=0`。
 
 Commit 1 execution intent domain 紀錄：
 
@@ -359,6 +359,23 @@ Commit 5 驗收：
 - `simulate-execution --fake-plan` 可建立 deterministic plan 後直接模擬。
 - 不使用 `--fake-plan` 時，CLI 會讀取 store 最新 execution plan 進行模擬。
 - 所有 failure simulation payload 都帶 `recommended_state=paused`，後續 execution gate 可據此阻擋自動補單。
+
+Commit 6 real read-only + dry-run smoke 紀錄：
+
+```text
+新增 test: tests/test_dry_run_smoke.py
+pytest tests/test_dry_run_smoke.py -q: 1 skipped without env gates
+pytest -q: 107 passed, 7 skipped
+LUX_LIVE_MARKETDATA=1 + LUX_READONLY_BROKER=1 pytest tests/test_dry_run_smoke.py -q -m "live_marketdata and readonly_broker and dry_run_smoke": 1 passed
+```
+
+Commit 6 驗收：
+
+- smoke 需要同時設定 `LUX_LIVE_MARKETDATA=1` 與 `LUX_READONLY_BROKER=1`，預設測試環境不會碰真實 API。
+- 測試先用 Fubon / Binance read-only broker 做 reconciliation，必須 `matched` 才繼續。
+- 測試寫入 `ENTRY_PENDING` seed state，讓真實 market data 跨過第一根 finalized minute 後產生 dry-run entry intent，不依賴市場剛好出現 entry signal。
+- `LiveDryRunRunner` 實際完成 auto warmup、market ticks、minute finalize、execution intent record。
+- SQLite 驗證 `broker_reconciliation_runs=1`、`execution_plans>=1`、`execution_legs>=2`，且 `orders=0`、`fills=0`、`trades=0`。
 
 ## 8. Safety 原則
 
