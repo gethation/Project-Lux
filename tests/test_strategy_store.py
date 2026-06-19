@@ -4,7 +4,15 @@ from datetime import datetime
 
 from lux_trader.brokers import PaperBroker
 from lux_trader.indicator import IndicatorEngine
-from lux_trader.models import IndicatorSnapshot, MarketBar, StrategyAction, StrategyState
+from lux_trader.models import (
+    BrokerName,
+    Direction,
+    IndicatorSnapshot,
+    MarketBar,
+    OrderSide,
+    StrategyAction,
+    StrategyState,
+)
 from lux_trader.store import SQLiteStore
 from lux_trader.strategy import PairStrategy, StrategyRuntimeState
 
@@ -19,6 +27,9 @@ def make_bar(index: int, timestamp: str, entry_allowed: bool = True, close_allow
         spread=0.0,
         entry_allowed=entry_allowed,
         close_allowed=close_allowed,
+        qff_symbol="QFFG6",
+        qff_expiry="2026-02-18",
+        contract_policy_state="active",
     )
 
 
@@ -67,6 +78,74 @@ def test_entry_delay_exceeded_cancels_pending(strategy_config, fee_config) -> No
     assert result0.action == StrategyAction.ENTRY_SIGNAL
     assert result1.action == StrategyAction.ENTRY_CANCEL
     assert strategy.state.state == StrategyState.FLAT
+
+
+def test_strategy_builds_entry_order_requests_without_submitting(
+    strategy_config,
+    fee_config,
+) -> None:
+    strategy = PairStrategy(
+        strategy_config,
+        fee_config,
+        PaperBroker(),
+        tsm_symbol="CUSTOM/USDT:USDT",
+    )
+    bar = make_bar(10, "2026-06-08T08:55:00+08:00")
+
+    requests = strategy.build_entry_order_requests(
+        bar=bar,
+        tsm_units=-125.5,
+        qff_contracts=3,
+        costs={
+            "tsm_fee_twd": 12.3,
+            "qff_fee_twd": 15.0,
+            "qff_tax_twd": 1.5,
+        },
+    )
+
+    assert len(requests) == 2
+    tsm_request, qff_request = requests
+    assert tsm_request.broker == BrokerName.BINANCE_TSM
+    assert tsm_request.symbol == "CUSTOM/USDT:USDT"
+    assert tsm_request.side == OrderSide.SELL
+    assert tsm_request.quantity == 125.5
+    assert tsm_request.fee_twd == 12.3
+    assert qff_request.broker == BrokerName.FUBON_QFF
+    assert qff_request.symbol == "QFFG6"
+    assert qff_request.side == OrderSide.BUY
+    assert qff_request.quantity == 3
+    assert qff_request.fee_twd == 16.5
+    assert qff_request.qff_expiry == "2026-02-18"
+    assert qff_request.contract_policy_state == "active"
+
+
+def test_strategy_builds_exit_order_requests_from_open_state(
+    strategy_config,
+    fee_config,
+) -> None:
+    state = StrategyRuntimeState(
+        state=StrategyState.OPEN,
+        position_direction=Direction.SHORT_TSM_LONG_QFF,
+        tsm_units=-125.5,
+        qff_contracts=3,
+    )
+    strategy = PairStrategy(strategy_config, fee_config, PaperBroker(), state=state)
+    bar = make_bar(11, "2026-06-08T08:56:00+08:00")
+
+    requests = strategy.build_exit_order_requests(
+        bar=bar,
+        costs={
+            "tsm_fee_twd": 12.3,
+            "qff_fee_twd": 15.0,
+            "qff_tax_twd": 1.5,
+        },
+    )
+
+    tsm_request, qff_request = requests
+    assert tsm_request.side == OrderSide.BUY
+    assert tsm_request.quantity == 125.5
+    assert qff_request.side == OrderSide.SELL
+    assert qff_request.quantity == 3
 
 
 def test_sqlite_state_roundtrip(tmp_path) -> None:

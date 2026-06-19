@@ -63,6 +63,7 @@ class SystemRunner:
                 self.config.fees,
                 broker,
                 state=strategy_state,
+                tsm_symbol=self.config.live.binance_symbol,
             )
 
             rows_processed = 0

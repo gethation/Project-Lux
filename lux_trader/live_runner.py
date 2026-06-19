@@ -347,6 +347,7 @@ class LivePaperRunner:
                 self.config.fees,
                 PaperBroker(),
                 state=strategy_state,
+                tsm_symbol=self.config.live.binance_symbol,
             )
             builder = LiveMinuteBarBuilder(
                 stale_seconds=self.config.live.stale_seconds,

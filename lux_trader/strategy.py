@@ -197,10 +197,13 @@ class PairStrategy:
         fees: FeeConfig,
         broker: Broker,
         state: StrategyRuntimeState | None = None,
+        *,
+        tsm_symbol: str = "TSM/USDT:USDT",
     ) -> None:
         self.strategy = strategy
         self.fees = fees
         self.broker = broker
+        self.tsm_symbol = tsm_symbol
         self.state = state or StrategyRuntimeState(
             running_max_equity=strategy.initial_capital_twd
         )
@@ -483,64 +486,58 @@ class PairStrategy:
         qff_contracts: int,
         costs: dict[str, float],
     ) -> tuple[list[OrderResult], list[Fill]]:
-        return self._place_pair_orders(
+        requests = self.build_entry_order_requests(
             bar=bar,
             tsm_units=tsm_units,
             qff_contracts=qff_contracts,
-            tsm_fee=costs["tsm_fee_twd"],
-            qff_fee=costs["qff_fee_twd"] + costs["qff_tax_twd"],
+            costs=costs,
         )
+        return self._submit_order_requests(requests)
 
     def _place_exit_orders(
         self,
         bar: MarketBar,
         costs: dict[str, float],
     ) -> tuple[list[OrderResult], list[Fill]]:
-        return self._place_pair_orders(
+        requests = self.build_exit_order_requests(bar=bar, costs=costs)
+        return self._submit_order_requests(requests)
+
+    def build_entry_order_requests(
+        self,
+        *,
+        bar: MarketBar,
+        tsm_units: float,
+        qff_contracts: int,
+        costs: dict[str, float],
+    ) -> list[OrderRequest]:
+        return build_pair_order_requests(
             bar=bar,
+            tsm_symbol=self.tsm_symbol,
+            tsm_units=tsm_units,
+            qff_contracts=qff_contracts,
+            tsm_fee=costs["tsm_fee_twd"],
+            qff_fee=costs["qff_fee_twd"] + costs["qff_tax_twd"],
+        )
+
+    def build_exit_order_requests(
+        self,
+        *,
+        bar: MarketBar,
+        costs: dict[str, float],
+    ) -> list[OrderRequest]:
+        return build_pair_order_requests(
+            bar=bar,
+            tsm_symbol=self.tsm_symbol,
             tsm_units=-self.state.tsm_units,
             qff_contracts=-self.state.qff_contracts,
             tsm_fee=costs["tsm_fee_twd"],
             qff_fee=costs["qff_fee_twd"] + costs["qff_tax_twd"],
         )
 
-    def _place_pair_orders(
+    def _submit_order_requests(
         self,
-        *,
-        bar: MarketBar,
-        tsm_units: float,
-        qff_contracts: int,
-        tsm_fee: float,
-        qff_fee: float,
+        requests: list[OrderRequest],
     ) -> tuple[list[OrderResult], list[Fill]]:
-        requests = [
-            OrderRequest(
-                broker=BrokerName.BINANCE_TSM,
-            symbol="TSM/USDT:USDT",
-                side=OrderSide.BUY if tsm_units > 0 else OrderSide.SELL,
-                quantity=abs(tsm_units),
-                price=bar.tsm_twd_fair,
-                timestamp=bar.timestamp,
-                row_index=bar.row_index,
-                fee_twd=tsm_fee,
-                qff_symbol=bar.qff_symbol,
-                qff_expiry=bar.qff_expiry,
-                contract_policy_state=bar.contract_policy_state,
-            ),
-            OrderRequest(
-                broker=BrokerName.FUBON_QFF,
-                symbol=bar.qff_symbol or "QFF",
-                side=OrderSide.BUY if qff_contracts > 0 else OrderSide.SELL,
-                quantity=abs(qff_contracts),
-                price=bar.qff_close_filled,
-                timestamp=bar.timestamp,
-                row_index=bar.row_index,
-                fee_twd=qff_fee,
-                qff_symbol=bar.qff_symbol,
-                qff_expiry=bar.qff_expiry,
-                contract_policy_state=bar.contract_policy_state,
-            ),
-        ]
         orders: list[OrderResult] = []
         fills: list[Fill] = []
         for request in requests:
@@ -585,3 +582,42 @@ class PairStrategy:
         self.state.candidate_idx = -1
         self.state.candidate_time = None
         self.state.candidate_zscore = None
+
+
+def build_pair_order_requests(
+    *,
+    bar: MarketBar,
+    tsm_symbol: str,
+    tsm_units: float,
+    qff_contracts: int,
+    tsm_fee: float,
+    qff_fee: float,
+) -> list[OrderRequest]:
+    return [
+        OrderRequest(
+            broker=BrokerName.BINANCE_TSM,
+            symbol=tsm_symbol,
+            side=OrderSide.BUY if tsm_units > 0 else OrderSide.SELL,
+            quantity=abs(tsm_units),
+            price=bar.tsm_twd_fair,
+            timestamp=bar.timestamp,
+            row_index=bar.row_index,
+            fee_twd=tsm_fee,
+            qff_symbol=bar.qff_symbol,
+            qff_expiry=bar.qff_expiry,
+            contract_policy_state=bar.contract_policy_state,
+        ),
+        OrderRequest(
+            broker=BrokerName.FUBON_QFF,
+            symbol=bar.qff_symbol or "QFF",
+            side=OrderSide.BUY if qff_contracts > 0 else OrderSide.SELL,
+            quantity=abs(qff_contracts),
+            price=bar.qff_close_filled,
+            timestamp=bar.timestamp,
+            row_index=bar.row_index,
+            fee_twd=qff_fee,
+            qff_symbol=bar.qff_symbol,
+            qff_expiry=bar.qff_expiry,
+            contract_policy_state=bar.contract_policy_state,
+        ),
+    ]
