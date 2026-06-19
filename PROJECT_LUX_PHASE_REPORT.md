@@ -247,10 +247,10 @@ duplicate_bars=0
 
 ### Phase 3 預計工作
 
-- Commit 1：建立 read-only broker domain skeleton，包含 snapshot/reconciliation 型別、fake broker 與 mismatch 判斷單元測試。
-- Commit 2：新增 SQLite reconciliation tables 與 `broker-doctor` / `reconcile-brokers` CLI skeleton，先用 fake/stub 跑通資料流。
-- Commit 3：接 Fubon read-only adapter，查 `margin_equity`、`single_position`、today orders；真實 smoke 需 `LUX_READONLY_BROKER=1`。
-- Commit 4：接 Binance read-only adapter，從 `.env` 讀 `BINANCE_API_KEY` / `BINANCE_SECRET`，查 balance、positions、open orders。
+- Commit 1：已完成 read-only broker domain skeleton，包含 snapshot/reconciliation 型別、fake broker 與 mismatch 判斷單元測試。
+- Commit 2：已完成 SQLite reconciliation tables 與 `broker-doctor` / `reconcile-brokers` CLI skeleton，fake/stub 資料流可跑通。
+- Commit 3：已完成 Fubon read-only adapter，查 `margin_equity`、`single_position`、today orders；真實 smoke 需 `LUX_READONLY_BROKER=1`。
+- Commit 4：已完成 Binance read-only adapter，從 `.env` 讀 `BINANCE_API_KEY` / `BINANCE_SECRET`，查 balance、positions、open orders。
 - Commit 5：完成 Fubon + Binance + Store reconciliation acceptance；第一版 mismatch 只 warning + record，不阻擋 `live-paper`。
 
 Commit 1-2 skeleton 指令：
@@ -258,6 +258,16 @@ Commit 1-2 skeleton 指令：
 ```powershell
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader broker-doctor --config config.live.example.toml
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config config.live.example.toml --fake
+```
+
+Commit 3-4 read-only smoke 紀錄：
+
+```text
+broker-doctor: FUBON_QFF positions=0 open_orders=0 margins=5
+broker-doctor: BINANCE_TSM positions=0 open_orders=0 margins=1
+reconcile-brokers --fubon-readonly --fake-binance: status=matched, issues=0
+reconcile-brokers --readonly: status=matched, issues=0
+pytest tests/test_readonly_brokers_smoke.py -q -m readonly_broker: 2 passed
 ```
 
 ### Phase 4 預計工作

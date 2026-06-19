@@ -137,6 +137,17 @@ Fubon or Binance private APIs. Use fake brokers to validate the local data flow:
 `reconcile-brokers --fake` writes a reconciliation report to SQLite. Mismatches are
 recorded as `warning` and do not block `live-paper` in this phase.
 
+After `.env` contains Fubon credentials plus `BINANCE_API_KEY` / `BINANCE_SECRET`, run
+real read-only smoke tests explicitly:
+
+```powershell
+$env:LUX_READONLY_BROKER='1'
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader broker-doctor --config config.live.example.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config config.live.example.toml --readonly
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/test_readonly_brokers_smoke.py -q -m readonly_broker
+Remove-Item Env:\LUX_READONLY_BROKER
+```
+
 ## Safety
 
 This milestone has no live trading path. `doctor` fails if live trading is enabled in
