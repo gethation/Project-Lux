@@ -37,6 +37,13 @@ This machine uses Miniconda. Run Python commands through the `Quant` environment
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python --version
 ```
 
+For interactive live commands in PowerShell, prefer the project wrapper. It uses
+the `Quant` environment and streams output with `conda run --no-capture-output`:
+
+```powershell
+.\scripts\lux.ps1 live-dry-run --config config.live.smoke.local.toml --reset-store
+```
+
 Install test tooling:
 
 ```powershell
@@ -56,8 +63,8 @@ Phase 2 live market data with paper orders:
 
 ```powershell
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config config.live.example.toml
-& 'D:\Users\miniconda3\condabin\conda.bat' run --no-capture-output -n Quant python -u -m lux_trader live-paper --config config.live.example.toml --reset-store
-& 'D:\Users\miniconda3\condabin\conda.bat' run --no-capture-output -n Quant python -u -m lux_trader live-paper --config config.live.example.toml --resume
+.\scripts\lux.ps1 live-paper --config config.live.example.toml --reset-store
+.\scripts\lux.ps1 live-paper --config config.live.example.toml --resume
 ```
 
 `live-paper` is the normal Phase 2 system entrypoint. On startup it checks whether the
@@ -88,6 +95,14 @@ remains available as the PoC/reference spread:
 ```text
 09:12:04 LIVE mid=1.84 shortSpread(spread=1.62,z=1.51) longSpread(spread=2.06,z=1.93) FLAT
 09:14 BAR  mid=2.24 z=2.06 shortSpread(spread=2.18,z=2.00) longSpread(spread=2.31,z=2.17) ENTRY_PENDING entry_signal/zscore_crossed pnl=0 eq=1,000,000
+```
+
+Live runtime uses `[trading_calendar].closed_dates` for manually configured market
+holidays. During a closed date or a non-trading session, the live loop does not fetch
+quotes, does not finalize BAR rows, and only refreshes a yellow countdown line:
+
+```text
+02:31:04 LIVE non-trading session next=06/22 08:45 in=54:13:56
 ```
 
 ## Warmup-live testing
@@ -148,7 +163,65 @@ $env:LUX_READONLY_BROKER='1'
 Remove-Item Env:\LUX_READONLY_BROKER
 ```
 
+## Dry-run And Phase 5 Extension Point
+
+Phase 4 dry-run execution records realistic pair execution intent without sending
+orders:
+
+```powershell
+.\scripts\lux.ps1 dry-run-doctor --config config.live.example.toml
+.\scripts\lux.ps1 live-dry-run --config config.live.example.toml --reset-store
+.\scripts\lux.ps1 execution-summary --config config.live.example.toml
+```
+
+Full dry-run validation has two layers. The default deterministic suite must pass
+without touching external APIs:
+
+```powershell
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest -q
+```
+
+The real API smoke requires the ignored `config.live.smoke.local.toml`, Fubon
+credentials, Binance read-only keys, and explicit gates. It writes to
+`data\live_dry_run_full_smoke.sqlite3` and must still leave `orders`, `fills`,
+and `trades` empty:
+
+```powershell
+$env:LUX_LIVE_MARKETDATA='1'
+$env:LUX_READONLY_BROKER='1'
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config config.live.smoke.local.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader dry-run-doctor --config config.live.smoke.local.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config config.live.smoke.local.toml --readonly
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/test_dry_run_smoke.py -q -m "live_marketdata and readonly_broker and dry_run_smoke"
+Remove-Item Env:\LUX_LIVE_MARKETDATA
+Remove-Item Env:\LUX_READONLY_BROKER
+```
+
+For a manual 10-15 minute soak, use the same smoke config:
+
+```powershell
+$env:LUX_LIVE_MARKETDATA='1'
+.\scripts\lux.ps1 live-dry-run --config config.live.smoke.local.toml --reset-store --max-iterations 900 --no-color
+Remove-Item Env:\LUX_LIVE_MARKETDATA
+```
+
+Commit D adds the Phase 5 extension point but no live execution adapter. Use
+`live-order-doctor` to inspect gates; `live-execute` is reserved and fails before any
+market-data provider or broker execution adapter is opened.
+
+```powershell
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-order-doctor --config config.live.example.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-execute --config config.live.example.toml --quiet-ui
+```
+
+`live-execute` must remain unusable until Phase 5 live execution adapters, safety
+gate checks, and post-trade reconciliation are implemented. The config section
+`[live_execution]` is present only to document the future gate shape and defaults to
+disabled.
+
 ## Safety
 
-This milestone has no live trading path. `doctor` fails if live trading is enabled in
-the config. Future live order code must require explicit environment and config gates.
+This milestone still has no live order implementation. `live-paper`, `live-dry-run`,
+and `live-execute` all refuse unsafe settings or fail fast before any order can be
+sent. Future live order code must require explicit environment and config gates plus
+read-only broker reconciliation.
