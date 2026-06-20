@@ -9,9 +9,11 @@ from lux_trader.config import (
     BrokerReconciliationConfig,
     ContractPolicyConfig,
     FeeConfig,
+    LiveExecutionConfig,
     LiveMarketDataConfig,
     SafetyConfig,
     StrategyConfig,
+    TradingCalendarConfig,
 )
 
 
@@ -72,6 +74,7 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             force_exit_time="13:35",
             holidays=(),
         ),
+        trading_calendar=TradingCalendarConfig(closed_dates=()),
         live=LiveMarketDataConfig(
             polling_seconds=1.0,
             minute_finalize_delay_seconds=1.0,
@@ -92,5 +95,11 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             fail_on_mismatch=False,
             tsm_units_tolerance=1e-6,
             qff_contract_tolerance=0,
+        ),
+        live_execution=LiveExecutionConfig(
+            enabled=False,
+            require_readonly_reconciliation=True,
+            max_plan_age_seconds=120,
+            qff_first=True,
         ),
     )

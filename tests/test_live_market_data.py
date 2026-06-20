@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from lux_trader.config import AppConfig, LiveMarketDataConfig, SafetyConfig
+from lux_trader.indicator import IndicatorEngine
 from lux_trader.live_market_data import (
     CcxtTickerMarketData,
     LiveMinuteBarBuilder,
@@ -37,7 +38,14 @@ from lux_trader.live_runner import (
     should_force_exit_for_contract_policy,
     should_switch_contract_before_processing,
 )
-from lux_trader.models import Direction, IndicatorSnapshot, StrategyState
+from lux_trader.models import (
+    BrokerName,
+    Direction,
+    IndicatorSnapshot,
+    MarketBar,
+    OrderSide,
+    StrategyState,
+)
 from lux_trader.strategy import StrategyRuntimeState
 from lux_trader.store import SQLiteStore
 from lux_trader.terminal_ui import LiveTerminalReporter
@@ -52,6 +60,7 @@ class FakeQffProvider:
         self.quotes = list(quotes or [])
         self.select_calls = 0
         self.fetch_1m_calls: list[tuple[str, datetime, datetime]] = []
+        self.quote_calls: list[str] = []
 
     def select_front_month_symbol(self, product: str) -> str:
         self.select_calls += 1
@@ -62,6 +71,7 @@ class FakeQffProvider:
         return self.rows.copy()
 
     def fetch_quote(self, symbol: str) -> LiveQuote:
+        self.quote_calls.append(symbol)
         if not self.quotes:
             raise RuntimeError("No fake QFF quotes left")
         return self.quotes.pop(0)
@@ -72,12 +82,14 @@ class FakeOhlcvProvider:
         self.rows = rows
         self.quotes = list(quotes or [])
         self.fetch_ohlcv_calls: list[tuple[str, datetime, datetime]] = []
+        self.quote_calls: list[str] = []
 
     def fetch_ohlcv_1m(self, symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
         self.fetch_ohlcv_calls.append((symbol, start, end))
         return self.rows.copy()
 
     def fetch_quote(self, symbol: str) -> LiveQuote:
+        self.quote_calls.append(symbol)
         if not self.quotes:
             raise RuntimeError("No fake quotes left")
         return self.quotes.pop(0)
@@ -227,6 +239,158 @@ def small_live_config(tmp_path: Path) -> AppConfig:
 def count_table(store: SQLiteStore, table: str) -> int:
     row = store.connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
     return int(row["count"])
+
+
+def dry_run_warmup_rows() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    return (
+        rows(
+            [
+                ("2026-06-18T08:42:00+08:00", 100.0),
+                ("2026-06-18T08:43:00+08:00", 100.0),
+                ("2026-06-18T08:44:00+08:00", 100.0),
+            ]
+        ),
+        rows(
+            [
+                ("2026-06-18T08:42:00+08:00", 20.0),
+                ("2026-06-18T08:43:00+08:00", 20.0),
+                ("2026-06-18T08:44:00+08:00", 20.0),
+            ]
+        ),
+        rows(
+            [
+                ("2026-06-18T08:42:00+08:00", 25.0),
+                ("2026-06-18T08:43:00+08:00", 25.0),
+                ("2026-06-18T08:44:00+08:00", 25.0),
+            ]
+        ),
+    )
+
+
+def seed_warmup_bars(config: AppConfig) -> None:
+    bars = [
+        MarketBar(
+            row_index=index,
+            timestamp=ts(f"2026-06-18T08:4{index}:00+08:00"),
+            qff_close=100.0,
+            qff_close_filled=100.0,
+            tsm_twd_fair=100.0 + index,
+            spread=float(index),
+            qff_symbol="QFF202607",
+            qff_expiry="2026-07-15",
+            contract_policy_state="active",
+        )
+        for index in range(config.strategy.zscore_window)
+    ]
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        store.replace_warmup_bars(bars)
+        store.commit()
+    finally:
+        store.close()
+
+
+def dry_run_quote_providers(
+    quote_times: list[str],
+    *,
+    qff_rows: pd.DataFrame | None = None,
+    tsm_rows: pd.DataFrame | None = None,
+    usd_rows: pd.DataFrame | None = None,
+    qff_price: float = 100.0,
+    tsm_price: float = 20.0,
+    usd_price: float = 30.0,
+) -> tuple[FakeQffProvider, FakeOhlcvProvider, FakeOhlcvProvider]:
+    default_qff_rows, default_tsm_rows, default_usd_rows = dry_run_warmup_rows()
+    return (
+        FakeQffProvider(
+            qff_rows if qff_rows is not None else default_qff_rows,
+            quotes=[
+                quote("qff", value, qff_price, bid=qff_price - 0.1, ask=qff_price + 0.1)
+                for value in quote_times
+            ],
+        ),
+        FakeOhlcvProvider(
+            tsm_rows if tsm_rows is not None else default_tsm_rows,
+            quotes=[
+                quote("tsm", value, tsm_price, bid=tsm_price - 0.01, ask=tsm_price + 0.01)
+                for value in quote_times
+            ],
+        ),
+        FakeOhlcvProvider(
+            usd_rows if usd_rows is not None else default_usd_rows,
+            quotes=[
+                quote("usd", value, usd_price, bid=usd_price - 0.01, ask=usd_price + 0.01)
+                for value in quote_times
+            ],
+        ),
+    )
+
+
+def dry_run_clock(values: list[str]):
+    clocks = iter(ts(value) for value in values)
+    return lambda: next(clocks)
+
+
+def test_live_dry_run_closed_calendar_skips_market_data_and_bars(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    config = replace(
+        config,
+        trading_calendar=replace(
+            config.trading_calendar,
+            closed_dates=(date(2026, 6, 19),),
+        ),
+    )
+    seed_warmup_bars(config)
+    qff = FakeQffProvider(pd.DataFrame())
+    tsm = FakeOhlcvProvider(pd.DataFrame())
+    usd = FakeOhlcvProvider(pd.DataFrame())
+    terminal_output = io.StringIO()
+
+    result = LiveDryRunRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        clock=dry_run_clock(
+            [
+                "2026-06-20T02:30:00+08:00",
+                "2026-06-20T02:30:01+08:00",
+                "2026-06-20T02:30:02+08:00",
+                "2026-06-20T02:30:03+08:00",
+                "2026-06-20T02:30:04+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(terminal_output, color=False),
+    ).run(max_iterations=3, skip_warmup=True)
+
+    assert result.iterations == 3
+    assert result.bars_processed == 0
+    assert result.plans_recorded == 0
+    assert qff.quote_calls == []
+    assert tsm.quote_calls == []
+    assert usd.quote_calls == []
+    output = terminal_output.getvalue()
+    assert "LIVE non-trading session next=06/22 08:45" in output
+    assert "BAR" not in output
+
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        assert count_table(store, "market_ticks") == 0
+        assert count_table(store, "bars") == 0
+        assert count_table(store, "execution_plans") == 0
+        non_trading_events = store.connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM events
+            WHERE event_type = 'non_trading_session'
+            """
+        ).fetchone()[0]
+        assert non_trading_events == 1
+    finally:
+        store.close()
 
 
 def indicator_snapshot(zscore: float = 2.1) -> IndicatorSnapshot:
@@ -986,63 +1150,13 @@ def test_live_paper_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
 def test_live_dry_run_records_intent_without_orders_fills_or_trades(tmp_path) -> None:
     config = small_live_config(tmp_path)
     config = replace(config, strategy=replace(config.strategy, entry_z=1.0))
-    qff = FakeQffProvider(
-        rows(
-            [
-                ("2026-06-18T08:42:00+08:00", 100.0),
-                ("2026-06-18T08:43:00+08:00", 100.0),
-                ("2026-06-18T08:44:00+08:00", 100.0),
-            ]
-        ),
-        quotes=[
-            quote("qff", "2026-06-18T08:45:30+08:00", 100.0, bid=99.9, ask=100.1),
-            quote("qff", "2026-06-18T08:45:59+08:00", 100.0, bid=99.9, ask=100.1),
-            quote("qff", "2026-06-18T08:46:01+08:00", 100.0, bid=99.9, ask=100.1),
-            quote("qff", "2026-06-18T08:46:59+08:00", 100.0, bid=99.9, ask=100.1),
-            quote("qff", "2026-06-18T08:47:01+08:00", 100.0, bid=99.9, ask=100.1),
-        ],
-    )
-    tsm = FakeOhlcvProvider(
-        rows(
-            [
-                ("2026-06-18T08:42:00+08:00", 20.0),
-                ("2026-06-18T08:43:00+08:00", 20.0),
-                ("2026-06-18T08:44:00+08:00", 20.0),
-            ]
-        ),
-        quotes=[
-            quote("tsm", "2026-06-18T08:45:30+08:00", 20.0, bid=19.99, ask=20.01),
-            quote("tsm", "2026-06-18T08:45:59+08:00", 20.0, bid=19.99, ask=20.01),
-            quote("tsm", "2026-06-18T08:46:01+08:00", 20.0, bid=19.99, ask=20.01),
-            quote("tsm", "2026-06-18T08:46:59+08:00", 20.0, bid=19.99, ask=20.01),
-            quote("tsm", "2026-06-18T08:47:01+08:00", 20.0, bid=19.99, ask=20.01),
-        ],
-    )
-    usd = FakeOhlcvProvider(
-        rows(
-            [
-                ("2026-06-18T08:42:00+08:00", 25.0),
-                ("2026-06-18T08:43:00+08:00", 25.0),
-                ("2026-06-18T08:44:00+08:00", 25.0),
-            ]
-        ),
-        quotes=[
-            quote("usd", "2026-06-18T08:45:30+08:00", 30.0, bid=29.99, ask=30.01),
-            quote("usd", "2026-06-18T08:45:59+08:00", 30.0, bid=29.99, ask=30.01),
-            quote("usd", "2026-06-18T08:46:01+08:00", 30.0, bid=29.99, ask=30.01),
-            quote("usd", "2026-06-18T08:46:59+08:00", 30.0, bid=29.99, ask=30.01),
-            quote("usd", "2026-06-18T08:47:01+08:00", 30.0, bid=29.99, ask=30.01),
-        ],
-    )
-    clocks = iter(
+    qff, tsm, usd = dry_run_quote_providers(
         [
-            ts("2026-06-18T08:45:00+08:00"),
-            ts("2026-06-18T08:45:30+08:00"),
-            ts("2026-06-18T08:45:59+08:00"),
-            ts("2026-06-18T08:46:01+08:00"),
-            ts("2026-06-18T08:46:59+08:00"),
-            ts("2026-06-18T08:47:01+08:00"),
-            ts("2026-06-18T08:47:02+08:00"),
+            "2026-06-18T08:45:30+08:00",
+            "2026-06-18T08:45:59+08:00",
+            "2026-06-18T08:46:01+08:00",
+            "2026-06-18T08:46:59+08:00",
+            "2026-06-18T08:47:01+08:00",
         ]
     )
     terminal_output = io.StringIO()
@@ -1052,7 +1166,17 @@ def test_live_dry_run_records_intent_without_orders_fills_or_trades(tmp_path) ->
         qff_provider=qff,
         tsm_provider=tsm,
         usdttwd_provider=usd,
-        clock=lambda: next(clocks),
+        clock=dry_run_clock(
+            [
+                "2026-06-18T08:45:00+08:00",
+                "2026-06-18T08:45:30+08:00",
+                "2026-06-18T08:45:59+08:00",
+                "2026-06-18T08:46:01+08:00",
+                "2026-06-18T08:46:59+08:00",
+                "2026-06-18T08:47:01+08:00",
+                "2026-06-18T08:47:02+08:00",
+            ]
+        ),
         sleeper=lambda _: None,
         reporter=LiveTerminalReporter(terminal_output, color=False),
     ).run(reset_store=True, max_iterations=5)
@@ -1078,6 +1202,295 @@ def test_live_dry_run_records_intent_without_orders_fills_or_trades(tmp_path) ->
         assert plan is not None
         assert plan["status"] == "recorded"
         assert plan["plan_type"] == "entry"
+    finally:
+        store.close()
+
+
+def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    config = replace(config, strategy=replace(config.strategy, entry_z=1.0))
+    first_qff, first_tsm, first_usd = dry_run_quote_providers(
+        [
+            "2026-06-18T08:45:30+08:00",
+            "2026-06-18T08:45:59+08:00",
+            "2026-06-18T08:46:01+08:00",
+            "2026-06-18T08:46:59+08:00",
+            "2026-06-18T08:47:01+08:00",
+        ]
+    )
+
+    first_result = LiveDryRunRunner(
+        config,
+        qff_provider=first_qff,
+        tsm_provider=first_tsm,
+        usdttwd_provider=first_usd,
+        clock=dry_run_clock(
+            [
+                "2026-06-18T08:45:00+08:00",
+                "2026-06-18T08:45:30+08:00",
+                "2026-06-18T08:45:59+08:00",
+                "2026-06-18T08:46:01+08:00",
+                "2026-06-18T08:46:59+08:00",
+                "2026-06-18T08:47:01+08:00",
+                "2026-06-18T08:47:02+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(io.StringIO(), color=False),
+    ).run(reset_store=True, max_iterations=5)
+
+    assert first_result.plans_recorded == 1
+
+    second_qff, second_tsm, second_usd = dry_run_quote_providers(
+        [
+            "2026-06-18T08:47:30+08:00",
+            "2026-06-18T08:47:59+08:00",
+            "2026-06-18T08:48:01+08:00",
+        ],
+        qff_rows=pd.DataFrame(),
+        tsm_rows=pd.DataFrame(),
+        usd_rows=pd.DataFrame(),
+    )
+    second_result = LiveDryRunRunner(
+        config,
+        qff_provider=second_qff,
+        tsm_provider=second_tsm,
+        usdttwd_provider=second_usd,
+        clock=dry_run_clock(
+            [
+                "2026-06-18T08:47:02+08:00",
+                "2026-06-18T08:47:30+08:00",
+                "2026-06-18T08:47:59+08:00",
+                "2026-06-18T08:48:01+08:00",
+                "2026-06-18T08:48:02+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(io.StringIO(), color=False),
+    ).run(resume=True, max_iterations=3)
+
+    assert second_result.plans_recorded == 0
+
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        assert count_table(store, "warmup_bars") == config.live.warmup_minutes
+        assert count_table(store, "live_runs") == 2
+        assert count_table(store, "execution_plans") == 1
+        duplicate_bars = store.connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM (
+                SELECT timestamp
+                FROM bars
+                GROUP BY timestamp
+                HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()[0]
+        assert duplicate_bars == 0
+        state = store.load_resume_state()
+        assert state is not None
+        assert state.strategy.state == StrategyState.PAUSED
+    finally:
+        store.close()
+
+
+def seed_strategy_state(config: AppConfig, state: StrategyRuntimeState) -> None:
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        store.save_state(
+            0,
+            state.exit_signal_time
+            or state.candidate_time
+            or ts("2026-06-18T08:45:00+08:00"),
+            state,
+            IndicatorEngine(window=config.strategy.zscore_window),
+        )
+        store.commit()
+    finally:
+        store.close()
+
+
+def open_position_state(*, state: StrategyState) -> StrategyRuntimeState:
+    entry_time = ts("2026-06-18T08:40:00+08:00")
+    return StrategyRuntimeState(
+        state=state,
+        position_direction=Direction.SHORT_TSM_LONG_QFF,
+        exit_signal_idx=0 if state == StrategyState.EXIT_PENDING else -1,
+        exit_signal_time=ts("2026-06-18T08:45:00+08:00")
+        if state == StrategyState.EXIT_PENDING
+        else None,
+        exit_signal_zscore=-0.1 if state == StrategyState.EXIT_PENDING else None,
+        entry_tsm=100.0,
+        entry_qff=100.0,
+        entry_zscore=2.2,
+        tsm_units=-10_000.0,
+        qff_units=10_000.0,
+        qff_contracts=100,
+        actual_leg_notional_twd=1_000_000.0,
+        running_max_equity=2_000_000.0,
+        open_trade={
+            "entry_signal_idx": 0,
+            "entry_signal_time": entry_time,
+            "entry_signal_zscore": 2.2,
+            "entry_idx": 0,
+            "entry_time": entry_time,
+            "entry_delay_minutes": 1,
+            "entry_fill_zscore": 2.1,
+            "direction": Direction.SHORT_TSM_LONG_QFF.value,
+            "entry_tsm_twd_fair": 100.0,
+            "entry_qff_close": 100.0,
+            "tsm_units": -10_000.0,
+            "qff_units": 10_000.0,
+            "qff_contracts": 100,
+            "raw_qff_contracts": 100.0,
+            "leg_notional_twd": 1_000_000.0,
+            "actual_leg_notional_twd": 1_000_000.0,
+            "qff_contract_multiplier": 100.0,
+            "entry_tsm_fee_twd": 500.0,
+            "entry_qff_fee_twd": 500.0,
+            "entry_qff_tax_twd": 2.0,
+            "entry_fee_twd": 1002.0,
+            "qff_symbol": "QFF202607",
+            "qff_expiry": "2026-07-15",
+            "contract_policy_state": "active",
+        },
+        trading_qff_symbol="QFF202607",
+        trading_qff_expiry="2026-07-15",
+        eligible_active_qff_symbol="QFF202607",
+        eligible_active_qff_expiry="2026-07-15",
+        last_warmup_symbol="QFF202607",
+        contract_policy_state="active",
+    )
+
+
+def test_live_dry_run_exit_pending_records_exit_intent(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    seed_strategy_state(config, open_position_state(state=StrategyState.EXIT_PENDING))
+    qff, tsm, usd = dry_run_quote_providers(
+        [
+            "2026-06-18T08:45:30+08:00",
+            "2026-06-18T08:45:59+08:00",
+            "2026-06-18T08:46:01+08:00",
+        ]
+    )
+
+    result = LiveDryRunRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        clock=dry_run_clock(
+            [
+                "2026-06-18T08:45:00+08:00",
+                "2026-06-18T08:45:30+08:00",
+                "2026-06-18T08:45:59+08:00",
+                "2026-06-18T08:46:01+08:00",
+                "2026-06-18T08:46:02+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(io.StringIO(), color=False),
+    ).run(resume=True, max_iterations=3)
+
+    assert result.plans_recorded == 1
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        plan = store.load_latest_execution_plan_payload()
+        assert plan is not None
+        assert plan["plan_type"] == "exit"
+        assert plan["status"] == "recorded"
+        assert plan["reason"] == "dry_run_exit_intent"
+        sides = {leg["broker"]: leg["side"] for leg in plan["legs"]}
+        assert sides[BrokerName.BINANCE_TSM.value] == OrderSide.BUY.value
+        assert sides[BrokerName.FUBON_QFF.value] == OrderSide.SELL.value
+        assert plan["qff_symbol"] == "QFF202607"
+        assert plan["qff_expiry"] == "2026-07-15"
+        assert plan["contract_policy_state"] == "active"
+        assert count_table(store, "orders") == 0
+        assert count_table(store, "fills") == 0
+        assert count_table(store, "trades") == 0
+    finally:
+        store.close()
+
+
+def test_live_dry_run_force_exit_records_rollover_exit_intent(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    state = open_position_state(state=StrategyState.OPEN)
+    state.trading_qff_expiry = "2026-06-19"
+    state.open_trade["qff_expiry"] = "2026-06-19"
+    seed_strategy_state(config, state)
+    force_qff_rows = rows(
+        [
+            ("2026-06-18T13:32:00+08:00", 100.0),
+            ("2026-06-18T13:33:00+08:00", 100.0),
+            ("2026-06-18T13:34:00+08:00", 100.0),
+        ]
+    )
+    force_tsm_rows = rows(
+        [
+            ("2026-06-18T13:32:00+08:00", 20.0),
+            ("2026-06-18T13:33:00+08:00", 20.0),
+            ("2026-06-18T13:34:00+08:00", 20.0),
+        ]
+    )
+    force_usd_rows = rows(
+        [
+            ("2026-06-18T13:32:00+08:00", 25.0),
+            ("2026-06-18T13:33:00+08:00", 25.0),
+            ("2026-06-18T13:34:00+08:00", 25.0),
+        ]
+    )
+    qff, tsm, usd = dry_run_quote_providers(
+        [
+            "2026-06-18T13:35:30+08:00",
+            "2026-06-18T13:35:59+08:00",
+            "2026-06-18T13:36:01+08:00",
+        ],
+        qff_rows=force_qff_rows,
+        tsm_rows=force_tsm_rows,
+        usd_rows=force_usd_rows,
+    )
+
+    result = LiveDryRunRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        clock=dry_run_clock(
+            [
+                "2026-06-18T13:35:00+08:00",
+                "2026-06-18T13:35:30+08:00",
+                "2026-06-18T13:35:59+08:00",
+                "2026-06-18T13:36:01+08:00",
+                "2026-06-18T13:36:02+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(io.StringIO(), color=False),
+    ).run(resume=True, max_iterations=3)
+
+    assert result.plans_recorded == 1
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        plan = store.load_latest_execution_plan_payload()
+        assert plan is not None
+        assert plan["plan_type"] == "exit"
+        assert plan["reason"] == "rollover_force_exit"
+        event_types = [
+            row["event_type"]
+            for row in store.connection.execute(
+                "SELECT event_type FROM events ORDER BY event_id"
+            ).fetchall()
+        ]
+        assert "rollover_force_exit" in event_types
+        assert count_table(store, "orders") == 0
+        assert count_table(store, "fills") == 0
+        assert count_table(store, "trades") == 0
     finally:
         store.close()
 

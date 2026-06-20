@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from lux_trader.calendar import TradingCalendar
+from lux_trader.calendar import TradingCalendar, live_session_status
 from lux_trader.models import Direction, MarketBar
 from lux_trader.sizing import size_position_for_direction
 
@@ -28,6 +28,55 @@ def test_friday_night_is_close_only() -> None:
     assert bars[0].close_allowed
     assert not bars[0].entry_allowed
     assert bars[0].friday_night_close_only
+
+
+def test_live_calendar_closed_date_blocks_day_and_night_sessions() -> None:
+    closed_dates = (date(2026, 6, 19),)
+
+    friday_night = live_session_status(
+        datetime.fromisoformat("2026-06-19T17:25:00+08:00"),
+        closed_dates,
+    )
+    friday_after_midnight = live_session_status(
+        datetime.fromisoformat("2026-06-19T02:30:00+08:00"),
+        closed_dates,
+    )
+    saturday_after_midnight = live_session_status(
+        datetime.fromisoformat("2026-06-20T02:30:00+08:00"),
+        closed_dates,
+    )
+
+    assert not friday_night.is_trading
+    assert friday_night.reason == "closed_date"
+    assert not friday_after_midnight.is_trading
+    assert friday_after_midnight.reason == "closed_date"
+    assert not saturday_after_midnight.is_trading
+    assert saturday_after_midnight.reason == "closed_date"
+    assert saturday_after_midnight.next_open_at == datetime.fromisoformat(
+        "2026-06-22T08:45:00+08:00"
+    )
+
+
+def test_live_calendar_weekday_sessions_and_friday_close_only() -> None:
+    weekday_day = live_session_status(
+        datetime.fromisoformat("2026-06-18T08:45:00+08:00"),
+        (),
+    )
+    weekday_night = live_session_status(
+        datetime.fromisoformat("2026-06-18T17:25:00+08:00"),
+        (),
+    )
+    friday_night = live_session_status(
+        datetime.fromisoformat("2026-06-12T17:25:00+08:00"),
+        (),
+    )
+
+    assert weekday_day.is_trading
+    assert not weekday_day.is_close_only
+    assert weekday_night.is_trading
+    assert not weekday_night.is_close_only
+    assert friday_night.is_trading
+    assert friday_night.is_close_only
 
 
 def test_inactive_session_is_not_allowed_without_qff_trades() -> None:

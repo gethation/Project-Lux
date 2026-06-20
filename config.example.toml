@@ -21,8 +21,17 @@ allow_live_order = false
 validate_expected_zscore = true
 expected_zscore_tolerance = 0.0000001
 
+[trading_calendar]
+closed_dates = []
+
 [broker_reconciliation]
 enabled = false
 fail_on_mismatch = false
 tsm_units_tolerance = 0.000001
 qff_contract_tolerance = 0
+
+[live_execution]
+enabled = false
+require_readonly_reconciliation = true
+max_plan_age_seconds = 120
+qff_first = true

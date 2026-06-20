@@ -9,6 +9,7 @@ from typing import Any, Callable
 from .brokers import PaperBroker
 from .config import AppConfig
 from .contract_policy import ExpiryBufferContractPolicy, QffContractSelection
+from .calendar import live_session_status
 from .execution_intent import (
     ExecutionPlanType,
     PairExecutionPlan,
@@ -89,6 +90,30 @@ class LiveDryRunResult:
     skipped_minutes: int
     plans_recorded: int
     qff_symbol: str
+
+
+@dataclass(frozen=True)
+class LiveProviderSet:
+    qff: QuoteProvider | FubonQffMarketData
+    tsm: QuoteProvider
+    usdttwd: QuoteProvider
+    close_qff_on_exit: bool
+
+
+@dataclass(frozen=True)
+class LiveRuntimeContext:
+    started_at: datetime
+    qff_provider: QuoteProvider | FubonQffMarketData
+    tsm_provider: QuoteProvider
+    usdttwd_provider: QuoteProvider
+    qff_provider_to_close: Any | None
+    qff_symbol: str
+    qff_expiry: str | None
+    strategy: PairStrategy
+    indicator: IndicatorEngine
+    seed_bars: list[MarketBar]
+    builder: LiveMinuteBarBuilder
+    next_row_index: int
 
 
 class WarmupRunner:
@@ -264,11 +289,457 @@ class QffWarmupCheckRunner:
         return self.config.store_path.parent / f"qff_warmup_check_{timestamp}.csv"
 
 
-class LivePaperRunner:
+def open_live_quote_providers(
+    config: AppConfig,
+    *,
+    qff_provider: QuoteProvider | FubonQffMarketData | None,
+    tsm_provider: QuoteProvider | None,
+    usdttwd_provider: QuoteProvider | None,
+    reporter: Any,
+    started_at: datetime,
+) -> LiveProviderSet:
+    reporter.event(started_at, "startup", "init_fubon")
+    qff = qff_provider or FubonQffMarketData(config.live.fubon_env_path)
+    reporter.event(started_at, "startup", "init_binance")
+    tsm = tsm_provider or CcxtTickerMarketData("binanceusdm")
+    reporter.event(started_at, "startup", "init_bitopro")
+    usdttwd = usdttwd_provider or CcxtTickerMarketData("bitopro")
+    return LiveProviderSet(
+        qff=qff,
+        tsm=tsm,
+        usdttwd=usdttwd,
+        close_qff_on_exit=qff_provider is None,
+    )
+
+
+def load_or_create_strategy_state(
+    store: SQLiteStore,
+    *,
+    resume: bool,
+    config: AppConfig,
+) -> StrategyRuntimeState:
+    resume_state = store.load_resume_state() if resume else None
+    if resume_state is not None:
+        return resume_state.strategy
+    return StrategyRuntimeState(
+        running_max_equity=config.strategy.initial_capital_twd
+    )
+
+
+def build_live_strategy(
+    config: AppConfig,
+    strategy_state: StrategyRuntimeState,
+) -> PairStrategy:
+    return PairStrategy(
+        config.strategy,
+        config.fees,
+        PaperBroker(),
+        state=strategy_state,
+        tsm_symbol=config.live.binance_symbol,
+    )
+
+
+def build_live_minute_builder(
+    config: AppConfig,
+    seed_bars: list[MarketBar],
+) -> LiveMinuteBarBuilder:
+    builder = LiveMinuteBarBuilder(
+        stale_seconds=config.live.stale_seconds,
+        max_leg_timestamp_skew_seconds=(
+            config.live.max_leg_timestamp_skew_seconds
+        ),
+        closed_dates=config.trading_calendar.closed_dates,
+    )
+    builder.last_qff_close = seed_bars[-1].qff_close_filled
+    return builder
+
+
+def close_provider_quietly(provider: Any | None) -> None:
+    if provider is None:
+        return
+    close = getattr(provider, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def prepare_live_runtime(
+    *,
+    config: AppConfig,
+    store: SQLiteStore,
+    resume: bool,
+    skip_warmup: bool,
+    qff_provider: QuoteProvider | FubonQffMarketData | None,
+    tsm_provider: QuoteProvider | None,
+    usdttwd_provider: QuoteProvider | None,
+    reporter: Any,
+    started_at: datetime,
+    auto_warmup_context: str,
+) -> LiveRuntimeContext:
+    reporter.event(started_at, "startup", "store_ready")
+    providers = open_live_quote_providers(
+        config,
+        qff_provider=qff_provider,
+        tsm_provider=tsm_provider,
+        usdttwd_provider=usdttwd_provider,
+        reporter=reporter,
+        started_at=started_at,
+    )
+    qff_provider = providers.qff
+    tsm_provider = providers.tsm
+    usdttwd_provider = providers.usdttwd
+    qff_provider_to_close = (
+        qff_provider if providers.close_qff_on_exit else None
+    )
+    reporter.event(started_at, "startup", "resolve_qff")
+    initial_contract = resolve_qff_contract(
+        config,
+        qff_provider,
+        now=started_at,
+    )
+    reporter.event(started_at, "startup", f"qff={initial_contract.symbol}")
+
+    strategy_state = load_or_create_strategy_state(
+        store,
+        resume=resume,
+        config=config,
+    )
+    initialize_contract_state(strategy_state, initial_contract)
+    qff_symbol = strategy_state.trading_qff_symbol or initial_contract.symbol
+    qff_expiry = strategy_state.trading_qff_expiry or initial_contract.expiry
+    subscribe_qff_books_if_supported(
+        qff_provider,
+        qff_symbol,
+        reporter,
+        started_at,
+    )
+
+    indicator, seed_bars = load_or_build_live_indicator(
+        store,
+        config,
+        qff_symbol=qff_symbol,
+        qff_expiry=qff_expiry,
+        policy_state=strategy_state.contract_policy_state or "active",
+        qff_provider=qff_provider,
+        tsm_provider=tsm_provider,
+        usdttwd_provider=usdttwd_provider,
+        end=started_at,
+        allow_rebuild=not skip_warmup,
+        reporter=reporter,
+        auto_warmup_context=auto_warmup_context,
+    )
+    reporter.event(started_at, "startup", f"seed_ready_{len(seed_bars)}")
+    return LiveRuntimeContext(
+        started_at=started_at,
+        qff_provider=qff_provider,
+        tsm_provider=tsm_provider,
+        usdttwd_provider=usdttwd_provider,
+        qff_provider_to_close=qff_provider_to_close,
+        qff_symbol=qff_symbol,
+        qff_expiry=qff_expiry,
+        strategy=build_live_strategy(config, strategy_state),
+        indicator=indicator,
+        seed_bars=seed_bars,
+        builder=build_live_minute_builder(config, seed_bars),
+        next_row_index=store.latest_bar_row_index() + 1,
+    )
+
+
+@dataclass
+class LiveRuntimeStats:
+    iterations: int = 0
+    bars_processed: int = 0
+    skipped_minutes: int = 0
+    plans_recorded: int = 0
+
+
+@dataclass(frozen=True)
+class LiveRuntimeResult:
+    iterations: int
+    bars_processed: int
+    skipped_minutes: int
+    plans_recorded: int
+    qff_symbol: str
+
+
+@dataclass(frozen=True)
+class LiveModeBarResult:
+    result: Any
+    plans_recorded: int = 0
+
+
+class LiveModeHandler:
+    mode: str = ""
+    auto_warmup_context: str = ""
+    complete_contract_switch_after_flat: bool = False
+
+    def validate_config(self, config: AppConfig) -> None:
+        raise NotImplementedError
+
+    def on_runtime_ready(self, store: SQLiteStore) -> None:
+        return None
+
+    def finish_payload(
+        self,
+        stats: LiveRuntimeStats,
+        *,
+        resume: bool,
+        skip_warmup: bool,
+    ) -> dict[str, Any]:
+        return {
+            "iterations": stats.iterations,
+            "bars_processed": stats.bars_processed,
+            "skipped_minutes": stats.skipped_minutes,
+        }
+
+    def handle_bar(
+        self,
+        *,
+        config: AppConfig,
+        store: SQLiteStore,
+        reporter: Any,
+        strategy: PairStrategy,
+        bar: MarketBar,
+        decision_snapshot: IndicatorSnapshot,
+        decision_spread_type: str | None,
+        force_exit: bool,
+        qff_symbol: str,
+        qff_expiry: str | None,
+    ) -> LiveModeBarResult:
+        raise NotImplementedError
+
+
+class PaperLiveModeHandler(LiveModeHandler):
+    mode = "live-paper"
+    auto_warmup_context = "before_live"
+    complete_contract_switch_after_flat = True
+
+    def validate_config(self, config: AppConfig) -> None:
+        if config.safety.allow_live_order:
+            raise RuntimeError("Refusing live-paper with allow_live_order=true")
+
+    def handle_bar(
+        self,
+        *,
+        config: AppConfig,
+        store: SQLiteStore,
+        reporter: Any,
+        strategy: PairStrategy,
+        bar: MarketBar,
+        decision_snapshot: IndicatorSnapshot,
+        decision_spread_type: str | None,
+        force_exit: bool,
+        qff_symbol: str,
+        qff_expiry: str | None,
+    ) -> LiveModeBarResult:
+        if force_exit:
+            result = strategy.force_exit(
+                bar,
+                decision_snapshot,
+                exit_reason="rollover_force_exit",
+            )
+            reporter.event(bar.timestamp, "force_exit", "expiry_buffer")
+            store.record_event(
+                bar.row_index,
+                bar.timestamp,
+                "rollover_force_exit",
+                "forced exit before QFF expiry",
+                {"qff_symbol": qff_symbol, "qff_expiry": qff_expiry},
+            )
+            if result is None:
+                result = strategy.on_bar(bar, decision_snapshot)
+        else:
+            result = strategy.on_bar(bar, decision_snapshot)
+
+        for order in result.orders:
+            store.record_order(order)
+        for fill in result.fills:
+            store.record_fill(fill)
+        if result.trade is not None:
+            store.record_trade(result.trade)
+        if result.action.value != "none":
+            store.record_event(
+                bar.row_index,
+                bar.timestamp,
+                result.action.value,
+                result.reason,
+                {"state": strategy.state.state.value},
+            )
+        return LiveModeBarResult(result=result)
+
+
+class DryRunLiveModeHandler(LiveModeHandler):
+    mode = "live-dry-run"
+    auto_warmup_context = "before_dry_run"
+
+    def __init__(self, config: AppConfig) -> None:
+        self.config = config
+        self.recorder: DryRunExecutionRecorder | None = None
+
+    def validate_config(self, config: AppConfig) -> None:
+        if config.safety.allow_live_order:
+            raise RuntimeError("Refusing live-dry-run with allow_live_order=true")
+
+    def on_runtime_ready(self, store: SQLiteStore) -> None:
+        self.recorder = DryRunExecutionRecorder(
+            store,
+            allow_live_order=self.config.safety.allow_live_order,
+        )
+
+    def finish_payload(
+        self,
+        stats: LiveRuntimeStats,
+        *,
+        resume: bool,
+        skip_warmup: bool,
+    ) -> dict[str, Any]:
+        payload = super().finish_payload(
+            stats,
+            resume=resume,
+            skip_warmup=skip_warmup,
+        )
+        payload["plans_recorded"] = stats.plans_recorded
+        return payload
+
+    def handle_bar(
+        self,
+        *,
+        config: AppConfig,
+        store: SQLiteStore,
+        reporter: Any,
+        strategy: PairStrategy,
+        bar: MarketBar,
+        decision_snapshot: IndicatorSnapshot,
+        decision_spread_type: str | None,
+        force_exit: bool,
+        qff_symbol: str,
+        qff_expiry: str | None,
+    ) -> LiveModeBarResult:
+        if self.recorder is None:
+            raise RuntimeError("dry-run recorder is not initialized")
+
+        plan = None
+        if force_exit:
+            result, plan = record_dry_run_exit_intent(
+                strategy,
+                self.recorder,
+                bar,
+                decision_snapshot,
+                decision_spread_type,
+                reason="rollover_force_exit",
+            )
+            reporter.event(bar.timestamp, "force_exit", "expiry_buffer")
+            store.record_event(
+                bar.row_index,
+                bar.timestamp,
+                "rollover_force_exit",
+                "dry-run forced exit intent before QFF expiry",
+                {"qff_symbol": qff_symbol, "qff_expiry": qff_expiry},
+            )
+        elif strategy.state.state == StrategyState.ENTRY_PENDING:
+            result, plan = record_dry_run_entry_intent(
+                strategy,
+                self.recorder,
+                bar,
+                decision_snapshot,
+                decision_spread_type,
+            )
+        elif strategy.state.state == StrategyState.EXIT_PENDING:
+            result, plan = record_dry_run_exit_intent(
+                strategy,
+                self.recorder,
+                bar,
+                decision_snapshot,
+                decision_spread_type,
+                reason="dry_run_exit_intent",
+            )
+        else:
+            result = strategy.on_bar(bar, decision_snapshot)
+
+        plans_recorded = 0
+        if plan is not None:
+            plans_recorded = 1
+            event_type = (
+                "dry_run_intent_recorded"
+                if plan.accepted
+                else "dry_run_intent_rejected"
+            )
+            reporter.event(
+                bar.timestamp,
+                "dry_run",
+                event_type.replace("dry_run_", ""),
+            )
+            store.record_event(
+                bar.row_index,
+                bar.timestamp,
+                event_type,
+                result.reason,
+                {
+                    "plan_id": plan.plan_id,
+                    "status": plan.status.value,
+                    "failed_checks": sum(
+                        1 for check in plan.checks if not check.passed
+                    ),
+                },
+            )
+        elif result.action.value != "none":
+            store.record_event(
+                bar.row_index,
+                bar.timestamp,
+                result.action.value,
+                result.reason,
+                {"state": strategy.state.state.value},
+            )
+        return LiveModeBarResult(result=result, plans_recorded=plans_recorded)
+
+
+class LiveExecuteModeHandler(LiveModeHandler):
+    mode = "live-execute"
+    auto_warmup_context = "before_live_execute"
+    complete_contract_switch_after_flat = True
+
+    def validate_config(self, config: AppConfig) -> None:
+        closed = []
+        if not config.live_execution.enabled:
+            closed.append("live_execution.enabled=false")
+        if not config.safety.allow_live_order:
+            closed.append("safety.allow_live_order=false")
+        if closed:
+            raise RuntimeError(
+                "live-execute gate closed: "
+                + ", ".join(closed)
+                + "; use live-dry-run until Phase 5 adapters are implemented"
+            )
+        raise RuntimeError(
+            "live-execute extension point is reserved for Phase 5; "
+            "no live execution broker adapter is implemented yet"
+        )
+
+    def handle_bar(
+        self,
+        *,
+        config: AppConfig,
+        store: SQLiteStore,
+        reporter: Any,
+        strategy: PairStrategy,
+        bar: MarketBar,
+        decision_snapshot: IndicatorSnapshot,
+        decision_spread_type: str | None,
+        force_exit: bool,
+        qff_symbol: str,
+        qff_expiry: str | None,
+    ) -> LiveModeBarResult:
+        raise RuntimeError("live-execute mode has no execution adapter")
+
+
+class LiveRuntime:
     def __init__(
         self,
         config: AppConfig,
         *,
+        handler: LiveModeHandler,
         qff_provider: QuoteProvider | FubonQffMarketData | None = None,
         tsm_provider: QuoteProvider | None = None,
         usdttwd_provider: QuoteProvider | None = None,
@@ -277,6 +748,7 @@ class LivePaperRunner:
         reporter: Any | None = None,
     ) -> None:
         self.config = config
+        self.handler = handler
         self.qff_provider = qff_provider
         self.tsm_provider = tsm_provider
         self.usdttwd_provider = usdttwd_provider
@@ -291,12 +763,13 @@ class LivePaperRunner:
         reset_store: bool = False,
         max_iterations: int | None = None,
         skip_warmup: bool = False,
-    ) -> LivePaperResult:
-        if self.config.safety.allow_live_order:
-            raise RuntimeError("Refusing live-paper with allow_live_order=true")
+    ) -> LiveRuntimeResult:
+        self.handler.validate_config(self.config)
         store = SQLiteStore(self.config.store_path)
         live_run_id: int | None = None
         qff_provider_to_close: Any | None = None
+        qff_symbol = ""
+        stats = LiveRuntimeStats()
         try:
             if reset_store:
                 store.reset()
@@ -307,91 +780,81 @@ class LivePaperRunner:
                 )
 
             started_at = ensure_taipei(self.clock())
-            self.reporter.event(started_at, "startup", "store_ready")
-            self.reporter.event(started_at, "startup", "init_fubon")
-            qff_provider = self.qff_provider or FubonQffMarketData(
-                self.config.live.fubon_env_path
-            )
-            if self.qff_provider is None:
-                qff_provider_to_close = qff_provider
-            self.reporter.event(started_at, "startup", "init_binance")
-            tsm_provider = self.tsm_provider or CcxtTickerMarketData("binanceusdm")
-            self.reporter.event(started_at, "startup", "init_bitopro")
-            usdttwd_provider = self.usdttwd_provider or CcxtTickerMarketData("bitopro")
-            self.reporter.event(started_at, "startup", "resolve_qff")
-            initial_contract = resolve_qff_contract(
-                self.config,
-                qff_provider,
-                now=started_at,
-            )
-            self.reporter.event(started_at, "startup", f"qff={initial_contract.symbol}")
-
-            resume_state = store.load_resume_state() if resume else None
-            strategy_state = (
-                resume_state.strategy
-                if resume_state is not None
-                else StrategyRuntimeState(
-                    running_max_equity=self.config.strategy.initial_capital_twd
-                )
-            )
-            initialize_contract_state(strategy_state, initial_contract)
-            qff_symbol = strategy_state.trading_qff_symbol or initial_contract.symbol
-            qff_expiry = strategy_state.trading_qff_expiry or initial_contract.expiry
-            subscribe_qff_books_if_supported(
-                qff_provider,
-                qff_symbol,
-                self.reporter,
-                started_at,
-            )
-
-            indicator, seed_bars = load_or_build_live_indicator(
-                store,
-                self.config,
-                qff_symbol=qff_symbol,
-                qff_expiry=qff_expiry,
-                policy_state=strategy_state.contract_policy_state or "active",
-                qff_provider=qff_provider,
-                tsm_provider=tsm_provider,
-                usdttwd_provider=usdttwd_provider,
-                end=started_at,
-                allow_rebuild=not skip_warmup,
+            runtime = prepare_live_runtime(
+                config=self.config,
+                store=store,
+                resume=resume,
+                skip_warmup=skip_warmup,
+                qff_provider=self.qff_provider,
+                tsm_provider=self.tsm_provider,
+                usdttwd_provider=self.usdttwd_provider,
                 reporter=self.reporter,
-                auto_warmup_context="before_live",
-            )
-            self.reporter.event(started_at, "startup", f"seed_ready_{len(seed_bars)}")
-            strategy = PairStrategy(
-                self.config.strategy,
-                self.config.fees,
-                PaperBroker(),
-                state=strategy_state,
-                tsm_symbol=self.config.live.binance_symbol,
-            )
-            builder = LiveMinuteBarBuilder(
-                stale_seconds=self.config.live.stale_seconds,
-                max_leg_timestamp_skew_seconds=(
-                    self.config.live.max_leg_timestamp_skew_seconds
-                ),
-            )
-            builder.last_qff_close = seed_bars[-1].qff_close_filled
-            next_row_index = store.latest_bar_row_index() + 1
-            iterations = 0
-            bars_processed = 0
-            skipped_minutes = 0
-            live_run_id = store.start_live_run(
                 started_at=started_at,
-                mode="live-paper",
+                auto_warmup_context=self.handler.auto_warmup_context,
+            )
+            qff_provider = runtime.qff_provider
+            tsm_provider = runtime.tsm_provider
+            usdttwd_provider = runtime.usdttwd_provider
+            qff_provider_to_close = runtime.qff_provider_to_close
+            qff_symbol = runtime.qff_symbol
+            qff_expiry = runtime.qff_expiry
+            strategy = runtime.strategy
+            indicator = runtime.indicator
+            seed_bars = runtime.seed_bars
+            builder = runtime.builder
+            next_row_index = runtime.next_row_index
+            self.handler.on_runtime_ready(store)
+
+            live_run_id = store.start_live_run(
+                started_at=runtime.started_at,
+                mode=self.handler.mode,
                 qff_symbol=qff_symbol,
                 payload={"resume": resume, "skip_warmup": skip_warmup},
             )
             store.commit()
-            self.reporter.event(started_at, "startup", "live_loop")
+            self.reporter.event(runtime.started_at, "startup", "live_loop")
+            last_non_trading_event_minute: datetime | None = None
 
-            while max_iterations is None or iterations < max_iterations:
+            while max_iterations is None or stats.iterations < max_iterations:
                 observed_at = ensure_taipei(self.clock())
+                session_status = live_session_status(
+                    observed_at,
+                    self.config.trading_calendar.closed_dates,
+                )
+                if not session_status.is_trading:
+                    builder.reset_current_minute()
+                    self.reporter.live_non_trading(
+                        observed_at,
+                        session_status.next_open_at,
+                        session_status.reason,
+                    )
+                    event_minute = floor_minute(observed_at)
+                    if last_non_trading_event_minute != event_minute:
+                        store.record_event(
+                            next_row_index,
+                            event_minute,
+                            "non_trading_session",
+                            "live session closed",
+                            {
+                                "reason": session_status.reason,
+                                "next_open_at": session_status.next_open_at.isoformat(),
+                                "countdown_seconds": int(
+                                    session_status.countdown.total_seconds()
+                                ),
+                            },
+                        )
+                        store.commit()
+                        last_non_trading_event_minute = event_minute
+                    stats.iterations += 1
+                    self._sleep_if_needed(stats.iterations, max_iterations)
+                    continue
+
                 quote_set = LiveQuoteSet(
                     qff=qff_provider.fetch_quote(qff_symbol),
                     tsm=tsm_provider.fetch_quote(self.config.live.binance_symbol),
-                    usdttwd=usdttwd_provider.fetch_quote(self.config.live.bitopro_symbol),
+                    usdttwd=usdttwd_provider.fetch_quote(
+                        self.config.live.bitopro_symbol
+                    ),
                 )
                 live_spread_snapshot = estimate_tradable_spreads(
                     quote_set,
@@ -418,7 +881,7 @@ class LivePaperRunner:
 
                 if build_result is not None:
                     if build_result.skipped_reason is not None:
-                        skipped_minutes += 1
+                        stats.skipped_minutes += 1
                         self.reporter.warn(
                             observed_at,
                             compact_warning_code(
@@ -435,315 +898,53 @@ class LivePaperRunner:
                             build_result.payload,
                         )
                     elif build_result.bar is not None:
-                        bar = replace(
-                            build_result.bar,
-                            row_index=next_row_index,
+                        switch_result = self._process_finalized_bar(
+                            store=store,
+                            build_result=build_result,
+                            qff_provider=qff_provider,
+                            tsm_provider=tsm_provider,
+                            usdttwd_provider=usdttwd_provider,
                             qff_symbol=qff_symbol,
                             qff_expiry=qff_expiry,
-                            contract_policy_state=(
-                                strategy.state.contract_policy_state or "active"
-                            ),
+                            strategy=strategy,
+                            indicator=indicator,
+                            seed_bars=seed_bars,
+                            builder=builder,
+                            next_row_index=next_row_index,
+                            stats=stats,
+                            max_iterations=max_iterations,
                         )
-                        if store.bar_exists_for_timestamp(bar.timestamp):
-                            self.reporter.event(
-                                bar.timestamp,
-                                "duplicate_minute",
-                                "already_processed",
-                            )
-                            store.record_event(
-                                next_row_index,
-                                bar.timestamp,
-                                "duplicate_live_minute",
-                                "live minute already processed",
-                            )
-                        else:
-                            eligible_contract = resolve_qff_contract(
-                                self.config,
-                                qff_provider,
-                                now=bar.timestamp,
-                            )
-                            update_eligible_contract_state(
-                                strategy.state,
-                                eligible_contract,
-                            )
-                            if should_switch_contract_before_processing(
-                                strategy.state,
-                                eligible_contract,
-                            ):
-                                if strategy.state.state == StrategyState.ENTRY_PENDING:
-                                    cancel_entry_pending_for_contract_switch(
-                                        strategy.state
-                                    )
-                                    self.reporter.event(
-                                        bar.timestamp,
-                                        "entry_cancel",
-                                        "contract_switch",
-                                    )
-                                    store.record_event(
-                                        bar.row_index,
-                                        bar.timestamp,
-                                        "entry_cancel_contract_switch",
-                                        "pending entry canceled before QFF contract switch",
-                                        {
-                                            "old_qff_symbol": qff_symbol,
-                                            "new_qff_symbol": eligible_contract.symbol,
-                                    },
-                                )
-                                self.reporter.event(
-                                    bar.timestamp,
-                                    "contract_switch",
-                                    f"{qff_symbol}->{eligible_contract.symbol}",
-                                )
-                                previous_qff_symbol = qff_symbol
-                                store.record_event(
-                                    bar.row_index,
-                                    bar.timestamp,
-                                    "contract_switch_detected",
-                                    "flat strategy switching to eligible QFF contract",
-                                    {
-                                        "old_qff_symbol": qff_symbol,
-                                        "new_qff_symbol": eligible_contract.symbol,
-                                    },
-                                )
-                                unsubscribe_qff_books_if_supported(
-                                    qff_provider,
-                                    previous_qff_symbol,
-                                )
-                                qff_symbol, qff_expiry, indicator, seed_bars = (
-                                    switch_to_contract(
-                                        store,
-                                        self.config,
-                                        strategy.state,
-                                        eligible_contract,
-                                        qff_provider=qff_provider,
-                                        tsm_provider=tsm_provider,
-                                        usdttwd_provider=usdttwd_provider,
-                                        end=bar.timestamp,
-                                    )
-                                )
-                                subscribe_qff_books_if_supported(
-                                    qff_provider,
-                                    qff_symbol,
-                                    self.reporter,
-                                    bar.timestamp,
-                                )
-                                builder = LiveMinuteBarBuilder(
-                                    stale_seconds=self.config.live.stale_seconds,
-                                    max_leg_timestamp_skew_seconds=(
-                                        self.config.live.max_leg_timestamp_skew_seconds
-                                    ),
-                                )
-                                builder.last_qff_close = seed_bars[-1].qff_close_filled
-                                store.save_state(
-                                    bar.row_index,
-                                    bar.timestamp,
-                                    strategy.state,
-                                    indicator,
-                                )
-                                store.commit()
-                                iterations += 1
-                                if max_iterations is None or iterations < max_iterations:
-                                    self.sleeper(self.config.live.polling_seconds)
-                                continue
-                            mark_pending_contract_switch_if_needed(
-                                strategy.state,
-                                eligible_contract,
-                            )
-                            if (
-                                strategy.state.contract_policy_state
-                                != bar.contract_policy_state
-                            ):
-                                bar = replace(
-                                    bar,
-                                    contract_policy_state=(
-                                        strategy.state.contract_policy_state
-                                    ),
-                                )
-                            snapshot = indicator.update(bar)
-                            tradable_snapshot = build_tradable_snapshot_for_bar(
-                                build_result.quote_set,
-                                bar,
-                                snapshot,
-                                indicator,
-                                self.config,
-                            )
-                            (
-                                decision_snapshot,
-                                decision_spread_type,
-                                decision_zscore,
-                                missing_signal_book,
-                            ) = build_live_decision_snapshot(
-                                self.config,
-                                strategy.state,
-                                snapshot,
-                                tradable_snapshot,
-                            )
-                            if missing_signal_book:
-                                self.reporter.warn(
-                                    bar.timestamp,
-                                    "missing_book",
-                                    "skip_signal",
-                                )
-                            if should_force_exit_for_contract_policy(
-                                self.config,
-                                strategy.state,
-                                bar.timestamp,
-                            ):
-                                result = strategy.force_exit(
-                                    bar,
-                                    decision_snapshot,
-                                    exit_reason="rollover_force_exit",
-                                )
-                                self.reporter.event(
-                                    bar.timestamp,
-                                    "force_exit",
-                                    "expiry_buffer",
-                                )
-                                store.record_event(
-                                    bar.row_index,
-                                    bar.timestamp,
-                                    "rollover_force_exit",
-                                    "forced exit before QFF expiry",
-                                    {
-                                        "qff_symbol": qff_symbol,
-                                        "qff_expiry": qff_expiry,
-                                    },
-                                )
-                                if result is None:
-                                    result = strategy.on_bar(bar, decision_snapshot)
-                            else:
-                                result = strategy.on_bar(bar, decision_snapshot)
-                            for order in result.orders:
-                                store.record_order(order)
-                            for fill in result.fills:
-                                store.record_fill(fill)
-                            if result.trade is not None:
-                                store.record_trade(result.trade)
-                            if result.action.value != "none":
-                                store.record_event(
-                                    bar.row_index,
-                                    bar.timestamp,
-                                    result.action.value,
-                                    result.reason,
-                                    {"state": strategy.state.state.value},
-                                )
-                            store.record_bar(
-                                bar,
-                                snapshot,
-                                strategy.state,
-                                result.unrealized_pnl,
-                                result.equity,
-                                result.running_max_equity,
-                                result.drawdown_twd,
-                                result.drawdown_pct,
-                                tradable_snapshot=tradable_snapshot,
-                                decision_spread_type=decision_spread_type,
-                                decision_zscore=decision_zscore,
-                            )
-                            self.reporter.bar(
-                                bar.timestamp,
-                                tradable_snapshot,
-                                strategy.state.state,
-                                result.action,
-                                result.reason,
-                                result.unrealized_pnl,
-                                result.equity,
-                            )
-                            if result.action.value != "none":
-                                self.reporter.event(
-                                    bar.timestamp,
-                                    result.action.value,
-                                    compact_reason(result.reason),
-                                )
-                            store.save_state(
-                                bar.row_index,
-                                bar.timestamp,
-                                strategy.state,
-                                indicator,
-                            )
-                            if (
-                                strategy.state.state == StrategyState.FLAT
-                                and strategy.state.pending_symbol_switch
-                                and strategy.state.eligible_active_qff_symbol
-                            ):
-                                completed_contract = QffContractResolution(
-                                    symbol=strategy.state.eligible_active_qff_symbol,
-                                    expiry=strategy.state.eligible_active_qff_expiry,
-                                    policy_state="active",
-                                )
-                                previous_qff_symbol = qff_symbol
-                                unsubscribe_qff_books_if_supported(
-                                    qff_provider,
-                                    previous_qff_symbol,
-                                )
-                                qff_symbol, qff_expiry, indicator, seed_bars = (
-                                    switch_to_contract(
-                                        store,
-                                        self.config,
-                                        strategy.state,
-                                        completed_contract,
-                                        qff_provider=qff_provider,
-                                        tsm_provider=tsm_provider,
-                                        usdttwd_provider=usdttwd_provider,
-                                        end=bar.timestamp,
-                                    )
-                                )
-                                subscribe_qff_books_if_supported(
-                                    qff_provider,
-                                    qff_symbol,
-                                    self.reporter,
-                                    bar.timestamp,
-                                )
-                                builder = LiveMinuteBarBuilder(
-                                    stale_seconds=self.config.live.stale_seconds,
-                                    max_leg_timestamp_skew_seconds=(
-                                        self.config.live.max_leg_timestamp_skew_seconds
-                                    ),
-                                )
-                                builder.last_qff_close = seed_bars[-1].qff_close_filled
-                                store.record_event(
-                                    bar.row_index,
-                                    bar.timestamp,
-                                    "contract_switch_completed",
-                                    "QFF contract switched after flat state",
-                                    {"qff_symbol": qff_symbol},
-                                )
-                                self.reporter.event(
-                                    bar.timestamp,
-                                    "contract_switch_done",
-                                    qff_symbol,
-                                )
-                                store.save_state(
-                                    bar.row_index,
-                                    bar.timestamp,
-                                    strategy.state,
-                                    indicator,
-                                )
-                            next_row_index += 1
-                            bars_processed += 1
+                        qff_symbol = switch_result["qff_symbol"]
+                        qff_expiry = switch_result["qff_expiry"]
+                        indicator = switch_result["indicator"]
+                        seed_bars = switch_result["seed_bars"]
+                        builder = switch_result["builder"]
+                        next_row_index = switch_result["next_row_index"]
+                        if switch_result["continued"]:
+                            continue
                     store.commit()
 
-                iterations += 1
-                if max_iterations is None or iterations < max_iterations:
-                    self.sleeper(self.config.live.polling_seconds)
+                stats.iterations += 1
+                self._sleep_if_needed(stats.iterations, max_iterations)
 
             if live_run_id is not None:
                 store.finish_live_run(
                     live_run_id,
                     finished_at=ensure_taipei(self.clock()),
                     status="stopped",
-                    payload={
-                        "iterations": iterations,
-                        "bars_processed": bars_processed,
-                        "skipped_minutes": skipped_minutes,
-                    },
+                    payload=self.handler.finish_payload(
+                        stats,
+                        resume=resume,
+                        skip_warmup=skip_warmup,
+                    ),
                 )
                 store.commit()
                 live_run_id = None
-            return LivePaperResult(
-                iterations=iterations,
-                bars_processed=bars_processed,
-                skipped_minutes=skipped_minutes,
+            return LiveRuntimeResult(
+                iterations=stats.iterations,
+                bars_processed=stats.bars_processed,
+                skipped_minutes=stats.skipped_minutes,
+                plans_recorded=stats.plans_recorded,
                 qff_symbol=qff_symbol,
             )
         finally:
@@ -758,13 +959,380 @@ class LivePaperRunner:
                 except Exception:
                     store.rollback()
             store.close()
-            if qff_provider_to_close is not None:
-                close = getattr(qff_provider_to_close, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:
-                        pass
+            close_provider_quietly(qff_provider_to_close)
+
+    def _process_finalized_bar(
+        self,
+        *,
+        store: SQLiteStore,
+        build_result: Any,
+        qff_provider: QuoteProvider | FubonQffMarketData,
+        tsm_provider: QuoteProvider,
+        usdttwd_provider: QuoteProvider,
+        qff_symbol: str,
+        qff_expiry: str | None,
+        strategy: PairStrategy,
+        indicator: IndicatorEngine,
+        seed_bars: list[MarketBar],
+        builder: LiveMinuteBarBuilder,
+        next_row_index: int,
+        stats: LiveRuntimeStats,
+        max_iterations: int | None,
+    ) -> dict[str, Any]:
+        bar = replace(
+            build_result.bar,
+            row_index=next_row_index,
+            qff_symbol=qff_symbol,
+            qff_expiry=qff_expiry,
+            contract_policy_state=strategy.state.contract_policy_state or "active",
+        )
+        if store.bar_exists_for_timestamp(bar.timestamp):
+            self.reporter.event(
+                bar.timestamp,
+                "duplicate_minute",
+                "already_processed",
+            )
+            store.record_event(
+                next_row_index,
+                bar.timestamp,
+                "duplicate_live_minute",
+                "live minute already processed",
+            )
+            return {
+                "qff_symbol": qff_symbol,
+                "qff_expiry": qff_expiry,
+                "indicator": indicator,
+                "seed_bars": seed_bars,
+                "builder": builder,
+                "next_row_index": next_row_index,
+                "continued": False,
+            }
+
+        eligible_contract = resolve_qff_contract(
+            self.config,
+            qff_provider,
+            now=bar.timestamp,
+        )
+        update_eligible_contract_state(strategy.state, eligible_contract)
+        if should_switch_contract_before_processing(strategy.state, eligible_contract):
+            qff_symbol, qff_expiry, indicator, seed_bars, builder = (
+                self._switch_contract_before_processing(
+                    store=store,
+                    bar=bar,
+                    qff_provider=qff_provider,
+                    tsm_provider=tsm_provider,
+                    usdttwd_provider=usdttwd_provider,
+                    qff_symbol=qff_symbol,
+                    strategy=strategy,
+                    eligible_contract=eligible_contract,
+                )
+            )
+            store.save_state(bar.row_index, bar.timestamp, strategy.state, indicator)
+            store.commit()
+            stats.iterations += 1
+            self._sleep_if_needed(stats.iterations, max_iterations)
+            return {
+                "qff_symbol": qff_symbol,
+                "qff_expiry": qff_expiry,
+                "indicator": indicator,
+                "seed_bars": seed_bars,
+                "builder": builder,
+                "next_row_index": next_row_index,
+                "continued": True,
+            }
+
+        mark_pending_contract_switch_if_needed(strategy.state, eligible_contract)
+        if strategy.state.contract_policy_state != bar.contract_policy_state:
+            bar = replace(
+                bar,
+                contract_policy_state=strategy.state.contract_policy_state,
+            )
+        snapshot = indicator.update(bar)
+        tradable_snapshot = build_tradable_snapshot_for_bar(
+            build_result.quote_set,
+            bar,
+            snapshot,
+            indicator,
+            self.config,
+        )
+        (
+            decision_snapshot,
+            decision_spread_type,
+            decision_zscore,
+            missing_signal_book,
+        ) = build_live_decision_snapshot(
+            self.config,
+            strategy.state,
+            snapshot,
+            tradable_snapshot,
+        )
+        if missing_signal_book:
+            self.reporter.warn(bar.timestamp, "missing_book", "skip_signal")
+
+        mode_result = self.handler.handle_bar(
+            config=self.config,
+            store=store,
+            reporter=self.reporter,
+            strategy=strategy,
+            bar=bar,
+            decision_snapshot=decision_snapshot,
+            decision_spread_type=decision_spread_type,
+            force_exit=should_force_exit_for_contract_policy(
+                self.config,
+                strategy.state,
+                bar.timestamp,
+            ),
+            qff_symbol=qff_symbol,
+            qff_expiry=qff_expiry,
+        )
+        stats.plans_recorded += mode_result.plans_recorded
+        result = mode_result.result
+        store.record_bar(
+            bar,
+            snapshot,
+            strategy.state,
+            result.unrealized_pnl,
+            result.equity,
+            result.running_max_equity,
+            result.drawdown_twd,
+            result.drawdown_pct,
+            tradable_snapshot=tradable_snapshot,
+            decision_spread_type=decision_spread_type,
+            decision_zscore=decision_zscore,
+        )
+        self.reporter.bar(
+            bar.timestamp,
+            tradable_snapshot,
+            strategy.state.state,
+            result.action,
+            result.reason,
+            result.unrealized_pnl,
+            result.equity,
+        )
+        if result.action.value != "none":
+            self.reporter.event(
+                bar.timestamp,
+                result.action.value,
+                compact_reason(result.reason),
+            )
+        store.save_state(bar.row_index, bar.timestamp, strategy.state, indicator)
+        if self.handler.complete_contract_switch_after_flat:
+            qff_symbol, qff_expiry, indicator, seed_bars, builder = (
+                self._complete_contract_switch_after_flat(
+                    store=store,
+                    bar=bar,
+                    qff_provider=qff_provider,
+                    tsm_provider=tsm_provider,
+                    usdttwd_provider=usdttwd_provider,
+                    qff_symbol=qff_symbol,
+                    qff_expiry=qff_expiry,
+                    indicator=indicator,
+                    seed_bars=seed_bars,
+                    builder=builder,
+                    strategy=strategy,
+                )
+            )
+        stats.bars_processed += 1
+        return {
+            "qff_symbol": qff_symbol,
+            "qff_expiry": qff_expiry,
+            "indicator": indicator,
+            "seed_bars": seed_bars,
+            "builder": builder,
+            "next_row_index": next_row_index + 1,
+            "continued": False,
+        }
+
+    def _switch_contract_before_processing(
+        self,
+        *,
+        store: SQLiteStore,
+        bar: MarketBar,
+        qff_provider: QuoteProvider | FubonQffMarketData,
+        tsm_provider: QuoteProvider,
+        usdttwd_provider: QuoteProvider,
+        qff_symbol: str,
+        strategy: PairStrategy,
+        eligible_contract: QffContractResolution,
+    ) -> tuple[
+        str,
+        str | None,
+        IndicatorEngine,
+        list[MarketBar],
+        LiveMinuteBarBuilder,
+    ]:
+        if strategy.state.state == StrategyState.ENTRY_PENDING:
+            cancel_entry_pending_for_contract_switch(strategy.state)
+            self.reporter.event(bar.timestamp, "entry_cancel", "contract_switch")
+            store.record_event(
+                bar.row_index,
+                bar.timestamp,
+                "entry_cancel_contract_switch",
+                "pending entry canceled before QFF contract switch",
+                {
+                    "old_qff_symbol": qff_symbol,
+                    "new_qff_symbol": eligible_contract.symbol,
+                },
+            )
+        self.reporter.event(
+            bar.timestamp,
+            "contract_switch",
+            f"{qff_symbol}->{eligible_contract.symbol}",
+        )
+        store.record_event(
+            bar.row_index,
+            bar.timestamp,
+            "contract_switch_detected",
+            "flat strategy switching to eligible QFF contract",
+            {
+                "old_qff_symbol": qff_symbol,
+                "new_qff_symbol": eligible_contract.symbol,
+            },
+        )
+        unsubscribe_qff_books_if_supported(qff_provider, qff_symbol)
+        qff_symbol, qff_expiry, indicator, seed_bars = switch_to_contract(
+            store,
+            self.config,
+            strategy.state,
+            eligible_contract,
+            qff_provider=qff_provider,
+            tsm_provider=tsm_provider,
+            usdttwd_provider=usdttwd_provider,
+            end=bar.timestamp,
+        )
+        subscribe_qff_books_if_supported(
+            qff_provider,
+            qff_symbol,
+            self.reporter,
+            bar.timestamp,
+        )
+        return (
+            qff_symbol,
+            qff_expiry,
+            indicator,
+            seed_bars,
+            build_live_minute_builder(self.config, seed_bars),
+        )
+
+    def _complete_contract_switch_after_flat(
+        self,
+        *,
+        store: SQLiteStore,
+        bar: MarketBar,
+        qff_provider: QuoteProvider | FubonQffMarketData,
+        tsm_provider: QuoteProvider,
+        usdttwd_provider: QuoteProvider,
+        qff_symbol: str,
+        qff_expiry: str | None,
+        indicator: IndicatorEngine,
+        seed_bars: list[MarketBar],
+        builder: LiveMinuteBarBuilder,
+        strategy: PairStrategy,
+    ) -> tuple[
+        str,
+        str | None,
+        IndicatorEngine,
+        list[MarketBar],
+        LiveMinuteBarBuilder,
+    ]:
+        if not (
+            strategy.state.state == StrategyState.FLAT
+            and strategy.state.pending_symbol_switch
+            and strategy.state.eligible_active_qff_symbol
+        ):
+            return qff_symbol, qff_expiry, indicator, seed_bars, builder
+
+        completed_contract = QffContractResolution(
+            symbol=strategy.state.eligible_active_qff_symbol,
+            expiry=strategy.state.eligible_active_qff_expiry,
+            policy_state="active",
+        )
+        unsubscribe_qff_books_if_supported(qff_provider, qff_symbol)
+        qff_symbol, qff_expiry, indicator, seed_bars = switch_to_contract(
+            store,
+            self.config,
+            strategy.state,
+            completed_contract,
+            qff_provider=qff_provider,
+            tsm_provider=tsm_provider,
+            usdttwd_provider=usdttwd_provider,
+            end=bar.timestamp,
+        )
+        subscribe_qff_books_if_supported(
+            qff_provider,
+            qff_symbol,
+            self.reporter,
+            bar.timestamp,
+        )
+        store.record_event(
+            bar.row_index,
+            bar.timestamp,
+            "contract_switch_completed",
+            "QFF contract switched after flat state",
+            {"qff_symbol": qff_symbol},
+        )
+        self.reporter.event(bar.timestamp, "contract_switch_done", qff_symbol)
+        store.save_state(bar.row_index, bar.timestamp, strategy.state, indicator)
+        return (
+            qff_symbol,
+            qff_expiry,
+            indicator,
+            seed_bars,
+            build_live_minute_builder(self.config, seed_bars),
+        )
+
+    def _sleep_if_needed(
+        self,
+        iterations: int,
+        max_iterations: int | None,
+    ) -> None:
+        if max_iterations is None or iterations < max_iterations:
+            self.sleeper(self.config.live.polling_seconds)
+
+
+class LivePaperRunner:
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        qff_provider: QuoteProvider | FubonQffMarketData | None = None,
+        tsm_provider: QuoteProvider | None = None,
+        usdttwd_provider: QuoteProvider | None = None,
+        clock: Callable[[], datetime] | None = None,
+        sleeper: Callable[[float], None] | None = None,
+        reporter: Any | None = None,
+    ) -> None:
+        self.runtime = LiveRuntime(
+            config,
+            handler=PaperLiveModeHandler(),
+            qff_provider=qff_provider,
+            tsm_provider=tsm_provider,
+            usdttwd_provider=usdttwd_provider,
+            clock=clock,
+            sleeper=sleeper,
+            reporter=reporter,
+        )
+
+    def run(
+        self,
+        *,
+        resume: bool = False,
+        reset_store: bool = False,
+        max_iterations: int | None = None,
+        skip_warmup: bool = False,
+    ) -> LivePaperResult:
+        result = self.runtime.run(
+            resume=resume,
+            reset_store=reset_store,
+            max_iterations=max_iterations,
+            skip_warmup=skip_warmup,
+        )
+        return LivePaperResult(
+            iterations=result.iterations,
+            bars_processed=result.bars_processed,
+            skipped_minutes=result.skipped_minutes,
+            qff_symbol=result.qff_symbol,
+        )
 
 
 class LiveDryRunRunner:
@@ -779,13 +1347,16 @@ class LiveDryRunRunner:
         sleeper: Callable[[float], None] | None = None,
         reporter: Any | None = None,
     ) -> None:
-        self.config = config
-        self.qff_provider = qff_provider
-        self.tsm_provider = tsm_provider
-        self.usdttwd_provider = usdttwd_provider
-        self.clock = clock or (lambda: datetime.now().astimezone())
-        self.sleeper = sleeper or time.sleep
-        self.reporter = reporter or NullLiveReporter()
+        self.runtime = LiveRuntime(
+            config,
+            handler=DryRunLiveModeHandler(config),
+            qff_provider=qff_provider,
+            tsm_provider=tsm_provider,
+            usdttwd_provider=usdttwd_provider,
+            clock=clock,
+            sleeper=sleeper,
+            reporter=reporter,
+        )
 
     def run(
         self,
@@ -795,468 +1366,58 @@ class LiveDryRunRunner:
         max_iterations: int | None = None,
         skip_warmup: bool = False,
     ) -> LiveDryRunResult:
-        if self.config.safety.allow_live_order:
-            raise RuntimeError("Refusing live-dry-run with allow_live_order=true")
-        store = SQLiteStore(self.config.store_path)
-        live_run_id: int | None = None
-        qff_provider_to_close: Any | None = None
-        try:
-            if reset_store:
-                store.reset()
-            store.initialize()
-            if not resume and not reset_store and store.has_bars():
-                raise RuntimeError(
-                    "Store already has live bars. Use --resume or --reset-store."
-                )
+        result = self.runtime.run(
+            resume=resume,
+            reset_store=reset_store,
+            max_iterations=max_iterations,
+            skip_warmup=skip_warmup,
+        )
+        return LiveDryRunResult(
+            iterations=result.iterations,
+            bars_processed=result.bars_processed,
+            skipped_minutes=result.skipped_minutes,
+            plans_recorded=result.plans_recorded,
+            qff_symbol=result.qff_symbol,
+        )
 
-            started_at = ensure_taipei(self.clock())
-            self.reporter.event(started_at, "startup", "store_ready")
-            self.reporter.event(started_at, "startup", "init_fubon")
-            qff_provider = self.qff_provider or FubonQffMarketData(
-                self.config.live.fubon_env_path
-            )
-            if self.qff_provider is None:
-                qff_provider_to_close = qff_provider
-            self.reporter.event(started_at, "startup", "init_binance")
-            tsm_provider = self.tsm_provider or CcxtTickerMarketData("binanceusdm")
-            self.reporter.event(started_at, "startup", "init_bitopro")
-            usdttwd_provider = self.usdttwd_provider or CcxtTickerMarketData("bitopro")
-            self.reporter.event(started_at, "startup", "resolve_qff")
-            initial_contract = resolve_qff_contract(
-                self.config,
-                qff_provider,
-                now=started_at,
-            )
-            self.reporter.event(started_at, "startup", f"qff={initial_contract.symbol}")
 
-            resume_state = store.load_resume_state() if resume else None
-            strategy_state = (
-                resume_state.strategy
-                if resume_state is not None
-                else StrategyRuntimeState(
-                    running_max_equity=self.config.strategy.initial_capital_twd
-                )
-            )
-            initialize_contract_state(strategy_state, initial_contract)
-            qff_symbol = strategy_state.trading_qff_symbol or initial_contract.symbol
-            qff_expiry = strategy_state.trading_qff_expiry or initial_contract.expiry
-            subscribe_qff_books_if_supported(
-                qff_provider,
-                qff_symbol,
-                self.reporter,
-                started_at,
-            )
+class LiveExecuteRunner:
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        qff_provider: QuoteProvider | FubonQffMarketData | None = None,
+        tsm_provider: QuoteProvider | None = None,
+        usdttwd_provider: QuoteProvider | None = None,
+        clock: Callable[[], datetime] | None = None,
+        sleeper: Callable[[float], None] | None = None,
+        reporter: Any | None = None,
+    ) -> None:
+        self.runtime = LiveRuntime(
+            config,
+            handler=LiveExecuteModeHandler(),
+            qff_provider=qff_provider,
+            tsm_provider=tsm_provider,
+            usdttwd_provider=usdttwd_provider,
+            clock=clock,
+            sleeper=sleeper,
+            reporter=reporter,
+        )
 
-            indicator, seed_bars = load_or_build_live_indicator(
-                store,
-                self.config,
-                qff_symbol=qff_symbol,
-                qff_expiry=qff_expiry,
-                policy_state=strategy_state.contract_policy_state or "active",
-                qff_provider=qff_provider,
-                tsm_provider=tsm_provider,
-                usdttwd_provider=usdttwd_provider,
-                end=started_at,
-                allow_rebuild=not skip_warmup,
-                reporter=self.reporter,
-                auto_warmup_context="before_dry_run",
-            )
-            self.reporter.event(started_at, "startup", f"seed_ready_{len(seed_bars)}")
-            strategy = PairStrategy(
-                self.config.strategy,
-                self.config.fees,
-                PaperBroker(),
-                state=strategy_state,
-                tsm_symbol=self.config.live.binance_symbol,
-            )
-            recorder = DryRunExecutionRecorder(
-                store,
-                allow_live_order=self.config.safety.allow_live_order,
-            )
-            builder = LiveMinuteBarBuilder(
-                stale_seconds=self.config.live.stale_seconds,
-                max_leg_timestamp_skew_seconds=(
-                    self.config.live.max_leg_timestamp_skew_seconds
-                ),
-            )
-            builder.last_qff_close = seed_bars[-1].qff_close_filled
-            next_row_index = store.latest_bar_row_index() + 1
-            iterations = 0
-            bars_processed = 0
-            skipped_minutes = 0
-            plans_recorded = 0
-            live_run_id = store.start_live_run(
-                started_at=started_at,
-                mode="live-dry-run",
-                qff_symbol=qff_symbol,
-                payload={"resume": resume, "skip_warmup": skip_warmup},
-            )
-            store.commit()
-            self.reporter.event(started_at, "startup", "live_loop")
-
-            while max_iterations is None or iterations < max_iterations:
-                observed_at = ensure_taipei(self.clock())
-                quote_set = LiveQuoteSet(
-                    qff=qff_provider.fetch_quote(qff_symbol),
-                    tsm=tsm_provider.fetch_quote(self.config.live.binance_symbol),
-                    usdttwd=usdttwd_provider.fetch_quote(self.config.live.bitopro_symbol),
-                )
-                live_spread_snapshot = estimate_tradable_spreads(
-                    quote_set,
-                    observed_at,
-                    indicator,
-                    stale_seconds=self.config.live.stale_seconds,
-                    last_qff_close=builder.last_qff_close,
-                )
-                self.reporter.live(
-                    observed_at,
-                    live_spread_snapshot,
-                    strategy.state.state,
-                )
-                for quote in (quote_set.qff, quote_set.tsm, quote_set.usdttwd):
-                    store.record_market_tick(quote, observed_at)
-
-                build_result = None
-                if not should_wait_for_finalize_delay(
-                    builder.current_minute,
-                    observed_at,
-                    self.config.live.minute_finalize_delay_seconds,
-                ):
-                    build_result = builder.update(quote_set, observed_at)
-
-                if build_result is not None:
-                    if build_result.skipped_reason is not None:
-                        skipped_minutes += 1
-                        self.reporter.warn(
-                            observed_at,
-                            compact_warning_code(
-                                build_result.skipped_reason,
-                                build_result.payload,
-                            ),
-                            "skipped_minute",
-                        )
-                        store.record_event(
-                            next_row_index,
-                            floor_minute(observed_at),
-                            build_result.skipped_reason,
-                            "live minute skipped",
-                            build_result.payload,
-                        )
-                    elif build_result.bar is not None:
-                        bar = replace(
-                            build_result.bar,
-                            row_index=next_row_index,
-                            qff_symbol=qff_symbol,
-                            qff_expiry=qff_expiry,
-                            contract_policy_state=(
-                                strategy.state.contract_policy_state or "active"
-                            ),
-                        )
-                        if store.bar_exists_for_timestamp(bar.timestamp):
-                            self.reporter.event(
-                                bar.timestamp,
-                                "duplicate_minute",
-                                "already_processed",
-                            )
-                            store.record_event(
-                                next_row_index,
-                                bar.timestamp,
-                                "duplicate_live_minute",
-                                "live minute already processed",
-                            )
-                        else:
-                            eligible_contract = resolve_qff_contract(
-                                self.config,
-                                qff_provider,
-                                now=bar.timestamp,
-                            )
-                            update_eligible_contract_state(
-                                strategy.state,
-                                eligible_contract,
-                            )
-                            if should_switch_contract_before_processing(
-                                strategy.state,
-                                eligible_contract,
-                            ):
-                                if strategy.state.state == StrategyState.ENTRY_PENDING:
-                                    cancel_entry_pending_for_contract_switch(
-                                        strategy.state
-                                    )
-                                    self.reporter.event(
-                                        bar.timestamp,
-                                        "entry_cancel",
-                                        "contract_switch",
-                                    )
-                                    store.record_event(
-                                        bar.row_index,
-                                        bar.timestamp,
-                                        "entry_cancel_contract_switch",
-                                        "pending entry canceled before QFF contract switch",
-                                        {
-                                            "old_qff_symbol": qff_symbol,
-                                            "new_qff_symbol": eligible_contract.symbol,
-                                        },
-                                    )
-                                self.reporter.event(
-                                    bar.timestamp,
-                                    "contract_switch",
-                                    f"{qff_symbol}->{eligible_contract.symbol}",
-                                )
-                                previous_qff_symbol = qff_symbol
-                                store.record_event(
-                                    bar.row_index,
-                                    bar.timestamp,
-                                    "contract_switch_detected",
-                                    "flat strategy switching to eligible QFF contract",
-                                    {
-                                        "old_qff_symbol": qff_symbol,
-                                        "new_qff_symbol": eligible_contract.symbol,
-                                    },
-                                )
-                                unsubscribe_qff_books_if_supported(
-                                    qff_provider,
-                                    previous_qff_symbol,
-                                )
-                                qff_symbol, qff_expiry, indicator, seed_bars = (
-                                    switch_to_contract(
-                                        store,
-                                        self.config,
-                                        strategy.state,
-                                        eligible_contract,
-                                        qff_provider=qff_provider,
-                                        tsm_provider=tsm_provider,
-                                        usdttwd_provider=usdttwd_provider,
-                                        end=bar.timestamp,
-                                    )
-                                )
-                                subscribe_qff_books_if_supported(
-                                    qff_provider,
-                                    qff_symbol,
-                                    self.reporter,
-                                    bar.timestamp,
-                                )
-                                builder = LiveMinuteBarBuilder(
-                                    stale_seconds=self.config.live.stale_seconds,
-                                    max_leg_timestamp_skew_seconds=(
-                                        self.config.live.max_leg_timestamp_skew_seconds
-                                    ),
-                                )
-                                builder.last_qff_close = seed_bars[-1].qff_close_filled
-                                store.save_state(
-                                    bar.row_index,
-                                    bar.timestamp,
-                                    strategy.state,
-                                    indicator,
-                                )
-                                store.commit()
-                                iterations += 1
-                                if max_iterations is None or iterations < max_iterations:
-                                    self.sleeper(self.config.live.polling_seconds)
-                                continue
-                            mark_pending_contract_switch_if_needed(
-                                strategy.state,
-                                eligible_contract,
-                            )
-                            if (
-                                strategy.state.contract_policy_state
-                                != bar.contract_policy_state
-                            ):
-                                bar = replace(
-                                    bar,
-                                    contract_policy_state=(
-                                        strategy.state.contract_policy_state
-                                    ),
-                                )
-                            snapshot = indicator.update(bar)
-                            tradable_snapshot = build_tradable_snapshot_for_bar(
-                                build_result.quote_set,
-                                bar,
-                                snapshot,
-                                indicator,
-                                self.config,
-                            )
-                            (
-                                decision_snapshot,
-                                decision_spread_type,
-                                decision_zscore,
-                                missing_signal_book,
-                            ) = build_live_decision_snapshot(
-                                self.config,
-                                strategy.state,
-                                snapshot,
-                                tradable_snapshot,
-                            )
-                            if missing_signal_book:
-                                self.reporter.warn(
-                                    bar.timestamp,
-                                    "missing_book",
-                                    "skip_signal",
-                                )
-                            result = None
-                            plan = None
-                            if should_force_exit_for_contract_policy(
-                                self.config,
-                                strategy.state,
-                                bar.timestamp,
-                            ):
-                                result, plan = record_dry_run_exit_intent(
-                                    strategy,
-                                    recorder,
-                                    bar,
-                                    decision_snapshot,
-                                    decision_spread_type,
-                                    reason="rollover_force_exit",
-                                )
-                                self.reporter.event(
-                                    bar.timestamp,
-                                    "force_exit",
-                                    "expiry_buffer",
-                                )
-                                store.record_event(
-                                    bar.row_index,
-                                    bar.timestamp,
-                                    "rollover_force_exit",
-                                    "dry-run forced exit intent before QFF expiry",
-                                    {
-                                        "qff_symbol": qff_symbol,
-                                        "qff_expiry": qff_expiry,
-                                    },
-                                )
-                            elif strategy.state.state == StrategyState.ENTRY_PENDING:
-                                result, plan = record_dry_run_entry_intent(
-                                    strategy,
-                                    recorder,
-                                    bar,
-                                    decision_snapshot,
-                                    decision_spread_type,
-                                )
-                            elif strategy.state.state == StrategyState.EXIT_PENDING:
-                                result, plan = record_dry_run_exit_intent(
-                                    strategy,
-                                    recorder,
-                                    bar,
-                                    decision_snapshot,
-                                    decision_spread_type,
-                                    reason="dry_run_exit_intent",
-                                )
-                            else:
-                                result = strategy.on_bar(bar, decision_snapshot)
-
-                            if plan is not None:
-                                plans_recorded += 1
-                                event_type = (
-                                    "dry_run_intent_recorded"
-                                    if plan.accepted
-                                    else "dry_run_intent_rejected"
-                                )
-                                self.reporter.event(
-                                    bar.timestamp,
-                                    "dry_run",
-                                    event_type.replace("dry_run_", ""),
-                                )
-                                store.record_event(
-                                    bar.row_index,
-                                    bar.timestamp,
-                                    event_type,
-                                    result.reason,
-                                    {
-                                        "plan_id": plan.plan_id,
-                                        "status": plan.status.value,
-                                        "failed_checks": sum(
-                                            1 for check in plan.checks if not check.passed
-                                        ),
-                                    },
-                                )
-                            elif result.action.value != "none":
-                                store.record_event(
-                                    bar.row_index,
-                                    bar.timestamp,
-                                    result.action.value,
-                                    result.reason,
-                                    {"state": strategy.state.state.value},
-                                )
-                            store.record_bar(
-                                bar,
-                                snapshot,
-                                strategy.state,
-                                result.unrealized_pnl,
-                                result.equity,
-                                result.running_max_equity,
-                                result.drawdown_twd,
-                                result.drawdown_pct,
-                                tradable_snapshot=tradable_snapshot,
-                                decision_spread_type=decision_spread_type,
-                                decision_zscore=decision_zscore,
-                            )
-                            self.reporter.bar(
-                                bar.timestamp,
-                                tradable_snapshot,
-                                strategy.state.state,
-                                result.action,
-                                result.reason,
-                                result.unrealized_pnl,
-                                result.equity,
-                            )
-                            if result.action.value != "none":
-                                self.reporter.event(
-                                    bar.timestamp,
-                                    result.action.value,
-                                    compact_reason(result.reason),
-                                )
-                            store.save_state(
-                                bar.row_index,
-                                bar.timestamp,
-                                strategy.state,
-                                indicator,
-                            )
-                            next_row_index += 1
-                            bars_processed += 1
-                    store.commit()
-
-                iterations += 1
-                if max_iterations is None or iterations < max_iterations:
-                    self.sleeper(self.config.live.polling_seconds)
-
-            if live_run_id is not None:
-                store.finish_live_run(
-                    live_run_id,
-                    finished_at=ensure_taipei(self.clock()),
-                    status="stopped",
-                    payload={
-                        "iterations": iterations,
-                        "bars_processed": bars_processed,
-                        "skipped_minutes": skipped_minutes,
-                        "plans_recorded": plans_recorded,
-                    },
-                )
-                store.commit()
-                live_run_id = None
-            return LiveDryRunResult(
-                iterations=iterations,
-                bars_processed=bars_processed,
-                skipped_minutes=skipped_minutes,
-                plans_recorded=plans_recorded,
-                qff_symbol=qff_symbol,
-            )
-        finally:
-            if live_run_id is not None:
-                try:
-                    store.finish_live_run(
-                        live_run_id,
-                        finished_at=ensure_taipei(self.clock()),
-                        status="closed",
-                    )
-                    store.commit()
-                except Exception:
-                    store.rollback()
-            store.close()
-            if qff_provider_to_close is not None:
-                close = getattr(qff_provider_to_close, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:
-                        pass
+    def run(
+        self,
+        *,
+        resume: bool = False,
+        reset_store: bool = False,
+        max_iterations: int | None = None,
+        skip_warmup: bool = False,
+    ) -> LiveRuntimeResult:
+        return self.runtime.run(
+            resume=resume,
+            reset_store=reset_store,
+            max_iterations=max_iterations,
+            skip_warmup=skip_warmup,
+        )
 
 
 def record_dry_run_entry_intent(
@@ -1781,16 +1942,6 @@ def should_wait_for_finalize_delay(
         floor_minute(observed_at) > current_minute
         and observed_at.second + observed_at.microsecond / 1_000_000 < delay_seconds
     )
-
-
-def resolve_qff_symbol(config: AppConfig, provider: object) -> str:
-    configured = config.live.qff_symbol
-    if configured.lower() != "auto":
-        return configured
-    selector = getattr(provider, "select_front_month_symbol", None)
-    if selector is None:
-        raise RuntimeError("qff_symbol=auto requires a provider with front-month selector")
-    return str(selector(config.live.qff_product))
 
 
 def resolve_qff_contract(

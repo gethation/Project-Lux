@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from datetime import date
 from datetime import datetime, time, timedelta
 
 from .models import MarketBar
@@ -11,6 +12,15 @@ DAY_START = 8 * 60 + 45
 DAY_END = 13 * 60 + 45
 NIGHT_START = 17 * 60 + 25
 NIGHT_END = 5 * 60
+
+
+@dataclass(frozen=True)
+class LiveSessionStatus:
+    is_trading: bool
+    is_close_only: bool
+    reason: str
+    next_open_at: datetime
+    countdown: timedelta
 
 
 def minute_of_day(timestamp: datetime) -> int:
@@ -31,6 +41,71 @@ def in_day_session(timestamp: datetime) -> bool:
 def in_night_session(timestamp: datetime) -> bool:
     minute = minute_of_day(timestamp)
     return minute >= NIGHT_START or minute <= NIGHT_END
+
+
+def is_live_business_day(value: date, closed_dates: Iterable[date]) -> bool:
+    return value.weekday() < 5 and value not in set(closed_dates)
+
+
+def live_session_status(
+    timestamp: datetime,
+    closed_dates: Iterable[date] = (),
+) -> LiveSessionStatus:
+    closed = set(closed_dates)
+    trading = _is_live_session_trading(timestamp, closed)
+    session_start = session_start_date(timestamp)
+    close_only = (
+        trading
+        and in_night_session(timestamp)
+        and session_start.weekday() == 4
+    )
+    next_open = next_trading_session_start(timestamp, closed)
+    if trading:
+        reason = "close_only" if close_only else "open"
+    elif timestamp.date() in closed or session_start in closed:
+        reason = "closed_date"
+    elif timestamp.date().weekday() >= 5 or session_start.weekday() >= 5:
+        reason = "weekend"
+    else:
+        reason = "outside_session"
+    return LiveSessionStatus(
+        is_trading=trading,
+        is_close_only=close_only,
+        reason=reason,
+        next_open_at=next_open,
+        countdown=max(next_open - timestamp, timedelta(0)),
+    )
+
+
+def next_trading_session_start(
+    timestamp: datetime,
+    closed_dates: Iterable[date] = (),
+) -> datetime:
+    closed = set(closed_dates)
+    tzinfo = timestamp.tzinfo
+    start_date = timestamp.date() - timedelta(days=1)
+    candidates: list[datetime] = []
+    for offset in range(16):
+        current = start_date + timedelta(days=offset)
+        if not is_live_business_day(current, closed):
+            continue
+        for session_time in (market_time(8, 45), market_time(17, 25)):
+            candidate = datetime.combine(current, session_time, tzinfo=tzinfo)
+            if candidate > timestamp:
+                candidates.append(candidate)
+    if not candidates:
+        raise RuntimeError("Unable to find next trading session within 15 days")
+    return min(candidates)
+
+
+def _is_live_session_trading(timestamp: datetime, closed_dates: set[date]) -> bool:
+    if timestamp.date() in closed_dates:
+        return False
+    if in_day_session(timestamp):
+        return is_live_business_day(timestamp.date(), closed_dates)
+    if in_night_session(timestamp):
+        return is_live_business_day(session_start_date(timestamp), closed_dates)
+    return False
 
 
 class TradingCalendar:
@@ -74,17 +149,19 @@ def is_close_only(timestamp: datetime, close_allowed: bool) -> bool:
 
 
 def annotate_live_bar(bar: MarketBar) -> MarketBar:
-    close_allowed = in_day_session(bar.timestamp) or in_night_session(bar.timestamp)
-    friday_night = (
-        close_allowed
-        and in_night_session(bar.timestamp)
-        and session_start_date(bar.timestamp).weekday() == 4
-    )
+    return annotate_live_bar_with_closed_dates(bar, ())
+
+
+def annotate_live_bar_with_closed_dates(
+    bar: MarketBar,
+    closed_dates: Iterable[date],
+) -> MarketBar:
+    status = live_session_status(bar.timestamp, closed_dates)
     return replace(
         bar,
-        close_allowed=close_allowed,
-        entry_allowed=close_allowed and not friday_night,
-        friday_night_close_only=close_allowed and friday_night,
+        close_allowed=status.is_trading,
+        entry_allowed=status.is_trading and not status.is_close_only,
+        friday_night_close_only=status.is_trading and status.is_close_only,
     )
 
 

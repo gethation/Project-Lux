@@ -5,12 +5,17 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 
+import lux_trader.cli as cli_module
 from lux_trader.cli import (
     build_parser,
     command_dry_run_doctor,
     command_execution_summary,
+    command_live_doctor,
+    command_live_execute,
     command_live_dry_run,
+    command_live_order_doctor,
     command_simulate_execution,
+    qff_book_diagnostic_lines,
 )
 from lux_trader.execution_intent import ExecutionLeg, ExecutionPlanType, PairExecutionPlan
 from lux_trader.execution_recorder import DryRunExecutionRecorder
@@ -20,6 +25,7 @@ from lux_trader.execution_simulator import (
     ExecutionSimulationStatus,
 )
 from lux_trader.models import BrokerName, Direction, OrderSide
+from lux_trader.live_market_data import LiveQuote
 from lux_trader.store import SQLiteStore
 
 
@@ -38,6 +44,9 @@ def write_config(tmp_path: Path, *, allow_live_order: bool = False) -> Path:
                 f"allow_live_order = {str(allow_live_order).lower()}",
                 "validate_expected_zscore = false",
                 "expected_zscore_tolerance = 0.0000001",
+                "",
+                "[trading_calendar]",
+                "closed_dates = ['2026-06-19']",
                 "",
                 "[live_market_data]",
                 "qff_symbol = 'QFFG6'",
@@ -156,6 +165,53 @@ def test_dry_run_doctor_cli_initializes_store(tmp_path: Path, capsys) -> None:
     assert exit_code == 0
     assert "Dry-run doctor checks passed" in output
     assert "private_api=disabled" in output
+
+
+def test_live_doctor_prints_live_session_status(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime.fromisoformat("2026-06-20T02:30:00+08:00")
+            if tz is not None:
+                return value.astimezone(tz)
+            return value
+
+    monkeypatch.setattr(cli_module, "datetime", FixedDateTime)
+    monkeypatch.delenv("LUX_LIVE_MARKETDATA", raising=False)
+    parser = build_parser()
+    args = parser.parse_args(["live-doctor", "--config", str(write_config(tmp_path))])
+
+    exit_code = command_live_doctor(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "live_session=closed" in output
+    assert "next_trading_start=2026-06-22T08:45:00+08:00" in output
+
+
+def test_qff_book_diagnostic_lines_marks_stale() -> None:
+    quote = LiveQuote(
+        source="fubon_qff",
+        symbol="QFFG6",
+        timestamp=datetime.fromisoformat("2026-06-19T04:59:59+08:00"),
+        price=123.0,
+        bid=122.0,
+        ask=124.0,
+    )
+
+    lines = qff_book_diagnostic_lines(
+        quote,
+        datetime.fromisoformat("2026-06-20T02:30:00+08:00"),
+        stale_seconds=10.0,
+    )
+
+    assert "qff_book_timestamp=2026-06-19T04:59:59+08:00" in lines
+    assert "qff_book_stale=true" in lines
+    assert any(line.startswith("WARN stale_qff_book") for line in lines)
 
 
 def test_live_dry_run_fake_records_plan_and_exits_zero(
@@ -386,5 +442,37 @@ def test_live_dry_run_rejects_allow_live_order(tmp_path: Path) -> None:
         command_live_dry_run(args)
     except SystemExit as exc:
         assert "allow_live_order" in str(exc)
+    else:
+        raise AssertionError("Expected SystemExit")
+
+
+def test_live_order_doctor_reports_phase5_gates(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        ["live-order-doctor", "--config", str(write_config(tmp_path))]
+    )
+
+    exit_code = command_live_order_doctor(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Live order doctor checks passed" in output
+    assert "live_execution.enabled=False" in output
+    assert "phase5_adapter=not_implemented" in output
+
+
+def test_live_execute_extension_point_fails_fast(tmp_path: Path) -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        ["live-execute", "--config", str(write_config(tmp_path)), "--quiet-ui"]
+    )
+
+    try:
+        command_live_execute(args)
+    except SystemExit as exc:
+        assert "live-execute gate closed" in str(exc)
     else:
         raise AssertionError("Expected SystemExit")

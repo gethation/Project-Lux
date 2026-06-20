@@ -41,6 +41,11 @@ class ContractPolicyConfig:
 
 
 @dataclass(frozen=True)
+class TradingCalendarConfig:
+    closed_dates: tuple[date, ...]
+
+
+@dataclass(frozen=True)
 class LiveMarketDataConfig:
     polling_seconds: float
     minute_finalize_delay_seconds: float
@@ -66,6 +71,14 @@ class BrokerReconciliationConfig:
 
 
 @dataclass(frozen=True)
+class LiveExecutionConfig:
+    enabled: bool
+    require_readonly_reconciliation: bool
+    max_plan_age_seconds: int
+    qff_first: bool
+
+
+@dataclass(frozen=True)
 class AppConfig:
     input_csv: Path
     store_path: Path
@@ -73,8 +86,10 @@ class AppConfig:
     fees: FeeConfig
     safety: SafetyConfig
     contract_policy: ContractPolicyConfig
+    trading_calendar: TradingCalendarConfig
     live: LiveMarketDataConfig
     broker_reconciliation: BrokerReconciliationConfig
+    live_execution: LiveExecutionConfig
 
 
 def load_config(path: Path) -> AppConfig:
@@ -86,8 +101,10 @@ def load_config(path: Path) -> AppConfig:
     fees = raw.get("fees", {})
     safety = raw.get("safety", {})
     contract_policy = raw.get("contract_policy", {})
+    trading_calendar = raw.get("trading_calendar", {})
     live = raw.get("live_market_data", {})
     broker_reconciliation = raw.get("broker_reconciliation", {})
+    live_execution = raw.get("live_execution", {})
 
     input_csv = Path(paths.get("input_csv", "")).expanduser()
     store_path = Path(paths["store_path"]).expanduser()
@@ -134,6 +151,15 @@ def load_config(path: Path) -> AppConfig:
             force_exit_time=str(contract_policy.get("force_exit_time", "13:35")),
             holidays=parse_holidays(contract_policy.get("holidays", [])),
         ),
+        trading_calendar=TradingCalendarConfig(
+            closed_dates=parse_date_list(
+                trading_calendar.get(
+                    "closed_dates",
+                    contract_policy.get("holidays", []),
+                ),
+                label="trading_calendar.closed_dates",
+            ),
+        ),
         live=LiveMarketDataConfig(
             polling_seconds=float(live.get("polling_seconds", 1.0)),
             minute_finalize_delay_seconds=float(
@@ -165,14 +191,26 @@ def load_config(path: Path) -> AppConfig:
                 broker_reconciliation.get("qff_contract_tolerance", 0)
             ),
         ),
+        live_execution=LiveExecutionConfig(
+            enabled=bool(live_execution.get("enabled", False)),
+            require_readonly_reconciliation=bool(
+                live_execution.get("require_readonly_reconciliation", True)
+            ),
+            max_plan_age_seconds=int(live_execution.get("max_plan_age_seconds", 120)),
+            qff_first=bool(live_execution.get("qff_first", True)),
+        ),
     )
 
 
 def parse_holidays(values: object) -> tuple[date, ...]:
+    return parse_date_list(values, label="contract_policy.holidays")
+
+
+def parse_date_list(values: object, *, label: str) -> tuple[date, ...]:
     if values is None:
         return ()
     if not isinstance(values, list):
-        raise RuntimeError("contract_policy.holidays must be a list of YYYY-MM-DD strings")
+        raise RuntimeError(f"{label} must be a list of YYYY-MM-DD strings")
     return tuple(date.fromisoformat(str(value)) for value in values)
 
 

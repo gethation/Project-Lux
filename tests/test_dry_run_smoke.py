@@ -42,7 +42,7 @@ def load_integrated_smoke_config() -> AppConfig:
         pytest.fail("Dry-run smoke requires allow_live_order=false")
     return replace(
         config,
-        store_path=config.store_path.parent / "live_dry_run_readonly_smoke.sqlite3",
+        store_path=config.store_path.parent / "live_dry_run_full_smoke.sqlite3",
     )
 
 
@@ -178,5 +178,62 @@ def test_real_readonly_reconciliation_then_live_dry_run_records_intent() -> None
             """
         ).fetchone()
         assert latest_plan == ("recorded", "entry")
+    finally:
+        connection.close()
+
+    resume_output = io.StringIO()
+    resume_result = LiveDryRunRunner(
+        config,
+        reporter=LiveTerminalReporter(resume_output, color=False),
+    ).run(resume=True, max_iterations=70)
+
+    assert resume_result.iterations == 70
+    assert resume_result.plans_recorded == 0
+    assert "warmup_auto" not in resume_output.getvalue()
+
+    connection = sqlite3.connect(config.store_path)
+    try:
+        counts = {
+            table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "warmup_bars",
+                "live_runs",
+                "execution_plans",
+                "orders",
+                "fills",
+                "trades",
+            )
+        }
+        assert counts["warmup_bars"] == config.live.warmup_minutes
+        assert counts["live_runs"] == 2
+        assert counts["execution_plans"] >= 1
+        assert counts["orders"] == 0
+        assert counts["fills"] == 0
+        assert counts["trades"] == 0
+
+        duplicate_bars = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM (
+                SELECT timestamp
+                FROM bars
+                GROUP BY timestamp
+                HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()[0]
+        duplicate_plans = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM (
+                SELECT timestamp, plan_type, direction
+                FROM execution_plans
+                GROUP BY timestamp, plan_type, direction
+                HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()[0]
+        assert duplicate_bars == 0
+        assert duplicate_plans == 0
     finally:
         connection.close()

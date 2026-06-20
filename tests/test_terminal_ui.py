@@ -11,6 +11,7 @@ from lux_trader.live_market_data import LiveQuote, LiveQuoteSet
 from lux_trader.models import MarketBar, StrategyAction, StrategyState
 from lux_trader.terminal_ui import (
     LiveTerminalReporter,
+    format_countdown,
 )
 from lux_trader.tradable_spread import TradableSpreadSnapshot, estimate_tradable_spreads
 
@@ -85,6 +86,47 @@ def test_live_terminal_reporter_refreshes_live_line_without_newlines() -> None:
         "shortSpread(spread=NA,z=NA) "
         "longSpread(spread=2.06,z=1.93) OPEN"
     ) in output
+
+
+def test_live_terminal_reporter_refreshes_non_trading_line() -> None:
+    stream = io.StringIO()
+    reporter = LiveTerminalReporter(stream, color=False)
+
+    reporter.live_non_trading(
+        ts("2026-06-20T02:31:04+08:00"),
+        ts("2026-06-22T08:45:00+08:00"),
+        "closed_date",
+    )
+    reporter.live_non_trading(
+        ts("2026-06-20T02:31:05+08:00"),
+        ts("2026-06-22T08:45:00+08:00"),
+        "closed_date",
+    )
+
+    output = stream.getvalue()
+    assert output.count("\n") == 0
+    assert output.count("\r") == 2
+    assert (
+        "02:31:05 LIVE non-trading session next=06/22 08:45 in=54:13:55"
+    ) in output
+
+
+def test_live_terminal_reporter_non_trading_color_and_countdown_over_24h() -> None:
+    stream = io.StringIO()
+    reporter = LiveTerminalReporter(stream, color=True)
+
+    reporter.live_non_trading(
+        ts("2026-06-20T02:31:04+08:00"),
+        ts("2026-06-22T08:45:00+08:00"),
+        "closed_date",
+    )
+
+    output = stream.getvalue()
+    assert "\x1b[33mLIVE non-trading session\x1b[0m" in output
+    assert format_countdown(
+        ts("2026-06-20T02:31:04+08:00"),
+        ts("2026-06-22T08:45:00+08:00"),
+    ) == "54:13:56"
 
 
 def test_live_terminal_reporter_clears_live_before_permanent_lines() -> None:

@@ -10,31 +10,33 @@ from pathlib import Path
 import numpy
 import pandas
 
+from .calendar import live_session_status
 from .config import load_config
-from .execution_intent import (
-    ExecutionPlanType,
-    pair_execution_plan_from_jsonable,
-    pair_execution_plan_from_order_requests,
+from .cli_helpers import (
+    build_fake_execution_plan,
+    build_reconciliation_brokers,
+    build_real_readonly_brokers,
+    close_brokers,
+    readonly_broker_enabled,
+    reconciliation_qff_symbol,
 )
+from .execution_intent import pair_execution_plan_from_jsonable
 from .execution_recorder import DryRunExecutionRecorder
 from .execution_simulator import DryRunExecutionSimulator, ExecutionSimulationScenario
-from .live_market_data import CcxtTickerMarketData, FubonQffMarketData
+from .live_market_data import CcxtTickerMarketData, FubonQffMarketData, ensure_taipei
 from .live_runner import (
     LiveDryRunRunner,
+    LiveExecuteRunner,
     LivePaperRunner,
     QffWarmupCheckRunner,
     WarmupRunner,
     resolve_qff_contract,
 )
-from .models import BrokerName, Direction, OrderRequest, OrderSide
 from .reconciliation import (
-    BrokerPositionSnapshot,
     BrokerReconciler,
-    FakeReadOnlyBroker,
     ReadOnlyBroker,
     ReconciliationStatus,
 )
-from .readonly_brokers import BinanceReadOnlyBroker, FubonReadOnlyBroker
 from .runner import SystemRunner
 from .store import SQLiteStore
 from .terminal_ui import LiveTerminalReporter, NullLiveReporter
@@ -158,6 +160,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create a deterministic fake execution plan before simulating",
     )
     simulate_execution.add_argument("--reset-store", action="store_true")
+
+    live_order_doctor = subparsers.add_parser(
+        "live-order-doctor",
+        help="Check Phase 5 live execution gates without sending orders",
+    )
+    live_order_doctor.add_argument("--config", type=Path, required=True)
+
+    live_execute = subparsers.add_parser(
+        "live-execute",
+        help="Reserved Phase 5 live execution entrypoint",
+    )
+    live_execute.add_argument("--config", type=Path, required=True)
+    live_execute.add_argument("--resume", action="store_true")
+    live_execute.add_argument("--reset-store", action="store_true")
+    live_execute.add_argument("--max-iterations", type=int)
+    live_execute.add_argument(
+        "--quiet-ui",
+        action="store_true",
+        help="Disable live terminal UI and print only the final summary",
+    )
+    live_execute.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Keep live terminal UI but disable ANSI colors",
+    )
+    live_execute.add_argument(
+        "--skip-warmup",
+        action="store_true",
+        help="Require existing warmup seed bars instead of auto-building them at startup",
+    )
 
     live_doctor = subparsers.add_parser("live-doctor", help="Check live-paper config")
     live_doctor.add_argument("--config", type=Path, required=True)
@@ -340,140 +372,6 @@ def command_reconcile_brokers(args: argparse.Namespace) -> int:
     return 1 if report.status == ReconciliationStatus.ERROR else 0
 
 
-def build_fake_reconciliation_brokers(
-    config: object,
-    strategy_state: object,
-    *,
-    fake_case: str,
-    timestamp: datetime,
-) -> tuple[FakeReadOnlyBroker, FakeReadOnlyBroker]:
-    reconciler = BrokerReconciler(
-        tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
-        qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
-    )
-    expected = reconciler.expected_from_strategy(
-        strategy_state,
-        tsm_symbol=config.live.binance_symbol,
-        qff_symbol=reconciliation_qff_symbol(config, strategy_state),
-        timestamp=timestamp,
-    )
-    if fake_case == "error":
-        return (
-            FakeReadOnlyBroker(
-                BrokerName.BINANCE_TSM,
-                fetch_error=RuntimeError("fake broker fetch failed"),
-            ),
-            FakeReadOnlyBroker(BrokerName.FUBON_QFF, fetched_at=timestamp),
-        )
-
-    tsm_quantity = expected.expected_tsm_units
-    qff_quantity = float(expected.expected_qff_contracts)
-    if fake_case == "mismatch":
-        qff_quantity = qff_quantity + 1.0 if qff_quantity != 0 else 1.0
-
-    tsm_positions = (
-        (
-            BrokerPositionSnapshot(
-                broker=BrokerName.BINANCE_TSM,
-                symbol=config.live.binance_symbol,
-                quantity=tsm_quantity,
-            ),
-        )
-        if tsm_quantity != 0
-        else ()
-    )
-    qff_positions = (
-        (
-            BrokerPositionSnapshot(
-                broker=BrokerName.FUBON_QFF,
-                symbol=expected.qff_symbol,
-                quantity=qff_quantity,
-            ),
-        )
-        if qff_quantity != 0
-        else ()
-    )
-    return (
-        FakeReadOnlyBroker(
-            BrokerName.BINANCE_TSM,
-            account_id="FAKE-BINANCE",
-            positions=tsm_positions,
-            fetched_at=timestamp,
-        ),
-        FakeReadOnlyBroker(
-            BrokerName.FUBON_QFF,
-            account_id="FAKE-FUBON",
-            positions=qff_positions,
-            fetched_at=timestamp,
-        ),
-    )
-
-
-def build_reconciliation_brokers(
-    args: argparse.Namespace,
-    config: object,
-    strategy_state: object,
-    timestamp: datetime,
-) -> tuple[ReadOnlyBroker, ...]:
-    if args.fake:
-        return build_fake_reconciliation_brokers(
-            config,
-            strategy_state,
-            fake_case=args.fake_case,
-            timestamp=timestamp,
-        )
-    if args.readonly:
-        require_readonly_broker_enabled()
-        return build_real_readonly_brokers(config)
-    if args.fubon_readonly and args.fake_binance:
-        require_readonly_broker_enabled()
-        fake_binance = build_fake_reconciliation_brokers(
-            config,
-            strategy_state,
-            fake_case=args.fake_case,
-            timestamp=timestamp,
-        )[0]
-        return (
-            FubonReadOnlyBroker(config.live.fubon_env_path),
-            fake_binance,
-        )
-    raise SystemExit(
-        "Use --fake, --readonly, or --fubon-readonly --fake-binance"
-    )
-
-
-def build_real_readonly_brokers(config: object) -> tuple[ReadOnlyBroker, ReadOnlyBroker]:
-    return (
-        FubonReadOnlyBroker(config.live.fubon_env_path),
-        BinanceReadOnlyBroker(
-            config.live.binance_symbol,
-            config.live.fubon_env_path,
-        ),
-    )
-
-
-def close_brokers(brokers: tuple[ReadOnlyBroker, ...]) -> None:
-    for broker in brokers:
-        try:
-            broker.close()
-        except Exception:
-            pass
-
-
-def readonly_broker_enabled() -> bool:
-    return os.getenv("LUX_READONLY_BROKER", "").strip() == "1"
-
-
-def require_readonly_broker_enabled() -> None:
-    if not readonly_broker_enabled():
-        raise SystemExit("Set LUX_READONLY_BROKER=1 to use real read-only brokers")
-
-
-def reconciliation_qff_symbol(config: object, strategy_state: object) -> str:
-    trading_symbol = getattr(strategy_state, "trading_qff_symbol", None)
-    return str(trading_symbol or config.live.qff_symbol)
-
-
 def command_dry_run_doctor(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     if config.safety.allow_live_order:
@@ -586,57 +484,6 @@ def command_live_dry_run(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
-def build_fake_execution_plan(
-    config: object,
-    *,
-    fake_case: str,
-    timestamp: datetime,
-    row_index: int,
-):
-    qff_symbol = str(config.live.qff_symbol)
-    if qff_symbol.lower() == "auto":
-        qff_symbol = "QFFG6"
-    binance_side = OrderSide.SELL
-    if fake_case == "rejected":
-        binance_side = OrderSide.BUY
-    requests = (
-        OrderRequest(
-            broker=BrokerName.BINANCE_TSM,
-            symbol=config.live.binance_symbol,
-            side=binance_side,
-            quantity=125.5,
-            price=720.0,
-            timestamp=timestamp,
-            row_index=row_index,
-            fee_twd=12.3,
-            qff_symbol=qff_symbol,
-            qff_expiry="2026-02-18",
-            contract_policy_state="fake",
-        ),
-        OrderRequest(
-            broker=BrokerName.FUBON_QFF,
-            symbol=qff_symbol,
-            side=OrderSide.BUY,
-            quantity=3,
-            price=1180.0,
-            timestamp=timestamp,
-            row_index=row_index,
-            fee_twd=45.6,
-            qff_symbol=qff_symbol,
-            qff_expiry="2026-02-18",
-            contract_policy_state="fake",
-        ),
-    )
-    return pair_execution_plan_from_order_requests(
-        plan_type=ExecutionPlanType.ENTRY,
-        direction=Direction.SHORT_TSM_LONG_QFF,
-        requests=requests,
-        reason=f"fake_{fake_case}",
-        decision_zscore=2.14,
-        decision_spread_type="shortSpread",
-    )
-
-
 def command_simulate_execution(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     if config.safety.allow_live_order:
@@ -693,6 +540,59 @@ def command_simulate_execution(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_live_order_doctor(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    env_gates = {
+        "PROJECT_LUX_ALLOW_LIVE_ORDER": os.getenv(
+            "PROJECT_LUX_ALLOW_LIVE_ORDER", ""
+        ).strip()
+        == "1",
+        "FUBON_ALLOW_LIVE_ORDER": os.getenv("FUBON_ALLOW_LIVE_ORDER", "").strip()
+        == "1",
+        "BINANCE_ALLOW_LIVE_ORDER": os.getenv("BINANCE_ALLOW_LIVE_ORDER", "").strip()
+        == "1",
+    }
+    checks = [
+        f"store_path={config.store_path}",
+        f"safety.allow_live_order={config.safety.allow_live_order}",
+        f"live_execution.enabled={config.live_execution.enabled}",
+        (
+            "live_execution.require_readonly_reconciliation="
+            f"{config.live_execution.require_readonly_reconciliation}"
+        ),
+        f"live_execution.max_plan_age_seconds={config.live_execution.max_plan_age_seconds}",
+        f"live_execution.qff_first={config.live_execution.qff_first}",
+        "phase5_adapter=not_implemented",
+    ]
+    checks.extend(f"env.{name}={enabled}" for name, enabled in env_gates.items())
+    print("Live order doctor checks passed")
+    for check in checks:
+        print(f"- {check}")
+    return 0
+
+
+def command_live_execute(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    reporter = (
+        NullLiveReporter()
+        if args.quiet_ui
+        else LiveTerminalReporter(color=False if args.no_color else None)
+    )
+    try:
+        LiveExecuteRunner(config, reporter=reporter).run(
+            resume=args.resume,
+            reset_store=args.reset_store,
+            max_iterations=args.max_iterations,
+            skip_warmup=args.skip_warmup,
+        )
+    except RuntimeError as exc:
+        reporter.error(datetime.now().astimezone(), f"{type(exc).__name__}: {exc}")
+        raise SystemExit(str(exc))
+    finally:
+        reporter.finish()
+    return 0
+
+
 def command_live_doctor(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     if config.safety.allow_live_order:
@@ -704,6 +604,12 @@ def command_live_doctor(args: argparse.Namespace) -> int:
 
     import ccxt
 
+    observed_at = ensure_taipei(datetime.now().astimezone())
+    session_status = live_session_status(
+        observed_at,
+        config.trading_calendar.closed_dates,
+    )
+
     checks = [
         f"store_path={config.store_path}",
         f"polling_seconds={config.live.polling_seconds}",
@@ -711,6 +617,8 @@ def command_live_doctor(args: argparse.Namespace) -> int:
         f"qff_symbol={config.live.qff_symbol}",
         f"binance_symbol={config.live.binance_symbol}",
         f"bitopro_symbol={config.live.bitopro_symbol}",
+        f"live_session={live_session_label(session_status)}",
+        f"next_trading_start={session_status.next_open_at.isoformat()}",
         f"ccxt={ccxt.__version__}",
         f"live_order={config.safety.allow_live_order}",
     ]
@@ -739,13 +647,26 @@ def command_live_doctor(args: argparse.Namespace) -> int:
                     "qff_business_days_to_expiry="
                     f"{qff_contract.selection.business_days_to_expiry}"
                 )
-            qff.ensure_books_subscription(qff_contract.symbol)
-            qff_quote = qff.fetch_quote(qff_contract.symbol)
-            checks.append(
-                "qff_book="
-                f"price={qff_quote.price} bid={qff_quote.bid} ask={qff_quote.ask} "
-                f"bid_size={qff_quote.bid_size} ask_size={qff_quote.ask_size}"
-            )
+            try:
+                qff.ensure_books_subscription(qff_contract.symbol)
+                qff_quote = qff.fetch_quote(qff_contract.symbol)
+                checks.append(
+                    "qff_book="
+                    f"price={qff_quote.price} bid={qff_quote.bid} ask={qff_quote.ask} "
+                    f"bid_size={qff_quote.bid_size} ask_size={qff_quote.ask_size}"
+                )
+                checks.extend(
+                    qff_book_diagnostic_lines(
+                        qff_quote,
+                        observed_at,
+                        config.live.stale_seconds,
+                    )
+                )
+            except Exception as exc:
+                checks.append(
+                    "WARN qff_book_unavailable "
+                    f"{type(exc).__name__}: {exc}"
+                )
             binance_quote = CcxtTickerMarketData("binanceusdm").fetch_quote(
                 config.live.binance_symbol
             )
@@ -771,6 +692,36 @@ def command_live_doctor(args: argparse.Namespace) -> int:
     for check in checks:
         print(f"- {check}")
     return 0
+
+
+def live_session_label(session_status: object) -> str:
+    is_trading = bool(getattr(session_status, "is_trading"))
+    is_close_only = bool(getattr(session_status, "is_close_only"))
+    if not is_trading:
+        return "closed"
+    if is_close_only:
+        return "close_only"
+    return "open"
+
+
+def qff_book_diagnostic_lines(
+    qff_quote: object,
+    observed_at: datetime,
+    stale_seconds: float,
+) -> list[str]:
+    quote_timestamp = ensure_taipei(getattr(qff_quote, "timestamp"))
+    age_sec = max((ensure_taipei(observed_at) - quote_timestamp).total_seconds(), 0.0)
+    stale = age_sec > stale_seconds
+    lines = [
+        f"qff_book_timestamp={quote_timestamp.isoformat()}",
+        f"qff_book_age_sec={age_sec:.3f}",
+        f"qff_book_stale={str(stale).lower()}",
+    ]
+    if stale:
+        lines.append(
+            f"WARN stale_qff_book age_sec={age_sec:.3f} threshold={stale_seconds}"
+        )
+    return lines
 
 
 def command_warmup_live(args: argparse.Namespace) -> int:
@@ -862,6 +813,10 @@ def main(argv: list[str] | None = None) -> int:
         return command_live_dry_run(args)
     if args.command == "simulate-execution":
         return command_simulate_execution(args)
+    if args.command == "live-order-doctor":
+        return command_live_order_doctor(args)
+    if args.command == "live-execute":
+        return command_live_execute(args)
     if args.command == "live-doctor":
         return command_live_doctor(args)
     if args.command == "warmup-live":

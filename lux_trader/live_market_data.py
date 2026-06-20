@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from html import unescape
 from pathlib import Path
 from threading import Condition
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -18,7 +18,7 @@ from zipfile import ZipFile
 
 import pandas as pd
 
-from .calendar import annotate_live_bar, in_night_session
+from .calendar import annotate_live_bar_with_closed_dates, in_night_session
 from .config import LiveMarketDataConfig
 from .models import MarketBar
 
@@ -318,12 +318,18 @@ class LiveMinuteBarBuilder:
         *,
         stale_seconds: float,
         max_leg_timestamp_skew_seconds: float,
+        closed_dates: Iterable[date] = (),
     ) -> None:
         self.stale_seconds = stale_seconds
         self.max_leg_timestamp_skew_seconds = max_leg_timestamp_skew_seconds
+        self.closed_dates = tuple(closed_dates)
         self.current_minute: datetime | None = None
         self.current_quotes: dict[str, LiveQuote] = {}
         self.last_qff_close: float | None = None
+
+    def reset_current_minute(self) -> None:
+        self.current_minute = None
+        self.current_quotes = {}
 
     def update(
         self, quote_set: LiveQuoteSet, observed_at: datetime
@@ -411,7 +417,7 @@ class LiveMinuteBarBuilder:
             * 200.0
         )
         return MinuteBuildResult(
-            annotate_live_bar(
+            annotate_live_bar_with_closed_dates(
                 MarketBar(
                     row_index=-1,
                     timestamp=self.current_minute,
@@ -419,7 +425,8 @@ class LiveMinuteBarBuilder:
                     qff_close_filled=self.last_qff_close,
                     tsm_twd_fair=tsm_twd_fair,
                     spread=spread,
-                )
+                ),
+                self.closed_dates,
             ),
             quote_set=quote_set,
         )

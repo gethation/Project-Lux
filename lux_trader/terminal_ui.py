@@ -29,6 +29,14 @@ class NullLiveReporter:
     ) -> None:
         return
 
+    def live_non_trading(
+        self,
+        timestamp: Any,
+        next_open_at: Any,
+        reason: str,
+    ) -> None:
+        return
+
     def bar(
         self,
         timestamp: Any,
@@ -97,6 +105,29 @@ class LiveTerminalReporter:
                 self._paint_spread_block("shortSpread", spread_snapshot.short_spread, spread_snapshot.short_zscore),
                 self._paint_spread_block("longSpread", spread_snapshot.long_spread, spread_snapshot.long_zscore),
                 self._paint_state(state_text),
+            ]
+        )
+        self._write_live(plain, colored)
+
+    def live_non_trading(
+        self,
+        timestamp: Any,
+        next_open_at: Any,
+        reason: str,
+    ) -> None:
+        time_text = format_time(timestamp, with_seconds=True)
+        next_text = format_next_open(next_open_at)
+        countdown = format_countdown(timestamp, next_open_at)
+        plain = (
+            f"{time_text} LIVE non-trading session "
+            f"next={next_text} in={countdown}"
+        )
+        colored = " ".join(
+            [
+                self._paint(time_text, "dim"),
+                self._paint("LIVE non-trading session", "yellow"),
+                f"next={next_text}",
+                f"in={countdown}",
             ]
         )
         self._write_live(plain, colored)
@@ -296,6 +327,24 @@ def compact_action(action: Any, reason: str) -> str:
 def format_time(timestamp: Any, *, with_seconds: bool) -> str:
     fmt = "%H:%M:%S" if with_seconds else "%H:%M"
     return ensure_taipei(timestamp).strftime(fmt)
+
+
+def format_next_open(timestamp: Any) -> str:
+    return ensure_taipei(timestamp).strftime("%m/%d %H:%M")
+
+
+def format_countdown(timestamp: Any, next_open_at: Any) -> str:
+    seconds = max(
+        int(
+            (
+                ensure_taipei(next_open_at) - ensure_taipei(timestamp)
+            ).total_seconds()
+        ),
+        0,
+    )
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def format_float(value: float | None, *, digits: int) -> str:
