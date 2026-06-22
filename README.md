@@ -90,11 +90,12 @@ By default, `live-paper` shows a compact terminal UI: same-minute `LIVE` snapsho
 refresh on one line, finalized `BAR` rows and warnings/events are printed on separate
 lines. Use `--quiet-ui` to disable it or `--no-color` to keep the UI without ANSI
 colors. Live entry/exit signals use bid/ask-adjusted tradable spreads while `mid`
-remains available as the PoC/reference spread:
+remains available as the PoC/reference spread. Unlike replay/backtest, live modes
+execute immediately after the finalized minute confirms the signal:
 
 ```text
 09:12:04 LIVE mid=1.84 shortSpread(spread=1.62,z=1.51) longSpread(spread=2.06,z=1.93) FLAT
-09:14 BAR  mid=2.24 z=2.06 shortSpread(spread=2.18,z=2.00) longSpread(spread=2.31,z=2.17) ENTRY_PENDING entry_signal/zscore_crossed pnl=0 eq=1,000,000
+09:14 BAR  mid=2.24 z=2.06 shortSpread(spread=2.18,z=2.00) longSpread(spread=2.31,z=2.17) OPEN entry_fill pnl=-550 eq=999,450
 ```
 
 Live runtime uses `[trading_calendar].closed_dates` for manually configured market
@@ -165,8 +166,10 @@ Remove-Item Env:\LUX_READONLY_BROKER
 
 ## Dry-run And Phase 5 Extension Point
 
-Phase 4 dry-run execution records realistic pair execution intent without sending
-orders:
+Phase 4 dry-run execution uses the same execution pipeline shape planned for live
+orders, but with a simulated adapter. It records the pair execution plan, simulates
+full fills, writes simulated `DRYRUN-*` orders/fills, and updates strategy state just
+like a real execution outcome would. No Fubon or Binance order API is called.
 
 ```powershell
 .\scripts\lux.ps1 dry-run-doctor --config config.live.example.toml
@@ -183,8 +186,10 @@ without touching external APIs:
 
 The real API smoke requires the ignored `config.live.smoke.local.toml`, Fubon
 credentials, Binance read-only keys, and explicit gates. It writes to
-`data\live_dry_run_full_smoke.sqlite3` and must still leave `orders`, `fills`,
-and `trades` empty:
+`data\live_dry_run_full_smoke.sqlite3`. Accepted dry-run entry plans should create
+simulated `DRYRUN-*` orders/fills and move the strategy to `OPEN`; simulated exit
+plans close the position and write the trade/PnL record. `PAUSED` is reserved for
+rejected, failed, partial, or unknown execution outcomes.
 
 ```powershell
 $env:LUX_LIVE_MARKETDATA='1'
