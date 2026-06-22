@@ -56,3 +56,8 @@ enabled = false
 require_readonly_reconciliation = true
 max_plan_age_seconds = 120
 qff_first = true
+
+[binance_execution]
+leverage = 1
+margin_mode = 'cross'
+enforce_leverage = true

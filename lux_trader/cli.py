@@ -10,6 +10,11 @@ from pathlib import Path
 import numpy
 import pandas
 
+from .binance_execution import (
+    BINANCE_EXECUTION_SMOKE_ENV_GATES,
+    BinanceTsmExecutionAdapter,
+    binance_smoke_env_gates_open,
+)
 from .calendar import live_session_status
 from .config import load_config
 from .cli_helpers import (
@@ -20,9 +25,19 @@ from .cli_helpers import (
     readonly_broker_enabled,
     reconciliation_qff_symbol,
 )
-from .execution_intent import pair_execution_plan_from_jsonable
+from .execution_intent import (
+    ExecutionLeg,
+    ExecutionPlanType,
+    PairExecutionPlan,
+    pair_execution_plan_from_jsonable,
+)
 from .execution_recorder import DryRunExecutionRecorder
 from .execution_simulator import DryRunExecutionSimulator, ExecutionSimulationScenario
+from .fubon_execution import (
+    FUBON_EXECUTION_SMOKE_ENV_GATES,
+    FubonFutureExecutionAdapter,
+    fubon_smoke_env_gates_open,
+)
 from .live_execution_gate import (
     assert_live_execution_gate_open,
     evaluate_live_execution_gate,
@@ -41,6 +56,7 @@ from .reconciliation import (
     ReadOnlyBroker,
     ReconciliationStatus,
 )
+from .models import BrokerName, Direction, OrderSide
 from .runner import SystemRunner
 from .store import SQLiteStore
 from .terminal_ui import LiveTerminalReporter, NullLiveReporter
@@ -194,6 +210,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Require existing warmup seed bars instead of auto-building them at startup",
     )
+
+    binance_exec_smoke = subparsers.add_parser(
+        "binance-exec-smoke",
+        help="Manually run a tiny Binance TSM execution adapter smoke",
+    )
+    binance_exec_smoke.add_argument("--config", type=Path, required=True)
+    binance_exec_smoke.add_argument("--quantity", type=float, required=True)
+    binance_exec_smoke.add_argument("--confirm-symbol", required=True)
+
+    fubon_exec_smoke = subparsers.add_parser(
+        "fubon-exec-smoke",
+        help="Manually run a tiny Fubon futures execution adapter smoke",
+    )
+    fubon_exec_smoke.add_argument("--config", type=Path, required=True)
+    fubon_exec_smoke.add_argument("--symbol", required=True)
+    fubon_exec_smoke.add_argument("--lot", type=int, required=True)
+    fubon_exec_smoke.add_argument("--confirm-symbol", required=True)
 
     live_doctor = subparsers.add_parser("live-doctor", help="Check live-paper config")
     live_doctor.add_argument("--config", type=Path, required=True)
@@ -591,6 +624,290 @@ def command_live_execute(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_binance_exec_smoke(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    require_binance_exec_smoke_ready(config, args)
+
+    adapter = BinanceTsmExecutionAdapter(
+        config.live.binance_symbol,
+        config.live.fubon_env_path,
+        leverage=config.binance_execution.leverage,
+        margin_mode=config.binance_execution.margin_mode,
+        enforce_leverage=config.binance_execution.enforce_leverage,
+    )
+    try:
+        preflight = adapter.preflight()
+        if preflight.open_orders:
+            raise SystemExit(
+                "Refusing Binance execution smoke with existing open orders: "
+                f"{len(preflight.open_orders)}"
+            )
+        if abs(preflight.position_quantity) > 1e-12:
+            raise SystemExit(
+                "Refusing Binance execution smoke with nonzero position: "
+                f"{preflight.position_quantity}"
+            )
+
+        quantity = float(args.quantity)
+        timestamp = datetime.now().astimezone().replace(microsecond=0)
+        print(
+            "Binance execution smoke preflight passed: "
+            f"symbol={config.live.binance_symbol}, quantity={quantity}, "
+            f"margin_mode={config.binance_execution.margin_mode}, "
+            f"leverage={config.binance_execution.leverage}, "
+            f"enforce_leverage={config.binance_execution.enforce_leverage}"
+        )
+
+        entry_plan = build_binance_smoke_plan(
+            symbol=config.live.binance_symbol,
+            quantity=quantity,
+            side=OrderSide.BUY,
+            plan_type=ExecutionPlanType.ENTRY,
+            timestamp=timestamp,
+        )
+        entry_outcome = adapter.execute(entry_plan)
+        print_binance_smoke_outcome("entry", entry_outcome)
+        entry_filled_quantity = sum(fill.quantity for fill in entry_outcome.fills)
+        if entry_filled_quantity <= 0:
+            return 1
+
+        exit_plan = build_binance_smoke_plan(
+            symbol=config.live.binance_symbol,
+            quantity=entry_filled_quantity,
+            side=OrderSide.SELL,
+            plan_type=ExecutionPlanType.EXIT,
+            timestamp=datetime.now().astimezone().replace(microsecond=0),
+        )
+        exit_outcome = adapter.execute(exit_plan)
+        print_binance_smoke_outcome("exit", exit_outcome)
+
+        final_open_orders = adapter.fetch_open_orders()
+        final_position = adapter.fetch_position_quantity()
+        if (
+            not entry_outcome.filled
+            or not exit_outcome.filled
+            or final_open_orders
+            or abs(final_position) > 1e-12
+        ):
+            print("CRITICAL manual intervention required")
+            print(
+                "Binance execution smoke final state: "
+                f"position={final_position}, open_orders={len(final_open_orders)}"
+            )
+            return 1
+
+        print(
+            "Binance execution smoke complete: "
+            f"position={final_position}, open_orders={len(final_open_orders)}"
+        )
+        return 0
+    finally:
+        adapter.close()
+
+
+def require_binance_exec_smoke_ready(
+    config: object,
+    args: argparse.Namespace,
+) -> None:
+    if not config.safety.allow_live_order:
+        raise SystemExit("safety.allow_live_order=true is required")
+    if not config.live_execution.enabled:
+        raise SystemExit("live_execution.enabled=true is required")
+    if str(args.confirm_symbol).strip() != config.live.binance_symbol:
+        raise SystemExit(
+            "--confirm-symbol must match config live_market_data.binance_symbol"
+        )
+    if float(args.quantity) <= 0.0:
+        raise SystemExit("--quantity must be positive")
+    gates = binance_smoke_env_gates_open()
+    closed = [name for name in BINANCE_EXECUTION_SMOKE_ENV_GATES if not gates[name]]
+    if closed:
+        raise SystemExit(
+            "Binance execution smoke gates closed: "
+            + ", ".join(f"{name}=1" for name in closed)
+        )
+
+
+def build_binance_smoke_plan(
+    *,
+    symbol: str,
+    quantity: float,
+    side: OrderSide,
+    plan_type: ExecutionPlanType,
+    timestamp: datetime,
+) -> PairExecutionPlan:
+    return PairExecutionPlan(
+        plan_id=f"BINANCE-SMOKE-{timestamp.strftime('%Y%m%d%H%M%S')}-{plan_type.value}",
+        plan_type=plan_type,
+        direction=Direction.LONG_TSM_SHORT_QFF,
+        timestamp=timestamp,
+        row_index=-1,
+        legs=(
+            ExecutionLeg(
+                broker=BrokerName.BINANCE_TSM,
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                price=1.0,
+                timestamp=timestamp,
+                row_index=-1,
+            ),
+        ),
+        reason="binance_execution_smoke",
+        decision_spread_type="manual_smoke",
+    )
+
+
+def print_binance_smoke_outcome(label: str, outcome: object) -> None:
+    filled_quantity = sum(fill.quantity for fill in getattr(outcome, "fills", ()))
+    print(
+        "Binance execution smoke "
+        f"{label}: status={outcome.status.value}, "
+        f"fills={len(outcome.fills)}, filled_quantity={filled_quantity}, "
+        f"message={outcome.message}"
+    )
+
+
+def command_fubon_exec_smoke(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    require_fubon_exec_smoke_ready(config, args)
+
+    symbol = str(args.symbol).strip()
+    lot = int(args.lot)
+    adapter = FubonFutureExecutionAdapter(symbol, config.live.fubon_env_path)
+    try:
+        preflight = adapter.preflight()
+        if preflight.open_orders:
+            raise SystemExit(
+                "Refusing Fubon execution smoke with existing open orders: "
+                f"{len(preflight.open_orders)}"
+            )
+        if abs(preflight.position_quantity) > 1e-12:
+            raise SystemExit(
+                "Refusing Fubon execution smoke with nonzero position: "
+                f"{preflight.position_quantity}"
+            )
+
+        timestamp = datetime.now().astimezone().replace(microsecond=0)
+        print(
+            "Fubon execution smoke preflight passed: "
+            f"symbol={symbol}, lot={lot}"
+        )
+
+        entry_plan = build_fubon_smoke_plan(
+            symbol=symbol,
+            lot=lot,
+            side=OrderSide.BUY,
+            plan_type=ExecutionPlanType.ENTRY,
+            timestamp=timestamp,
+        )
+        entry_outcome = adapter.execute(entry_plan)
+        print_fubon_smoke_outcome("entry", entry_outcome)
+        entry_filled_lot = int(sum(fill.quantity for fill in entry_outcome.fills))
+        if entry_filled_lot <= 0:
+            print("CRITICAL manual intervention required")
+            return 1
+
+        exit_plan = build_fubon_smoke_plan(
+            symbol=symbol,
+            lot=entry_filled_lot,
+            side=OrderSide.SELL,
+            plan_type=ExecutionPlanType.EXIT,
+            timestamp=datetime.now().astimezone().replace(microsecond=0),
+        )
+        exit_outcome = adapter.execute(exit_plan)
+        print_fubon_smoke_outcome("exit", exit_outcome)
+
+        final_open_orders = adapter.fetch_open_orders()
+        final_position = adapter.fetch_position_quantity()
+        if (
+            not entry_outcome.filled
+            or not exit_outcome.filled
+            or final_open_orders
+            or abs(final_position) > 1e-12
+        ):
+            print("CRITICAL manual intervention required")
+            print(
+                "Fubon execution smoke final state: "
+                f"position={final_position}, open_orders={len(final_open_orders)}"
+            )
+            return 1
+
+        print(
+            "Fubon execution smoke complete: "
+            f"position={final_position}, open_orders={len(final_open_orders)}"
+        )
+        return 0
+    finally:
+        adapter.close()
+
+
+def require_fubon_exec_smoke_ready(
+    config: object,
+    args: argparse.Namespace,
+) -> None:
+    if not config.safety.allow_live_order:
+        raise SystemExit("safety.allow_live_order=true is required")
+    if not config.live_execution.enabled:
+        raise SystemExit("live_execution.enabled=true is required")
+    symbol = str(args.symbol).strip()
+    if not symbol:
+        raise SystemExit("--symbol is required")
+    if str(args.confirm_symbol).strip() != symbol:
+        raise SystemExit("--confirm-symbol must match --symbol")
+    if int(args.lot) <= 0:
+        raise SystemExit("--lot must be positive")
+    gates = fubon_smoke_env_gates_open()
+    closed = [name for name in FUBON_EXECUTION_SMOKE_ENV_GATES if not gates[name]]
+    if closed:
+        raise SystemExit(
+            "Fubon execution smoke gates closed: "
+            + ", ".join(f"{name}=1" for name in closed)
+        )
+
+
+def build_fubon_smoke_plan(
+    *,
+    symbol: str,
+    lot: int,
+    side: OrderSide,
+    plan_type: ExecutionPlanType,
+    timestamp: datetime,
+) -> PairExecutionPlan:
+    return PairExecutionPlan(
+        plan_id=f"FUBON-SMOKE-{timestamp.strftime('%Y%m%d%H%M%S')}-{plan_type.value}",
+        plan_type=plan_type,
+        direction=Direction.SHORT_TSM_LONG_QFF,
+        timestamp=timestamp,
+        row_index=-1,
+        legs=(
+            ExecutionLeg(
+                broker=BrokerName.FUBON_QFF,
+                symbol=symbol,
+                side=side,
+                quantity=float(lot),
+                price=1.0,
+                timestamp=timestamp,
+                row_index=-1,
+                qff_symbol=symbol,
+            ),
+        ),
+        reason="fubon_execution_smoke",
+        decision_spread_type="manual_smoke",
+        qff_symbol=symbol,
+    )
+
+
+def print_fubon_smoke_outcome(label: str, outcome: object) -> None:
+    filled_lot = sum(fill.quantity for fill in getattr(outcome, "fills", ()))
+    print(
+        "Fubon execution smoke "
+        f"{label}: status={outcome.status.value}, "
+        f"fills={len(outcome.fills)}, filled_lot={filled_lot:g}, "
+        f"message={outcome.message}"
+    )
+
+
 def build_live_execution_gate_report(config: object, store: SQLiteStore):
     plan_payload = store.load_latest_execution_plan_payload()
     plan = (
@@ -835,6 +1152,10 @@ def main(argv: list[str] | None = None) -> int:
         return command_live_order_doctor(args)
     if args.command == "live-execute":
         return command_live_execute(args)
+    if args.command == "binance-exec-smoke":
+        return command_binance_exec_smoke(args)
+    if args.command == "fubon-exec-smoke":
+        return command_fubon_exec_smoke(args)
     if args.command == "live-doctor":
         return command_live_doctor(args)
     if args.command == "warmup-live":

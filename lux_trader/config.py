@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import date
 
@@ -79,6 +79,13 @@ class LiveExecutionConfig:
 
 
 @dataclass(frozen=True)
+class BinanceExecutionConfig:
+    leverage: int
+    margin_mode: str
+    enforce_leverage: bool
+
+
+@dataclass(frozen=True)
 class AppConfig:
     input_csv: Path
     store_path: Path
@@ -90,6 +97,13 @@ class AppConfig:
     live: LiveMarketDataConfig
     broker_reconciliation: BrokerReconciliationConfig
     live_execution: LiveExecutionConfig
+    binance_execution: BinanceExecutionConfig = field(
+        default_factory=lambda: BinanceExecutionConfig(
+            leverage=1,
+            margin_mode="cross",
+            enforce_leverage=True,
+        )
+    )
 
 
 def load_config(path: Path) -> AppConfig:
@@ -105,6 +119,7 @@ def load_config(path: Path) -> AppConfig:
     live = raw.get("live_market_data", {})
     broker_reconciliation = raw.get("broker_reconciliation", {})
     live_execution = raw.get("live_execution", {})
+    binance_execution = raw.get("binance_execution", {})
 
     input_csv = Path(paths.get("input_csv", "")).expanduser()
     store_path = Path(paths["store_path"]).expanduser()
@@ -198,6 +213,11 @@ def load_config(path: Path) -> AppConfig:
             ),
             max_plan_age_seconds=int(live_execution.get("max_plan_age_seconds", 120)),
             qff_first=bool(live_execution.get("qff_first", True)),
+        ),
+        binance_execution=BinanceExecutionConfig(
+            leverage=int(binance_execution.get("leverage", 1)),
+            margin_mode=str(binance_execution.get("margin_mode", "cross")).strip().lower(),
+            enforce_leverage=bool(binance_execution.get("enforce_leverage", True)),
         ),
     )
 
