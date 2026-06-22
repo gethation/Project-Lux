@@ -219,10 +219,18 @@ class BrokerReconciler:
         qff_symbol: str,
         timestamp: datetime,
     ) -> ExpectedBrokerState:
-        if state is None or state.state not in {
-            StrategyState.OPEN,
-            StrategyState.EXIT_PENDING,
-        }:
+        has_position = (
+            state is not None
+            and state.position_direction is not None
+            and (
+                abs(float(state.tsm_units)) > self.tsm_units_tolerance
+                or abs(float(state.qff_contracts)) > self.qff_contract_tolerance
+            )
+        )
+        if state is None or not (
+            state.state in {StrategyState.OPEN, StrategyState.EXIT_PENDING}
+            or has_position
+        ):
             return ExpectedBrokerState(
                 timestamp=timestamp,
                 tsm_symbol=tsm_symbol,

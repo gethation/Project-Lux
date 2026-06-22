@@ -191,3 +191,31 @@ def test_broker_fetch_error_marks_report_error() -> None:
     assert report.status == ReconciliationStatus.ERROR
     assert report.issues[0].issue_type == "broker_fetch_failed"
     assert report.issues[0].status == ReconciliationStatus.ERROR
+
+
+def test_paused_state_with_position_still_expects_open_exposure() -> None:
+    state = StrategyRuntimeState(
+        state=StrategyState.PAUSED,
+        position_direction=Direction.SHORT_TSM_LONG_QFF,
+        tsm_units=-2150.5,
+        qff_contracts=4,
+        trading_qff_symbol="QFFG6",
+    )
+
+    report = reconcile(
+        state,
+        FakeReadOnlyBroker(
+            BrokerName.BINANCE_TSM,
+            positions=(position(BrokerName.BINANCE_TSM, "TSM/USDT:USDT", -2150.5),),
+            fetched_at=ts(),
+        ),
+        FakeReadOnlyBroker(
+            BrokerName.FUBON_QFF,
+            positions=(position(BrokerName.FUBON_QFF, "QFFG6", 4),),
+            fetched_at=ts(),
+        ),
+    )
+
+    assert report.status == ReconciliationStatus.MATCHED
+    assert report.expected.expected_tsm_units == pytest.approx(-2150.5)
+    assert report.expected.expected_qff_contracts == 4

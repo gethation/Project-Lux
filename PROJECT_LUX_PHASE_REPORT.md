@@ -500,7 +500,7 @@ Phase 5 revised commit plan：
 - Commit 3：Fubon QFF execution adapter。接 `FutOptOrder` + `sdk.futopt.place_order(...)` 送 QFF market order；送單後查委託/成交回報，超時、拒單、未知狀態都回傳 failed/unknown outcome 並建議 `PAUSED`。
 - Commit 4：Binance TSM execution adapter。從 `.env` 讀 `BINANCE_API_KEY` / `BINANCE_SECRET`，用 ccxt USDM private API 送 `TSM/USDT:USDT` market order；送單後查 order status、fills、position，嚴格區分 read-only broker 與 execution adapter 權限語意。
 - Commit 5：Real execution coordinator policy。新增 live 專用雙腿 coordinator；雙腿順序第一版固定為 `QFF first, Binance second`。QFF 失敗且零成交時不送 Binance；若 QFF 成功但 Binance 失敗、或任一腿 partial/unknown 造成不平衡 exposure，立即記錄 `exposure_breach` / `single_leg_exposure` 或 `imbalanced_pair_exposure`，嘗試對已成交腿送 emergency close，最後一律維持 `PAUSED` 等人工確認；兩腿都 full fill 才更新 strategy state 為 `OPEN` 或 `FLAT`。
-- Commit 6：Post-trade reconciliation。每次 real execution 後立刻跑 read-only reconciliation；store state、broker position、open orders、recorded fills 必須一致，任一 mismatch 進 `PAUSED`。
+- Commit 6：已完成 Post-trade reconciliation。每次 real execution 後立刻跑 read-only reconciliation；store state、broker position、open orders、recorded fills 必須一致，任一 mismatch 進 `PAUSED`。
 - Commit 7：`live-execute` integration。沿用 `live-paper` / `live-dry-run` 共用的 auto warmup、quote polling、minute finalize、bid/ask tradable spread decision、calendar 與 contract policy；只把 adapter 換成 real execution adapters。
 - Commit 8：real smoke / minimal live acceptance。預設 pytest 只跑 simulated/fake execution；真實送單 smoke 必須明確設定 `LUX_LIVE_MARKETDATA=1`、`LUX_READONLY_BROKER=1`、`PROJECT_LUX_ALLOW_LIVE_ORDER=1`、`FUBON_ALLOW_LIVE_ORDER=1`、`BINANCE_ALLOW_LIVE_ORDER=1`，並使用極小 sizing 或專用 smoke config，限制只允許一組 entry/exit。
 
@@ -520,6 +520,19 @@ Phase 5 Commit 5 real execution coordinator policy 紀錄：
 - QFF 成交但 Binance 失敗、QFF partial、Binance partial 等不平衡情境會記錄 exposure breach event，建立 reverse emergency close plan 嘗試降風險。
 - Emergency close 成功仍不自動恢復交易；失敗或未知會記錄 `critical_manual_intervention_required`，最終 recommended state 都是 `PAUSED`。
 - Fubon adapter 的真實 TMF smoke 仍 pending；Commit 5 只通過 fake adapter deterministic tests，不執行真實送單 smoke。
+
+Phase 5 Commit 6 post-trade reconciliation 紀錄：
+
+新增 module: `lux_trader/post_trade_reconciliation.py`
+
+- `LiveExecuteModeHandler` 在每次 real execution outcome 寫入 `orders` / `fills` / `trades` 後，立刻用 read-only Fubon/Binance brokers 跑 post-trade reconciliation。
+- Post-trade reconciliation 合併兩類檢查：
+  - read-only broker snapshot 必須和 strategy runtime exposure 一致，且不得有 unexpected open orders。
+  - SQLite `fills` 表累積出的 signed net exposure 必須和 strategy runtime exposure 一致，避免只更新 state 但漏記真實成交。
+- 任一 `warning` / `error` 都會寫入 `broker_reconciliation_runs` / `broker_reconciliation_issues`，記錄 `post_trade_reconciliation_mismatch` event，並把 strategy state 設為 `PAUSED`。
+- `PAUSED` 不再代表 exposure 一定歸零；若 state 仍保留 `position_direction` / `tsm_units` / `qff_contracts`，reconciler 會繼續用該 exposure 作為 expected broker state。
+- Matched case 會記錄 `post_trade_reconciliation_matched` event；mismatch case 會在 terminal UI 輸出 `WARN post_trade_reconciliation ...`。
+- 目前通過 fake read-only broker deterministic tests；真實 Fubon TMF smoke 和完整 `live-execute` 實單 smoke 仍需你手動確認後再執行。
 
 Phase 5 Commit 1 live execution gate 紀錄：
 

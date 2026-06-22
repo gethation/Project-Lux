@@ -12,7 +12,7 @@ from .indicator import IndicatorEngine
 from .execution_store import ExecutionStore
 from .execution_intent import PairExecutionPlan
 from .execution_simulator import ExecutionSimulationResult
-from .models import Fill, IndicatorSnapshot, MarketBar, OrderResult
+from .models import BrokerName, Fill, IndicatorSnapshot, MarketBar, OrderResult
 from .reconciliation import ReconciliationReport
 from .strategy import StrategyRuntimeState
 from .tradable_spread import TradableSpreadSnapshot
@@ -552,6 +552,36 @@ class SQLiteStore:
                 ),
             ),
         )
+
+    def load_recorded_fill_exposure(
+        self,
+        *,
+        tsm_symbol: str,
+        qff_symbol: str,
+    ) -> dict[BrokerName, float]:
+        rows = self.connection.execute(
+            """
+            SELECT broker,
+                   SUM(CASE WHEN side = 'buy' THEN quantity ELSE -quantity END) AS quantity
+            FROM fills
+            WHERE (broker = ? AND symbol = ?)
+               OR (broker = ? AND symbol = ?)
+            GROUP BY broker
+            """,
+            (
+                BrokerName.BINANCE_TSM.value,
+                tsm_symbol,
+                BrokerName.FUBON_QFF.value,
+                qff_symbol,
+            ),
+        ).fetchall()
+        exposure = {
+            BrokerName.BINANCE_TSM: 0.0,
+            BrokerName.FUBON_QFF: 0.0,
+        }
+        for row in rows:
+            exposure[BrokerName(str(row["broker"]))] = float(row["quantity"] or 0.0)
+        return exposure
 
     def record_trade(self, trade: dict[str, Any]) -> None:
         payload = {

@@ -25,9 +25,17 @@ from lux_trader.models import (
     StrategyState,
 )
 from lux_trader.brokers import PaperBroker
-from lux_trader.live_runner import execute_live_entry
+from lux_trader.live_runner import LiveExecuteModeHandler, execute_live_entry
+from lux_trader.reconciliation import (
+    BrokerAccountSnapshot,
+    BrokerPositionSnapshot,
+    FakeReadOnlyBroker,
+    ReconciliationStatus,
+)
+from lux_trader.store import SQLiteStore
 from lux_trader.real_execution import RealExecutionCoordinator
 from lux_trader.strategy import PairStrategy, StrategyRuntimeState
+from lux_trader.terminal_ui import NullLiveReporter
 from conftest import make_app_config
 
 
@@ -123,6 +131,41 @@ class FakeExecutionAdapter:
             ),
             payload={"adapter": self.broker.value},
         )
+
+
+class StrategyReadOnlyBroker:
+    def __init__(self, broker: BrokerName, strategy: PairStrategy) -> None:
+        self.broker = broker
+        self.strategy = strategy
+
+    def fetch_snapshot(self) -> BrokerAccountSnapshot:
+        positions = []
+        state = self.strategy.state
+        if self.broker == BrokerName.BINANCE_TSM and state.tsm_units:
+            positions.append(
+                BrokerPositionSnapshot(
+                    broker=self.broker,
+                    symbol=SYMBOL_TSM,
+                    quantity=state.tsm_units,
+                )
+            )
+        if self.broker == BrokerName.FUBON_QFF and state.qff_contracts:
+            positions.append(
+                BrokerPositionSnapshot(
+                    broker=self.broker,
+                    symbol=state.trading_qff_symbol or SYMBOL_QFF,
+                    quantity=float(state.qff_contracts),
+                )
+            )
+        return BrokerAccountSnapshot(
+            broker=self.broker,
+            account_id=f"{self.broker.value}-ACCOUNT",
+            fetched_at=ts(),
+            positions=tuple(positions),
+        )
+
+    def close(self) -> None:
+        return None
 
 
 def ts() -> datetime:
@@ -473,3 +516,107 @@ def test_live_entry_breach_pauses_without_creating_strategy_position(tmp_path) -
     assert strategy.state.position_direction is None
     assert result.trade is None
     assert "exposure_breach" in event_types(store)
+
+
+def test_live_execute_post_trade_reconciliation_match_keeps_open_state(tmp_path) -> None:
+    config = make_app_config(tmp_path)
+    store = SQLiteStore(config.store_path)
+    strategy = entry_pending_strategy(tmp_path)
+    strategy.state.trading_qff_symbol = SYMBOL_QFF
+    handler = LiveExecuteModeHandler(
+        config,
+        fubon_adapter=FakeExecutionAdapter(
+            BrokerName.FUBON_QFF,
+            [{"status": ExecutionOutcomeStatus.FILLED}],
+        ),
+        binance_adapter=FakeExecutionAdapter(
+            BrokerName.BINANCE_TSM,
+            [{"status": ExecutionOutcomeStatus.FILLED}],
+        ),
+        readonly_brokers=(
+            StrategyReadOnlyBroker(BrokerName.FUBON_QFF, strategy),
+            StrategyReadOnlyBroker(BrokerName.BINANCE_TSM, strategy),
+        ),
+    )
+    try:
+        store.initialize()
+        handler.on_runtime_ready(store, qff_symbol=SYMBOL_QFF, qff_expiry=None)
+
+        mode_result = handler.handle_bar(
+            config=config,
+            store=store,
+            reporter=NullLiveReporter(),
+            strategy=strategy,
+            bar=live_bar(),
+            decision_snapshot=live_snapshot(),
+            decision_spread_type="shortSpread",
+            quote_set=None,
+            force_exit=False,
+            qff_symbol=SYMBOL_QFF,
+            qff_expiry=None,
+        )
+
+        report = store.load_latest_reconciliation_report()
+        assert mode_result.result.action == StrategyAction.ENTRY_FILL
+        assert strategy.state.state == StrategyState.OPEN
+        assert report is not None
+        assert report.status == ReconciliationStatus.MATCHED
+    finally:
+        handler.close()
+        store.close()
+
+
+def test_live_execute_post_trade_reconciliation_mismatch_pauses_strategy(
+    tmp_path,
+) -> None:
+    config = make_app_config(tmp_path)
+    store = SQLiteStore(config.store_path)
+    strategy = entry_pending_strategy(tmp_path)
+    strategy.state.trading_qff_symbol = SYMBOL_QFF
+    handler = LiveExecuteModeHandler(
+        config,
+        fubon_adapter=FakeExecutionAdapter(
+            BrokerName.FUBON_QFF,
+            [{"status": ExecutionOutcomeStatus.FILLED}],
+        ),
+        binance_adapter=FakeExecutionAdapter(
+            BrokerName.BINANCE_TSM,
+            [{"status": ExecutionOutcomeStatus.FILLED}],
+        ),
+        readonly_brokers=(
+            FakeReadOnlyBroker(BrokerName.FUBON_QFF, fetched_at=ts()),
+            FakeReadOnlyBroker(BrokerName.BINANCE_TSM, fetched_at=ts()),
+        ),
+    )
+    try:
+        store.initialize()
+        handler.on_runtime_ready(store, qff_symbol=SYMBOL_QFF, qff_expiry=None)
+
+        mode_result = handler.handle_bar(
+            config=config,
+            store=store,
+            reporter=NullLiveReporter(),
+            strategy=strategy,
+            bar=live_bar(),
+            decision_snapshot=live_snapshot(),
+            decision_spread_type="shortSpread",
+            quote_set=None,
+            force_exit=False,
+            qff_symbol=SYMBOL_QFF,
+            qff_expiry=None,
+        )
+
+        report = store.load_latest_reconciliation_report()
+        assert mode_result.result.action == StrategyAction.LIVE_EXECUTION
+        assert mode_result.result.reason == "post_trade_reconciliation_mismatch"
+        assert strategy.state.state == StrategyState.PAUSED
+        assert strategy.state.position_direction == Direction.SHORT_TSM_LONG_QFF
+        assert report is not None
+        assert report.status == ReconciliationStatus.WARNING
+        assert any(
+            issue.issue_type == "position_quantity_mismatch"
+            for issue in report.issues
+        )
+    finally:
+        handler.close()
+        store.close()

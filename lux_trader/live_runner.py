@@ -50,7 +50,10 @@ from .live_market_data import (
 )
 from .store import SQLiteStore
 from .models import Direction, IndicatorSnapshot, MarketBar, StrategyAction, StrategyState
+from .post_trade_reconciliation import PostTradeReconciler
 from .real_execution import RealExecutionCoordinator
+from .readonly_brokers import BinanceReadOnlyBroker, FubonReadOnlyBroker
+from .reconciliation import ReadOnlyBroker, ReconciliationReport, ReconciliationStatus
 from .sizing import size_position_for_direction
 from .strategy import PairStrategy, StrategyRuntimeState, minutes_between
 from .terminal_ui import (
@@ -825,10 +828,14 @@ class LiveExecuteModeHandler(LiveModeHandler):
         *,
         binance_adapter: Any | None = None,
         fubon_adapter: Any | None = None,
+        readonly_brokers: tuple[ReadOnlyBroker, ...] | None = None,
+        post_trade_reconciler: PostTradeReconciler | None = None,
     ) -> None:
         self.config = config
         self.binance_adapter = binance_adapter
         self.fubon_adapter = fubon_adapter
+        self.readonly_brokers = readonly_brokers
+        self.post_trade_reconciler = post_trade_reconciler
         self.coordinator: RealExecutionCoordinator | None = None
 
     def validate_config(self, config: AppConfig) -> None:
@@ -859,6 +866,23 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 qff_symbol,
                 self.config.live.fubon_env_path,
             )
+        if self.readonly_brokers is None:
+            self.readonly_brokers = (
+                FubonReadOnlyBroker(self.config.live.fubon_env_path),
+                BinanceReadOnlyBroker(
+                    self.config.live.binance_symbol,
+                    self.config.live.fubon_env_path,
+                ),
+            )
+        if self.post_trade_reconciler is None:
+            self.post_trade_reconciler = PostTradeReconciler(
+                tsm_units_tolerance=(
+                    self.config.broker_reconciliation.tsm_units_tolerance
+                ),
+                qff_contract_tolerance=(
+                    self.config.broker_reconciliation.qff_contract_tolerance
+                ),
+            )
         self.coordinator = RealExecutionCoordinator(
             store=store,
             binance_adapter=self.binance_adapter,
@@ -869,6 +893,10 @@ class LiveExecuteModeHandler(LiveModeHandler):
     def close(self) -> None:
         for adapter in (self.binance_adapter, self.fubon_adapter):
             close = getattr(adapter, "close", None)
+            if callable(close):
+                close()
+        for broker in self.readonly_brokers or ():
+            close = getattr(broker, "close", None)
             if callable(close):
                 close()
 
@@ -1001,6 +1029,17 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 store.record_fill(fill)
             if result.trade is not None:
                 store.record_trade(result.trade)
+            post_report = self._run_post_trade_reconciliation(
+                store=store,
+                reporter=reporter,
+                strategy=strategy,
+                bar=bar,
+                qff_symbol=qff_symbol,
+            )
+            if post_report.status != ReconciliationStatus.MATCHED:
+                strategy.state.state = StrategyState.PAUSED
+                result.action = StrategyAction.LIVE_EXECUTION
+                result.reason = "post_trade_reconciliation_mismatch"
         elif result.action.value != "none":
             store.record_event(
                 bar.row_index,
@@ -1010,6 +1049,59 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 {"state": strategy.state.state.value},
             )
         return LiveModeBarResult(result=result, plans_recorded=plans_recorded)
+
+    def _run_post_trade_reconciliation(
+        self,
+        *,
+        store: SQLiteStore,
+        reporter: Any,
+        strategy: PairStrategy,
+        bar: MarketBar,
+        qff_symbol: str,
+    ) -> ReconciliationReport:
+        if self.post_trade_reconciler is None or self.readonly_brokers is None:
+            raise RuntimeError("post-trade reconciliation is not initialized")
+        report = self.post_trade_reconciler.reconcile(
+            store=store,
+            strategy_state=strategy.state,
+            brokers=self.readonly_brokers,
+            tsm_symbol=self.config.live.binance_symbol,
+            qff_symbol=strategy.state.trading_qff_symbol or qff_symbol,
+            timestamp=bar.timestamp,
+        )
+        run_id = store.record_reconciliation_report(report)
+        report_payload = report.to_jsonable()
+        event_type = (
+            "post_trade_reconciliation_matched"
+            if report.status == ReconciliationStatus.MATCHED
+            else "post_trade_reconciliation_mismatch"
+        )
+        store.record_event(
+            bar.row_index,
+            bar.timestamp,
+            event_type,
+            f"post-trade reconciliation status={report.status.value}",
+            {
+                "run_id": run_id,
+                "status": report.status.value,
+                "issue_count": len(report.issues),
+                "issues": report_payload["issues"],
+            },
+        )
+        if report.status == ReconciliationStatus.MATCHED:
+            reporter.event(bar.timestamp, "post_trade_reconciliation", "matched")
+        else:
+            reporter.warn(
+                bar.timestamp,
+                "post_trade_reconciliation",
+                report.status.value,
+            )
+            reporter.event(
+                bar.timestamp,
+                "post_trade_reconciliation",
+                "paused",
+            )
+        return report
 
 
 class LiveRuntime:
