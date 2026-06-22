@@ -542,7 +542,7 @@ def test_live_order_doctor_reports_phase5_gates(
     assert "Live execution gate status=closed" in output
     assert "FAIL live_execution_enabled" in output
     assert "FAIL execution_plan_present" in output
-    assert "phase5_adapter=not_implemented" in output
+    assert "phase5_adapter=real_execution_coordinator" in output
 
 
 def test_live_order_doctor_reports_open_gate_when_store_and_env_are_ready(
@@ -597,7 +597,7 @@ def test_live_execute_extension_point_fails_fast(tmp_path: Path) -> None:
         raise AssertionError("Expected SystemExit")
 
 
-def test_live_execute_open_gate_still_fails_before_adapter(
+def test_live_execute_open_gate_starts_runner(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -623,14 +623,30 @@ def test_live_execute_open_gate_still_fails_before_adapter(
         "BINANCE_ALLOW_LIVE_ORDER",
     ):
         monkeypatch.setenv(name, "1")
+    calls = []
+
+    class FakeLiveExecuteRunner:
+        def __init__(self, config, *, reporter) -> None:
+            calls.append(("init", config.store_path, reporter))
+
+        def run(self, **kwargs):
+            calls.append(("run", kwargs))
 
     args = parser.parse_args(
         ["live-execute", "--config", str(config_path), "--quiet-ui"]
     )
+    monkeypatch.setattr(cli_module, "LiveExecuteRunner", FakeLiveExecuteRunner)
 
-    try:
-        command_live_execute(args)
-    except SystemExit as exc:
-        assert "extension point is reserved for Phase 5" in str(exc)
-    else:
-        raise AssertionError("Expected SystemExit")
+    exit_code = command_live_execute(args)
+
+    assert exit_code == 0
+    assert calls[0][0] == "init"
+    assert calls[1] == (
+        "run",
+        {
+            "resume": False,
+            "reset_store": False,
+            "max_iterations": None,
+            "skip_warmup": False,
+        },
+    )

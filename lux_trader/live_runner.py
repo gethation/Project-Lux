@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+from .binance_execution import BinanceTsmExecutionAdapter
 from .brokers import PaperBroker
 from .config import AppConfig
 from .contract_policy import ExpiryBufferContractPolicy, QffContractSelection
@@ -23,6 +24,7 @@ from .execution import (
 )
 from .execution_recorder import DryRunExecutionRecorder
 from .execution_price_policy import apply_live_touch_market_price_policy
+from .fubon_execution import FubonFutureExecutionAdapter
 from .fees import fill_costs
 from .indicator import IndicatorEngine
 from .live_execution_gate import (
@@ -48,6 +50,7 @@ from .live_market_data import (
 )
 from .store import SQLiteStore
 from .models import Direction, IndicatorSnapshot, MarketBar, StrategyAction, StrategyState
+from .real_execution import RealExecutionCoordinator
 from .sizing import size_position_for_direction
 from .strategy import PairStrategy, StrategyRuntimeState, minutes_between
 from .terminal_ui import (
@@ -489,7 +492,16 @@ class LiveModeHandler:
     def validate_config(self, config: AppConfig) -> None:
         raise NotImplementedError
 
-    def on_runtime_ready(self, store: SQLiteStore) -> None:
+    def on_runtime_ready(
+        self,
+        store: SQLiteStore,
+        *,
+        qff_symbol: str,
+        qff_expiry: str | None,
+    ) -> None:
+        return None
+
+    def close(self) -> None:
         return None
 
     def finish_payload(
@@ -612,7 +624,13 @@ class DryRunLiveModeHandler(LiveModeHandler):
         if config.safety.allow_live_order:
             raise RuntimeError("Refusing live-dry-run with allow_live_order=true")
 
-    def on_runtime_ready(self, store: SQLiteStore) -> None:
+    def on_runtime_ready(
+        self,
+        store: SQLiteStore,
+        *,
+        qff_symbol: str,
+        qff_expiry: str | None,
+    ) -> None:
         self.recorder = DryRunExecutionRecorder(
             store,
             allow_live_order=self.config.safety.allow_live_order,
@@ -801,6 +819,18 @@ class LiveExecuteModeHandler(LiveModeHandler):
     auto_warmup_context = "before_live_execute"
     complete_contract_switch_after_flat = True
 
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        binance_adapter: Any | None = None,
+        fubon_adapter: Any | None = None,
+    ) -> None:
+        self.config = config
+        self.binance_adapter = binance_adapter
+        self.fubon_adapter = fubon_adapter
+        self.coordinator: RealExecutionCoordinator | None = None
+
     def validate_config(self, config: AppConfig) -> None:
         report = evaluate_live_execution_gate(
             config,
@@ -808,10 +838,39 @@ class LiveExecuteModeHandler(LiveModeHandler):
             include_plan_checks=False,
         )
         assert_live_execution_gate_open(report)
-        raise RuntimeError(
-            "live-execute extension point is reserved for Phase 5; "
-            "no live execution broker adapter is implemented yet"
+
+    def on_runtime_ready(
+        self,
+        store: SQLiteStore,
+        *,
+        qff_symbol: str,
+        qff_expiry: str | None,
+    ) -> None:
+        if self.binance_adapter is None:
+            self.binance_adapter = BinanceTsmExecutionAdapter(
+                self.config.live.binance_symbol,
+                self.config.live.fubon_env_path,
+                leverage=self.config.binance_execution.leverage,
+                margin_mode=self.config.binance_execution.margin_mode,
+                enforce_leverage=self.config.binance_execution.enforce_leverage,
+            )
+        if self.fubon_adapter is None:
+            self.fubon_adapter = FubonFutureExecutionAdapter(
+                qff_symbol,
+                self.config.live.fubon_env_path,
+            )
+        self.coordinator = RealExecutionCoordinator(
+            store=store,
+            binance_adapter=self.binance_adapter,
+            fubon_adapter=self.fubon_adapter,
+            qff_first=self.config.live_execution.qff_first,
         )
+
+    def close(self) -> None:
+        for adapter in (self.binance_adapter, self.fubon_adapter):
+            close = getattr(adapter, "close", None)
+            if callable(close):
+                close()
 
     def handle_bar(
         self,
@@ -828,7 +887,129 @@ class LiveExecuteModeHandler(LiveModeHandler):
         qff_symbol: str,
         qff_expiry: str | None,
     ) -> LiveModeBarResult:
-        raise RuntimeError("live-execute mode has no execution adapter")
+        if self.coordinator is None:
+            raise RuntimeError("live execution coordinator is not initialized")
+
+        plan = None
+        outcome = None
+        if force_exit:
+            result, plan, outcome = execute_live_exit(
+                strategy,
+                self.coordinator,
+                bar,
+                decision_snapshot,
+                decision_spread_type,
+                quote_set,
+                self.config.live_execution.max_plan_age_seconds,
+                plan_reason="rollover_force_exit",
+                exit_reason="rollover_force_exit",
+            )
+            reporter.event(bar.timestamp, "force_exit", "expiry_buffer")
+            store.record_event(
+                bar.row_index,
+                bar.timestamp,
+                "rollover_force_exit",
+                "live-execute forced exit before QFF expiry",
+                {"qff_symbol": qff_symbol, "qff_expiry": qff_expiry},
+            )
+        elif strategy.state.state == StrategyState.ENTRY_PENDING:
+            result, plan, outcome = execute_live_entry(
+                strategy,
+                self.coordinator,
+                bar,
+                decision_snapshot,
+                decision_spread_type,
+                quote_set,
+                self.config.live_execution.max_plan_age_seconds,
+            )
+        elif strategy.state.state == StrategyState.EXIT_PENDING:
+            result, plan, outcome = execute_live_exit(
+                strategy,
+                self.coordinator,
+                bar,
+                decision_snapshot,
+                decision_spread_type,
+                quote_set,
+                self.config.live_execution.max_plan_age_seconds,
+                plan_reason="live_exit_order",
+                exit_reason="zscore_exit",
+            )
+        else:
+            result = strategy.on_bar(bar, decision_snapshot)
+            if (
+                result.action == StrategyAction.ENTRY_SIGNAL
+                and strategy.state.state == StrategyState.ENTRY_PENDING
+            ):
+                record_live_signal_event(store, reporter, bar, strategy, result)
+                result, plan, outcome = execute_live_entry(
+                    strategy,
+                    self.coordinator,
+                    bar,
+                    decision_snapshot,
+                    decision_spread_type,
+                    quote_set,
+                    self.config.live_execution.max_plan_age_seconds,
+                )
+            elif (
+                result.action == StrategyAction.EXIT_SIGNAL
+                and strategy.state.state == StrategyState.EXIT_PENDING
+            ):
+                record_live_signal_event(store, reporter, bar, strategy, result)
+                result, plan, outcome = execute_live_exit(
+                    strategy,
+                    self.coordinator,
+                    bar,
+                    decision_snapshot,
+                    decision_spread_type,
+                    quote_set,
+                    self.config.live_execution.max_plan_age_seconds,
+                    plan_reason="live_exit_order",
+                    exit_reason="zscore_exit",
+                )
+
+        plans_recorded = 0
+        if plan is not None:
+            plans_recorded = 1
+            if outcome is None:
+                raise RuntimeError("live execution outcome is missing")
+            report_live_execution_events(reporter, bar.timestamp, outcome)
+            event_type = live_execution_event_type(outcome)
+            reporter.event(
+                bar.timestamp,
+                "live_execution",
+                event_type.replace("live_execution_", ""),
+            )
+            store.record_event(
+                bar.row_index,
+                bar.timestamp,
+                event_type,
+                result.reason,
+                {
+                    "plan_id": plan.plan_id,
+                    "status": plan.status.value,
+                    "outcome_status": outcome.status.value,
+                    "failed_checks": sum(
+                        1 for check in plan.checks if not check.passed
+                    ),
+                },
+            )
+            orders = result.orders if result.orders else list(outcome.orders)
+            fills = result.fills if result.fills else list(outcome.fills)
+            for order in orders:
+                store.record_order(order)
+            for fill in fills:
+                store.record_fill(fill)
+            if result.trade is not None:
+                store.record_trade(result.trade)
+        elif result.action.value != "none":
+            store.record_event(
+                bar.row_index,
+                bar.timestamp,
+                result.action.value,
+                result.reason,
+                {"state": strategy.state.state.value},
+            )
+        return LiveModeBarResult(result=result, plans_recorded=plans_recorded)
 
 
 class LiveRuntime:
@@ -900,7 +1081,11 @@ class LiveRuntime:
             seed_bars = runtime.seed_bars
             builder = runtime.builder
             next_row_index = runtime.next_row_index
-            self.handler.on_runtime_ready(store)
+            self.handler.on_runtime_ready(
+                store,
+                qff_symbol=qff_symbol,
+                qff_expiry=qff_expiry,
+            )
 
             live_run_id = store.start_live_run(
                 started_at=runtime.started_at,
@@ -1056,6 +1241,7 @@ class LiveRuntime:
                 except Exception:
                     store.rollback()
             store.close()
+            self.handler.close()
             close_provider_quietly(qff_provider_to_close)
 
     def _process_finalized_bar(
@@ -1487,13 +1673,19 @@ class LiveExecuteRunner:
         qff_provider: QuoteProvider | FubonQffMarketData | None = None,
         tsm_provider: QuoteProvider | None = None,
         usdttwd_provider: QuoteProvider | None = None,
+        binance_adapter: Any | None = None,
+        fubon_adapter: Any | None = None,
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], None] | None = None,
         reporter: Any | None = None,
     ) -> None:
         self.runtime = LiveRuntime(
             config,
-            handler=LiveExecuteModeHandler(),
+            handler=LiveExecuteModeHandler(
+                config,
+                binance_adapter=binance_adapter,
+                fubon_adapter=fubon_adapter,
+            ),
             qff_provider=qff_provider,
             tsm_provider=tsm_provider,
             usdttwd_provider=usdttwd_provider,
@@ -1713,12 +1905,243 @@ def execute_dry_run_exit(
     )
 
 
+def execute_live_entry(
+    strategy: PairStrategy,
+    coordinator: RealExecutionCoordinator,
+    bar: MarketBar,
+    snapshot: IndicatorSnapshot,
+    decision_spread_type: str | None,
+    quote_set: LiveQuoteSet | None,
+    max_plan_age_seconds: int | None,
+) -> tuple[Any, PairExecutionPlan | None, ExecutionOutcome | None]:
+    state = strategy.state
+    if state.candidate_time is None:
+        state.state = StrategyState.ERROR
+        return (
+            strategy.mark_to_market_result(
+                action=StrategyAction.ERROR,
+                reason="entry_pending_without_candidate_time",
+                bar=bar,
+            ),
+            None,
+            None,
+        )
+    if state.candidate_direction is None:
+        state.state = StrategyState.ERROR
+        return (
+            strategy.mark_to_market_result(
+                action=StrategyAction.ERROR,
+                reason="entry_pending_without_direction",
+                bar=bar,
+            ),
+            None,
+            None,
+        )
+    delay = minutes_between(state.candidate_time, bar.timestamp)
+    if delay > strategy.strategy.max_entry_delay_minutes:
+        clear_entry_candidate(state)
+        state.state = StrategyState.FLAT
+        return (
+            strategy.mark_to_market_result(
+                action=StrategyAction.ENTRY_CANCEL,
+                reason="entry_delay_exceeded",
+                bar=bar,
+            ),
+            None,
+            None,
+        )
+
+    sizing = size_position_for_direction(
+        state.candidate_direction,
+        bar.tsm_twd_fair,
+        bar.qff_close_filled,
+        strategy.strategy,
+        strategy.fees,
+    )
+    if sizing is None:
+        clear_entry_candidate(state)
+        state.state = StrategyState.FLAT
+        return (
+            strategy.mark_to_market_result(
+                action=StrategyAction.ENTRY_CANCEL,
+                reason="qff_contracts_rounded_to_zero",
+                bar=bar,
+            ),
+            None,
+            None,
+        )
+
+    costs = fill_costs(
+        tsm_units=sizing.tsm_units,
+        tsm_price=bar.tsm_twd_fair,
+        qff_contracts=sizing.qff_contracts,
+        qff_price=bar.qff_close_filled,
+        fees=strategy.fees,
+    )
+    requests = strategy.build_entry_order_requests(
+        bar=bar,
+        tsm_units=sizing.tsm_units,
+        qff_contracts=sizing.qff_contracts,
+        costs=costs,
+    )
+    plan = pair_execution_plan_from_order_requests(
+        plan_type=ExecutionPlanType.ENTRY,
+        direction=state.candidate_direction,
+        requests=requests,
+        reason="live_entry_order",
+        decision_zscore=snapshot.zscore,
+        decision_spread_type=decision_spread_type,
+    )
+    if quote_set is not None:
+        plan = apply_live_touch_market_price_policy(
+            plan,
+            quote_set,
+            max_plan_age_seconds=max_plan_age_seconds,
+            plan_age_seconds=0.0,
+        )
+    plan, outcome = coordinator.execute(plan)
+    if outcome.filled:
+        result = strategy.apply_entry_execution(
+            bar=bar,
+            snapshot=snapshot,
+            sizing=sizing,
+            costs=costs,
+            orders=list(outcome.orders),
+            fills=list(outcome.fills),
+            delay_minutes=delay,
+            reason="live_filled",
+        )
+        return result, plan, outcome
+
+    clear_entry_candidate(state)
+    state.state = outcome.recommended_state or StrategyState.PAUSED
+    return (
+        strategy.mark_to_market_result(
+            action=StrategyAction.LIVE_EXECUTION,
+            reason=f"live_entry_{outcome.status.value}",
+            bar=bar,
+        ),
+        plan,
+        outcome,
+    )
+
+
+def execute_live_exit(
+    strategy: PairStrategy,
+    coordinator: RealExecutionCoordinator,
+    bar: MarketBar,
+    snapshot: IndicatorSnapshot,
+    decision_spread_type: str | None,
+    quote_set: LiveQuoteSet | None,
+    max_plan_age_seconds: int | None,
+    *,
+    plan_reason: str,
+    exit_reason: str,
+) -> tuple[Any, PairExecutionPlan | None, ExecutionOutcome | None]:
+    state = strategy.state
+    if state.position_direction is None or state.qff_contracts == 0:
+        state.state = StrategyState.ERROR
+        return (
+            strategy.mark_to_market_result(
+                action=StrategyAction.ERROR,
+                reason="exit_without_open_position",
+                bar=bar,
+            ),
+            None,
+            None,
+        )
+    costs = fill_costs(
+        tsm_units=state.tsm_units,
+        tsm_price=bar.tsm_twd_fair,
+        qff_contracts=state.qff_contracts,
+        qff_price=bar.qff_close_filled,
+        fees=strategy.fees,
+    )
+    requests = strategy.build_exit_order_requests(bar=bar, costs=costs)
+    plan = pair_execution_plan_from_order_requests(
+        plan_type=ExecutionPlanType.EXIT,
+        direction=state.position_direction,
+        requests=requests,
+        reason=plan_reason,
+        decision_zscore=snapshot.zscore,
+        decision_spread_type=decision_spread_type,
+    )
+    if quote_set is not None:
+        plan = apply_live_touch_market_price_policy(
+            plan,
+            quote_set,
+            max_plan_age_seconds=max_plan_age_seconds,
+            plan_age_seconds=0.0,
+        )
+    plan, outcome = coordinator.execute(plan)
+    if outcome.filled:
+        result = strategy.apply_exit_execution(
+            bar=bar,
+            snapshot=snapshot,
+            costs=costs,
+            orders=list(outcome.orders),
+            fills=list(outcome.fills),
+            exit_reason=exit_reason,
+            reason="live_filled"
+            if exit_reason != "rollover_force_exit"
+            else "rollover_force_exit",
+        )
+        return result, plan, outcome
+
+    state.state = outcome.recommended_state or StrategyState.PAUSED
+    return (
+        strategy.mark_to_market_result(
+            action=StrategyAction.LIVE_EXECUTION,
+            reason=f"live_exit_{outcome.status.value}",
+            bar=bar,
+        ),
+        plan,
+        outcome,
+    )
+
+
 def dry_run_execution_event_type(outcome: ExecutionOutcome) -> str:
     if outcome.status == ExecutionOutcomeStatus.FILLED:
         return "dry_run_execution_filled"
     if outcome.status == ExecutionOutcomeStatus.REJECTED:
         return "dry_run_execution_rejected"
     return "dry_run_execution_failed"
+
+
+def live_execution_event_type(outcome: ExecutionOutcome) -> str:
+    if outcome.status == ExecutionOutcomeStatus.FILLED:
+        return "live_execution_filled"
+    if outcome.status == ExecutionOutcomeStatus.REJECTED:
+        return "live_execution_rejected"
+    return "live_execution_failed"
+
+
+def report_live_execution_events(
+    reporter: Any,
+    timestamp: datetime,
+    outcome: ExecutionOutcome,
+) -> None:
+    payload = outcome.payload or {}
+    for event in payload.get("events", []):
+        event_type = str(event.get("event_type") or "")
+        event_payload = event.get("payload") or {}
+        if event_type == "critical_manual_intervention_required":
+            reporter.error(timestamp, "CRITICAL manual intervention required")
+        elif event_type in {
+            "exposure_breach",
+            "single_leg_exposure",
+            "imbalanced_pair_exposure",
+            "emergency_close_attempted",
+            "emergency_close_filled",
+            "emergency_close_failed",
+        }:
+            detail = str(
+                event_payload.get("broker")
+                or event_payload.get("failed_broker")
+                or event_payload.get("outcome_status")
+                or ""
+            )
+            reporter.event(timestamp, event_type, detail)
 
 
 def clear_entry_candidate(state: StrategyRuntimeState) -> None:

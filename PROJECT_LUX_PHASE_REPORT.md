@@ -499,7 +499,7 @@ Phase 5 revised commit plan：
 - Commit 2：已完成 Execution price / order policy。live plan 會記錄 signal 當下的 tradable bid/ask、expected execution price、order type 與 plan age；第一版採 market order policy，audit 保留 trigger bid/ask、expected price、actual fill price。
 - Commit 3：Fubon QFF execution adapter。接 `FutOptOrder` + `sdk.futopt.place_order(...)` 送 QFF market order；送單後查委託/成交回報，超時、拒單、未知狀態都回傳 failed/unknown outcome 並建議 `PAUSED`。
 - Commit 4：Binance TSM execution adapter。從 `.env` 讀 `BINANCE_API_KEY` / `BINANCE_SECRET`，用 ccxt USDM private API 送 `TSM/USDT:USDT` market order；送單後查 order status、fills、position，嚴格區分 read-only broker 與 execution adapter 權限語意。
-- Commit 5：Real execution coordinator policy。沿用既有 `ExecutionCoordinator` / state applier；雙腿順序第一版固定為 `QFF first, Binance second`。QFF 失敗時不送 Binance；QFF 成功但 Binance 失敗時記錄裸露風險並進 `PAUSED`；兩腿都確認成交後才更新 strategy state 為 `OPEN` 或 `FLAT`。
+- Commit 5：Real execution coordinator policy。新增 live 專用雙腿 coordinator；雙腿順序第一版固定為 `QFF first, Binance second`。QFF 失敗且零成交時不送 Binance；若 QFF 成功但 Binance 失敗、或任一腿 partial/unknown 造成不平衡 exposure，立即記錄 `exposure_breach` / `single_leg_exposure` 或 `imbalanced_pair_exposure`，嘗試對已成交腿送 emergency close，最後一律維持 `PAUSED` 等人工確認；兩腿都 full fill 才更新 strategy state 為 `OPEN` 或 `FLAT`。
 - Commit 6：Post-trade reconciliation。每次 real execution 後立刻跑 read-only reconciliation；store state、broker position、open orders、recorded fills 必須一致，任一 mismatch 進 `PAUSED`。
 - Commit 7：`live-execute` integration。沿用 `live-paper` / `live-dry-run` 共用的 auto warmup、quote polling、minute finalize、bid/ask tradable spread decision、calendar 與 contract policy；只把 adapter 換成 real execution adapters。
 - Commit 8：real smoke / minimal live acceptance。預設 pytest 只跑 simulated/fake execution；真實送單 smoke 必須明確設定 `LUX_LIVE_MARKETDATA=1`、`LUX_READONLY_BROKER=1`、`PROJECT_LUX_ALLOW_LIVE_ORDER=1`、`FUBON_ALLOW_LIVE_ORDER=1`、`BINANCE_ALLOW_LIVE_ORDER=1`，並使用極小 sizing 或專用 smoke config，限制只允許一組 entry/exit。
@@ -509,7 +509,17 @@ Phase 5 extension point 紀錄：
 - Commit A：已完成 `LiveRuntime` + `LiveModeHandler`，讓 `live-paper`、`live-dry-run`、未來 `live-execute` 共用同一條 live market data loop。
 - Commit B：已完成 `live-dry-run` 改用 shared runtime，dry-run 專屬邏輯集中在 `DryRunLiveModeHandler`。
 - Commit C：已完成 `ExecutionStore` 與 CLI helpers cleanup，execution tables 操作和 fake/read-only helper 已從大型 `SQLiteStore` / `cli.py` 拆出。
-- Commit D：已完成 Phase 5 extension point，新增 `[live_execution]` config、`live-order-doctor`、保留的 `live-execute` CLI 與 `LiveExecuteModeHandler`；目前沒有 live broker adapter，`live-execute` 會 fail fast，不會初始化 provider 或送單。
+- Commit D：已完成 Phase 5 extension point，新增 `[live_execution]` config、`live-order-doctor`、保留的 `live-execute` CLI 與 `LiveExecuteModeHandler`；Commit 5 後 `live-execute` 已接上 real execution coordinator，但 Fubon 真實 TMF smoke 尚未完成，仍不得視為正式可實單。
+
+Phase 5 Commit 5 real execution coordinator policy 紀錄：
+
+新增 module: `lux_trader/real_execution.py`
+
+- `RealExecutionCoordinator` 會 record live execution plan、依 `qff_first=true` 先送 Fubon leg，再送 Binance leg。
+- 雙腿 full fill 才回傳 `filled`，並允許 strategy 共用 applier 更新 `OPEN` / `FLAT`、trade、PnL。
+- QFF 成交但 Binance 失敗、QFF partial、Binance partial 等不平衡情境會記錄 exposure breach event，建立 reverse emergency close plan 嘗試降風險。
+- Emergency close 成功仍不自動恢復交易；失敗或未知會記錄 `critical_manual_intervention_required`，最終 recommended state 都是 `PAUSED`。
+- Fubon adapter 的真實 TMF smoke 仍 pending；Commit 5 只通過 fake adapter deterministic tests，不執行真實送單 smoke。
 
 Phase 5 Commit 1 live execution gate 紀錄：
 

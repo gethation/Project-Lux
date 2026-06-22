@@ -264,6 +264,8 @@ class LiveTerminalReporter:
             return self._paint(text, "yellow")
         if action_text in {"entry_fill", "exit_fill", "dry_run_intent"}:
             return self._paint(text, "green")
+        if action_text == "live_execution":
+            return self._paint(text, "yellow")
         if action_text in {"entry_cancel", "rollover_force_exit", "force_close"}:
             return self._paint(text, "yellow")
         if action_text == "error":

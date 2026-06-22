@@ -588,7 +588,7 @@ def command_live_order_doctor(args: argparse.Namespace) -> int:
 
     print(f"Live execution gate status={'open' if report.passed else 'closed'}")
     print(f"store_path={config.store_path}")
-    print("phase5_adapter=not_implemented")
+    print("phase5_adapter=real_execution_coordinator")
     for check in report.checks:
         status = "PASS" if check.passed else "FAIL"
         print(f"- {status} {check.check_type}: {check.message}")
@@ -606,7 +606,11 @@ def command_live_execute(args: argparse.Namespace) -> int:
         store = SQLiteStore(config.store_path)
         try:
             store.initialize()
-            gate_report = build_live_execution_gate_report(config, store)
+            gate_report = evaluate_live_execution_gate(
+                config,
+                reconciliation_report=store.load_latest_reconciliation_report(),
+                include_plan_checks=False,
+            )
         finally:
             store.close()
         assert_live_execution_gate_open(gate_report)
