@@ -541,7 +541,7 @@ def test_live_order_doctor_reports_phase5_gates(
     assert exit_code == 0
     assert "Live execution gate status=closed" in output
     assert "FAIL live_execution_enabled" in output
-    assert "FAIL execution_plan_present" in output
+    assert "execution_plan_present" not in output
     assert "phase5_adapter=real_execution_coordinator" in output
 
 
@@ -562,7 +562,6 @@ def test_live_order_doctor_reports_open_gate_when_store_and_env_are_ready(
     try:
         store.initialize()
         store.record_reconciliation_report(matched_reconciliation_report(config, now))
-        store.record_execution_plan(fresh_short_entry_plan(now))
         store.commit()
     finally:
         store.close()
@@ -613,7 +612,6 @@ def test_live_execute_open_gate_starts_runner(
     try:
         store.initialize()
         store.record_reconciliation_report(matched_reconciliation_report(config, now))
-        store.record_execution_plan(fresh_short_entry_plan(now))
         store.commit()
     finally:
         store.close()

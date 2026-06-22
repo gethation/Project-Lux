@@ -913,22 +913,11 @@ def print_fubon_smoke_outcome(label: str, outcome: object) -> None:
 
 
 def build_live_execution_gate_report(config: object, store: SQLiteStore):
-    plan_payload = store.load_latest_execution_plan_payload()
-    plan = (
-        pair_execution_plan_from_jsonable(plan_payload)
-        if plan_payload is not None
-        else None
-    )
     return evaluate_live_execution_gate(
         config,
         reconciliation_report=store.load_latest_reconciliation_report(),
-        plan=plan,
-        plan_has_outcome=(
-            store.execution_plan_has_outcome(plan.plan_id)
-            if plan is not None
-            else False
-        ),
         now=datetime.now().astimezone(),
+        include_plan_checks=False,
     )
 
 

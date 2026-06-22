@@ -10,6 +10,12 @@ import pandas as pd
 import pytest
 
 from lux_trader.config import AppConfig, LiveMarketDataConfig, SafetyConfig
+from lux_trader.execution import (
+    ExecutionOutcome,
+    ExecutionOutcomeStatus,
+    order_request_from_execution_leg,
+)
+from lux_trader.execution_intent import PairExecutionPlan
 from lux_trader.indicator import IndicatorEngine
 from lux_trader.live_market_data import (
     CcxtTickerMarketData,
@@ -28,6 +34,7 @@ from lux_trader.live_market_data import (
 )
 from lux_trader.live_runner import (
     LiveDryRunRunner,
+    LiveExecuteRunner,
     LivePaperRunner,
     QffContractResolution,
     QffWarmupCheckRunner,
@@ -41,11 +48,15 @@ from lux_trader.live_runner import (
 from lux_trader.models import (
     BrokerName,
     Direction,
+    Fill,
     IndicatorSnapshot,
     MarketBar,
+    OrderResult,
     OrderSide,
+    OrderStatus,
     StrategyState,
 )
+from lux_trader.reconciliation import BrokerAccountSnapshot, BrokerPositionSnapshot
 from lux_trader.strategy import StrategyRuntimeState
 from lux_trader.store import SQLiteStore
 from lux_trader.terminal_ui import LiveTerminalReporter
@@ -93,6 +104,77 @@ class FakeOhlcvProvider:
         if not self.quotes:
             raise RuntimeError("No fake quotes left")
         return self.quotes.pop(0)
+
+
+class FakeLiveExecutionAdapter:
+    def __init__(self, broker: BrokerName) -> None:
+        self.broker = broker
+        self.plans: list[PairExecutionPlan] = []
+
+    def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
+        self.plans.append(plan)
+        leg = plan.legs[0]
+        order = OrderResult(
+            order_id=f"LIVE-FAKE-{self.broker.value}-{len(self.plans)}",
+            request=order_request_from_execution_leg(leg),
+            status=OrderStatus.FILLED,
+        )
+        fill = Fill(
+            fill_id=f"LIVE-FAKE-FILL-{self.broker.value}-{len(self.plans)}",
+            order_id=order.order_id,
+            broker=leg.broker,
+            symbol=leg.symbol,
+            side=leg.side,
+            quantity=leg.quantity,
+            price=leg.expected_price or leg.price,
+            fee_twd=leg.fee_twd,
+            timestamp=leg.timestamp,
+            row_index=leg.row_index,
+            qff_symbol=leg.qff_symbol,
+            qff_expiry=leg.qff_expiry,
+            contract_policy_state=leg.contract_policy_state,
+        )
+        return ExecutionOutcome(
+            plan_id=plan.plan_id,
+            timestamp=plan.timestamp,
+            status=ExecutionOutcomeStatus.FILLED,
+            message=f"{self.broker.value} fake live fill",
+            orders=(order,),
+            fills=(fill,),
+            payload={"adapter": "fake_live_execution"},
+        )
+
+
+class FixedPositionReadOnlyBroker:
+    def __init__(
+        self,
+        *,
+        broker: BrokerName,
+        symbol: str,
+        quantity: float,
+        fetched_at: datetime,
+    ) -> None:
+        self.broker = broker
+        self.symbol = symbol
+        self.quantity = quantity
+        self.fetched_at = fetched_at
+
+    def fetch_snapshot(self) -> BrokerAccountSnapshot:
+        return BrokerAccountSnapshot(
+            broker=self.broker,
+            account_id=f"{self.broker.value}-FAKE",
+            fetched_at=self.fetched_at,
+            positions=(
+                BrokerPositionSnapshot(
+                    broker=self.broker,
+                    symbol=self.symbol,
+                    quantity=self.quantity,
+                ),
+            ),
+        )
+
+    def close(self) -> None:
+        return None
 
 
 class FakeFubonIntraday:
@@ -1229,6 +1311,109 @@ def test_live_dry_run_records_simulated_entry_and_opens_position(tmp_path) -> No
             ).fetchall()
         ]
         assert all(order_id.startswith("DRYRUN-") for order_id in order_ids)
+    finally:
+        store.close()
+
+
+def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config = small_live_config(tmp_path)
+    config = replace(
+        config,
+        safety=replace(config.safety, allow_live_order=True),
+        strategy=replace(config.strategy, entry_z=1.0),
+        live_execution=replace(config.live_execution, enabled=True),
+    )
+    for name in (
+        "PROJECT_LUX_ALLOW_LIVE_ORDER",
+        "FUBON_ALLOW_LIVE_ORDER",
+        "BINANCE_ALLOW_LIVE_ORDER",
+    ):
+        monkeypatch.setenv(name, "1")
+    qff, tsm, usd = dry_run_quote_providers(
+        [
+            "2026-06-18T08:45:30+08:00",
+            "2026-06-18T08:45:59+08:00",
+            "2026-06-18T08:46:01+08:00",
+            "2026-06-18T08:46:59+08:00",
+            "2026-06-18T08:47:01+08:00",
+        ]
+    )
+    qff_adapter = FakeLiveExecutionAdapter(BrokerName.FUBON_QFF)
+    binance_adapter = FakeLiveExecutionAdapter(BrokerName.BINANCE_TSM)
+    terminal_output = io.StringIO()
+
+    result = LiveExecuteRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        fubon_adapter=qff_adapter,
+        binance_adapter=binance_adapter,
+        readonly_brokers=(
+            FixedPositionReadOnlyBroker(
+                broker=BrokerName.FUBON_QFF,
+                symbol="QFF202607",
+                quantity=100.0,
+                fetched_at=ts("2026-06-18T08:47:01+08:00"),
+            ),
+            FixedPositionReadOnlyBroker(
+                broker=BrokerName.BINANCE_TSM,
+                symbol="TSM/USDT:USDT",
+                quantity=-(1_000_000.0 / 120.0),
+                fetched_at=ts("2026-06-18T08:47:01+08:00"),
+            ),
+        ),
+        clock=dry_run_clock(
+            [
+                "2026-06-18T08:45:00+08:00",
+                "2026-06-18T08:45:30+08:00",
+                "2026-06-18T08:45:59+08:00",
+                "2026-06-18T08:46:01+08:00",
+                "2026-06-18T08:46:59+08:00",
+                "2026-06-18T08:47:01+08:00",
+                "2026-06-18T08:47:02+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(terminal_output, color=False),
+    ).run(reset_store=True, max_iterations=5)
+
+    assert result.bars_processed == 2
+    assert result.plans_recorded == 1
+    assert len(qff_adapter.plans) == 1
+    assert len(binance_adapter.plans) == 1
+    output = terminal_output.getvalue()
+    assert "EVENT warmup_auto start" in output
+    assert "EVENT live_execution filled" in output
+    assert "EVENT post_trade_reconciliation matched" in output
+    assert "OPEN entry_fill" in output
+
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        assert count_table(store, "warmup_bars") == config.live.warmup_minutes
+        assert count_table(store, "market_ticks") > 0
+        assert count_table(store, "execution_plans") == 1
+        assert count_table(store, "execution_outcomes") == 1
+        assert count_table(store, "execution_legs") == 2
+        assert count_table(store, "orders") == 2
+        assert count_table(store, "fills") == 2
+        assert count_table(store, "broker_reconciliation_runs") == 1
+        state = store.load_resume_state()
+        assert state is not None
+        assert state.strategy.state == StrategyState.OPEN
+        assert state.strategy.position_direction == Direction.SHORT_TSM_LONG_QFF
+        report = store.load_latest_reconciliation_report()
+        assert report is not None
+        assert report.status.value == "matched"
+        plan = store.load_latest_execution_plan_payload()
+        assert plan is not None
+        assert plan["reason"] == "live_entry_order"
+        assert plan["price_policy"] == "live_touch_market"
+        assert plan["order_type"] == "market"
     finally:
         store.close()
 

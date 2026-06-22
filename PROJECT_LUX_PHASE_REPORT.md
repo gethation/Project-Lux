@@ -501,7 +501,7 @@ Phase 5 revised commit plan：
 - Commit 4：Binance TSM execution adapter。從 `.env` 讀 `BINANCE_API_KEY` / `BINANCE_SECRET`，用 ccxt USDM private API 送 `TSM/USDT:USDT` market order；送單後查 order status、fills、position，嚴格區分 read-only broker 與 execution adapter 權限語意。
 - Commit 5：Real execution coordinator policy。新增 live 專用雙腿 coordinator；雙腿順序第一版固定為 `QFF first, Binance second`。QFF 失敗且零成交時不送 Binance；若 QFF 成功但 Binance 失敗、或任一腿 partial/unknown 造成不平衡 exposure，立即記錄 `exposure_breach` / `single_leg_exposure` 或 `imbalanced_pair_exposure`，嘗試對已成交腿送 emergency close，最後一律維持 `PAUSED` 等人工確認；兩腿都 full fill 才更新 strategy state 為 `OPEN` 或 `FLAT`。
 - Commit 6：已完成 Post-trade reconciliation。每次 real execution 後立刻跑 read-only reconciliation；store state、broker position、open orders、recorded fills 必須一致，任一 mismatch 進 `PAUSED`。
-- Commit 7：`live-execute` integration。沿用 `live-paper` / `live-dry-run` 共用的 auto warmup、quote polling、minute finalize、bid/ask tradable spread decision、calendar 與 contract policy；只把 adapter 換成 real execution adapters。
+- Commit 7：已完成 `live-execute` integration。沿用 `live-paper` / `live-dry-run` 共用的 auto warmup、quote polling、minute finalize、bid/ask tradable spread decision、calendar 與 contract policy；只把 adapter 換成 real execution adapters。
 - Commit 8：real smoke / minimal live acceptance。預設 pytest 只跑 simulated/fake execution；真實送單 smoke 必須明確設定 `LUX_LIVE_MARKETDATA=1`、`LUX_READONLY_BROKER=1`、`PROJECT_LUX_ALLOW_LIVE_ORDER=1`、`FUBON_ALLOW_LIVE_ORDER=1`、`BINANCE_ALLOW_LIVE_ORDER=1`，並使用極小 sizing 或專用 smoke config，限制只允許一組 entry/exit。
 
 Phase 5 extension point 紀錄：
@@ -509,7 +509,7 @@ Phase 5 extension point 紀錄：
 - Commit A：已完成 `LiveRuntime` + `LiveModeHandler`，讓 `live-paper`、`live-dry-run`、未來 `live-execute` 共用同一條 live market data loop。
 - Commit B：已完成 `live-dry-run` 改用 shared runtime，dry-run 專屬邏輯集中在 `DryRunLiveModeHandler`。
 - Commit C：已完成 `ExecutionStore` 與 CLI helpers cleanup，execution tables 操作和 fake/read-only helper 已從大型 `SQLiteStore` / `cli.py` 拆出。
-- Commit D：已完成 Phase 5 extension point，新增 `[live_execution]` config、`live-order-doctor`、保留的 `live-execute` CLI 與 `LiveExecuteModeHandler`；Commit 5 後 `live-execute` 已接上 real execution coordinator，但 Fubon 真實 TMF smoke 尚未完成，仍不得視為正式可實單。
+- Commit D：已完成 Phase 5 extension point，新增 `[live_execution]` config、`live-order-doctor`、`live-execute` CLI 與 `LiveExecuteModeHandler`；Commit 7 後 `live-execute` 已接上 shared live runtime 與 real execution coordinator，但 Fubon 真實 TMF smoke 尚未完成，仍不得視為正式可實單。
 
 Phase 5 Commit 5 real execution coordinator policy 紀錄：
 
@@ -534,6 +534,15 @@ Phase 5 Commit 6 post-trade reconciliation 紀錄：
 - Matched case 會記錄 `post_trade_reconciliation_matched` event；mismatch case 會在 terminal UI 輸出 `WARN post_trade_reconciliation ...`。
 - 目前通過 fake read-only broker deterministic tests；真實 Fubon TMF smoke 和完整 `live-execute` 實單 smoke 仍需你手動確認後再執行。
 
+Phase 5 Commit 7 live-execute integration 紀錄：
+
+- `LiveExecuteRunner` 直接使用 shared `LiveRuntime`，和 `live-paper` / `live-dry-run` 共用 auto warmup、quote polling、minute finalize、non-trading calendar、bid/ask tradable spread decision、contract switch 與 force-exit policy。
+- `LiveExecuteModeHandler` 只替換 execution layer：signal 產生後建立 live market pair plan，交給 `RealExecutionCoordinator` 與 real Fubon/Binance execution adapters。
+- `live-execute` startup gate 不再要求預先存在 execution plan；plan freshness / not-executed checks 保留在單筆送單 gate 語意中，由 coordinator 在 execution 當下 record outcome。
+- `live-order-doctor` 現在回報 startup gate：config/env gate、QFF-first policy 與 latest read-only reconciliation，不再因沒有舊 plan 而 fail。
+- 新增 fake provider integration test，從空 store 啟動 `live-execute`，確認 auto warmup、market ticks、BAR finalize、live execution plan、orders/fills、post-trade reconciliation 與 `OPEN` state 全流程可跑通。
+- 真實 Fubon TMF smoke 和完整 `live-execute` live-order acceptance 尚未執行；仍不得視為可無人值守實單。
+
 Phase 5 Commit 1 live execution gate 紀錄：
 
 ```text
@@ -554,8 +563,8 @@ Phase 5 Commit 1 live execution gate 紀錄：
 - execution_plan_not_executed
 
 live-order-doctor: 使用同一套 gate report，列出 PASS/FAIL
-live-execute: gate 未開時 fail fast；gate 全開後仍因 real adapter 未實作而 fail fast
-pytest tests/test_live_execution_gate.py tests/test_execution_recorder_cli.py tests/test_live_market_data.py -q: 68 passed
+live-execute: gate 未開時 fail fast；gate 全開後會進入 shared live runtime，等待 finalized BAR 產生 real execution plan
+相關 regression: `tests/test_live_execution_gate.py`、`tests/test_execution_recorder_cli.py`、`tests/test_live_market_data.py` 已通過
 ```
 
 Phase 5 Commit 2 execution price / order policy 紀錄：
@@ -604,6 +613,6 @@ Phase 5 驗收重點：
 - 以實際全流程跑通為驗收基準
 - 任何 live test 必須明確設定 `LUX_LIVE_MARKETDATA=1`。
 - `allow_live_order=true` 在 Phase 1 到 Phase 4 必須被拒絕；Phase 5 只能由 `live-execute` safety gate 接受。
-- Commit D 階段的 `live-execute` 只是保留入口，必須 fail fast；真實送單 adapter 完成前不得初始化 execution broker。
+- `live-execute` 只能在 Phase 5 explicit config/env gate 全開後啟動；真實 smoke 尚未完成前，不得無人值守運行。
 - 任一腿失敗、partial fill、unknown status、post-trade reconciliation mismatch，都必須進 `PAUSED`，不得自動補單或重試。
 - `.env`、`.pfx`、local smoke config、SQLite、TAIFEX cache、runtime logs 都不得進 git。

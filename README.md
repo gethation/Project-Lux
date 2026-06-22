@@ -210,23 +210,27 @@ $env:LUX_LIVE_MARKETDATA='1'
 Remove-Item Env:\LUX_LIVE_MARKETDATA
 ```
 
-Commit D adds the Phase 5 extension point but no live execution adapter. Use
-`live-order-doctor` to inspect gates; `live-execute` is reserved and fails before any
-market-data provider or broker execution adapter is opened.
+Phase 5 `live-execute` now uses the same live runtime as `live-paper` and
+`live-dry-run`: auto warmup, quote polling, minute finalization, tradable bid/ask
+spread decisions, trading calendar, and QFF contract policy are shared. The mode
+only swaps the execution layer to the real Fubon/Binance adapters and runs
+post-trade read-only reconciliation after each real execution.
 
 ```powershell
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-order-doctor --config config.live.example.toml
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-execute --config config.live.example.toml --quiet-ui
 ```
 
-`live-execute` must remain unusable until Phase 5 live execution adapters, safety
-gate checks, and post-trade reconciliation are implemented. The config section
-`[live_execution]` is present only to document the future gate shape and defaults to
-disabled.
+`live-execute` is still gated by `safety.allow_live_order=true`,
+`[live_execution].enabled=true`, `PROJECT_LUX_ALLOW_LIVE_ORDER=1`,
+`FUBON_ALLOW_LIVE_ORDER=1`, `BINANCE_ALLOW_LIVE_ORDER=1`, and the configured
+read-only reconciliation policy. Keep it disabled unless you are intentionally
+running the minimal live-order acceptance path.
 
 ## Safety
 
-This milestone still has no live order implementation. `live-paper`, `live-dry-run`,
-and `live-execute` all refuse unsafe settings or fail fast before any order can be
-sent. Future live order code must require explicit environment and config gates plus
-read-only broker reconciliation.
+`live-paper` and `live-dry-run` still refuse `allow_live_order=true` and cannot send
+real orders. `live-execute` is the only live-order entrypoint, and it requires all
+explicit config/env gates plus read-only broker reconciliation. Fubon TMF execution
+smoke and full `live-execute` live-order acceptance must be run manually before
+treating the system as ready for unattended real execution.
