@@ -15,9 +15,20 @@ from .execution_intent import (
     PairExecutionPlan,
     pair_execution_plan_from_order_requests,
 )
+from .execution import (
+    ExecutionCoordinator,
+    ExecutionOutcome,
+    ExecutionOutcomeStatus,
+    SimulatedExecutionAdapter,
+)
 from .execution_recorder import DryRunExecutionRecorder
+from .execution_price_policy import apply_live_touch_market_price_policy
 from .fees import fill_costs
 from .indicator import IndicatorEngine
+from .live_execution_gate import (
+    assert_live_execution_gate_open,
+    evaluate_live_execution_gate,
+)
 from .live_market_data import (
     CcxtTickerMarketData,
     CsvQffWarmupProvider,
@@ -504,6 +515,7 @@ class LiveModeHandler:
         bar: MarketBar,
         decision_snapshot: IndicatorSnapshot,
         decision_spread_type: str | None,
+        quote_set: LiveQuoteSet | None,
         force_exit: bool,
         qff_symbol: str,
         qff_expiry: str | None,
@@ -530,6 +542,7 @@ class PaperLiveModeHandler(LiveModeHandler):
         bar: MarketBar,
         decision_snapshot: IndicatorSnapshot,
         decision_spread_type: str | None,
+        quote_set: LiveQuoteSet | None,
         force_exit: bool,
         qff_symbol: str,
         qff_expiry: str | None,
@@ -552,6 +565,22 @@ class PaperLiveModeHandler(LiveModeHandler):
                 result = strategy.on_bar(bar, decision_snapshot)
         else:
             result = strategy.on_bar(bar, decision_snapshot)
+            if (
+                result.action == StrategyAction.ENTRY_SIGNAL
+                and strategy.state.state == StrategyState.ENTRY_PENDING
+            ):
+                record_live_signal_event(store, reporter, bar, strategy, result)
+                result = strategy.fill_pending_entry(bar, decision_snapshot)
+            elif (
+                result.action == StrategyAction.EXIT_SIGNAL
+                and strategy.state.state == StrategyState.EXIT_PENDING
+            ):
+                record_live_signal_event(store, reporter, bar, strategy, result)
+                result = strategy.fill_pending_exit(
+                    bar,
+                    decision_snapshot,
+                    exit_reason="zscore_exit",
+                )
 
         for order in result.orders:
             store.record_order(order)
@@ -577,6 +606,7 @@ class DryRunLiveModeHandler(LiveModeHandler):
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.recorder: DryRunExecutionRecorder | None = None
+        self.coordinator: ExecutionCoordinator | None = None
 
     def validate_config(self, config: AppConfig) -> None:
         if config.safety.allow_live_order:
@@ -586,6 +616,11 @@ class DryRunLiveModeHandler(LiveModeHandler):
         self.recorder = DryRunExecutionRecorder(
             store,
             allow_live_order=self.config.safety.allow_live_order,
+        )
+        self.coordinator = ExecutionCoordinator(
+            store,
+            self.recorder,
+            SimulatedExecutionAdapter(),
         )
 
     def finish_payload(
@@ -613,22 +648,27 @@ class DryRunLiveModeHandler(LiveModeHandler):
         bar: MarketBar,
         decision_snapshot: IndicatorSnapshot,
         decision_spread_type: str | None,
+        quote_set: LiveQuoteSet | None,
         force_exit: bool,
         qff_symbol: str,
         qff_expiry: str | None,
     ) -> LiveModeBarResult:
-        if self.recorder is None:
-            raise RuntimeError("dry-run recorder is not initialized")
+        if self.coordinator is None:
+            raise RuntimeError("dry-run coordinator is not initialized")
 
         plan = None
+        outcome = None
         if force_exit:
-            result, plan = record_dry_run_exit_intent(
+            result, plan, outcome = execute_dry_run_exit(
                 strategy,
-                self.recorder,
+                self.coordinator,
                 bar,
                 decision_snapshot,
                 decision_spread_type,
-                reason="rollover_force_exit",
+                quote_set,
+                self.config.live_execution.max_plan_age_seconds,
+                plan_reason="rollover_force_exit",
+                exit_reason="rollover_force_exit",
             )
             reporter.event(bar.timestamp, "force_exit", "expiry_buffer")
             store.record_event(
@@ -639,33 +679,66 @@ class DryRunLiveModeHandler(LiveModeHandler):
                 {"qff_symbol": qff_symbol, "qff_expiry": qff_expiry},
             )
         elif strategy.state.state == StrategyState.ENTRY_PENDING:
-            result, plan = record_dry_run_entry_intent(
+            result, plan, outcome = execute_dry_run_entry(
                 strategy,
-                self.recorder,
+                self.coordinator,
                 bar,
                 decision_snapshot,
                 decision_spread_type,
+                quote_set,
+                self.config.live_execution.max_plan_age_seconds,
             )
         elif strategy.state.state == StrategyState.EXIT_PENDING:
-            result, plan = record_dry_run_exit_intent(
+            result, plan, outcome = execute_dry_run_exit(
                 strategy,
-                self.recorder,
+                self.coordinator,
                 bar,
                 decision_snapshot,
                 decision_spread_type,
-                reason="dry_run_exit_intent",
+                quote_set,
+                self.config.live_execution.max_plan_age_seconds,
+                plan_reason="dry_run_exit_intent",
+                exit_reason="zscore_exit",
             )
         else:
             result = strategy.on_bar(bar, decision_snapshot)
+            if (
+                result.action == StrategyAction.ENTRY_SIGNAL
+                and strategy.state.state == StrategyState.ENTRY_PENDING
+            ):
+                record_live_signal_event(store, reporter, bar, strategy, result)
+                result, plan, outcome = execute_dry_run_entry(
+                    strategy,
+                    self.coordinator,
+                    bar,
+                    decision_snapshot,
+                    decision_spread_type,
+                    quote_set,
+                    self.config.live_execution.max_plan_age_seconds,
+                )
+            elif (
+                result.action == StrategyAction.EXIT_SIGNAL
+                and strategy.state.state == StrategyState.EXIT_PENDING
+            ):
+                record_live_signal_event(store, reporter, bar, strategy, result)
+                result, plan, outcome = execute_dry_run_exit(
+                    strategy,
+                    self.coordinator,
+                    bar,
+                    decision_snapshot,
+                    decision_spread_type,
+                    quote_set,
+                    self.config.live_execution.max_plan_age_seconds,
+                    plan_reason="dry_run_exit_intent",
+                    exit_reason="zscore_exit",
+                )
 
         plans_recorded = 0
         if plan is not None:
             plans_recorded = 1
-            event_type = (
-                "dry_run_intent_recorded"
-                if plan.accepted
-                else "dry_run_intent_rejected"
-            )
+            if outcome is None:
+                raise RuntimeError("dry-run execution outcome is missing")
+            event_type = dry_run_execution_event_type(outcome)
             reporter.event(
                 bar.timestamp,
                 "dry_run",
@@ -679,11 +752,18 @@ class DryRunLiveModeHandler(LiveModeHandler):
                 {
                     "plan_id": plan.plan_id,
                     "status": plan.status.value,
+                    "outcome_status": outcome.status.value,
                     "failed_checks": sum(
                         1 for check in plan.checks if not check.passed
                     ),
                 },
             )
+            for order in result.orders:
+                store.record_order(order)
+            for fill in result.fills:
+                store.record_fill(fill)
+            if result.trade is not None:
+                store.record_trade(result.trade)
         elif result.action.value != "none":
             store.record_event(
                 bar.row_index,
@@ -695,23 +775,39 @@ class DryRunLiveModeHandler(LiveModeHandler):
         return LiveModeBarResult(result=result, plans_recorded=plans_recorded)
 
 
+def record_live_signal_event(
+    store: SQLiteStore,
+    reporter: Any,
+    bar: MarketBar,
+    strategy: PairStrategy,
+    result: Any,
+) -> None:
+    store.record_event(
+        bar.row_index,
+        bar.timestamp,
+        result.action.value,
+        result.reason,
+        {"state": strategy.state.state.value, "same_bar_execution": True},
+    )
+    reporter.event(
+        bar.timestamp,
+        result.action.value,
+        compact_reason(result.reason),
+    )
+
+
 class LiveExecuteModeHandler(LiveModeHandler):
     mode = "live-execute"
     auto_warmup_context = "before_live_execute"
     complete_contract_switch_after_flat = True
 
     def validate_config(self, config: AppConfig) -> None:
-        closed = []
-        if not config.live_execution.enabled:
-            closed.append("live_execution.enabled=false")
-        if not config.safety.allow_live_order:
-            closed.append("safety.allow_live_order=false")
-        if closed:
-            raise RuntimeError(
-                "live-execute gate closed: "
-                + ", ".join(closed)
-                + "; use live-dry-run until Phase 5 adapters are implemented"
-            )
+        report = evaluate_live_execution_gate(
+            config,
+            include_reconciliation_checks=False,
+            include_plan_checks=False,
+        )
+        assert_live_execution_gate_open(report)
         raise RuntimeError(
             "live-execute extension point is reserved for Phase 5; "
             "no live execution broker adapter is implemented yet"
@@ -727,6 +823,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
         bar: MarketBar,
         decision_snapshot: IndicatorSnapshot,
         decision_spread_type: str | None,
+        quote_set: LiveQuoteSet | None,
         force_exit: bool,
         qff_symbol: str,
         qff_expiry: str | None,
@@ -1077,6 +1174,7 @@ class LiveRuntime:
             bar=bar,
             decision_snapshot=decision_snapshot,
             decision_spread_type=decision_spread_type,
+            quote_set=build_result.quote_set,
             force_exit=should_force_exit_for_contract_policy(
                 self.config,
                 strategy.state,
@@ -1420,13 +1518,15 @@ class LiveExecuteRunner:
         )
 
 
-def record_dry_run_entry_intent(
+def execute_dry_run_entry(
     strategy: PairStrategy,
-    recorder: DryRunExecutionRecorder,
+    coordinator: ExecutionCoordinator,
     bar: MarketBar,
     snapshot: IndicatorSnapshot,
     decision_spread_type: str | None,
-) -> tuple[Any, PairExecutionPlan | None]:
+    quote_set: LiveQuoteSet | None,
+    max_plan_age_seconds: int | None,
+) -> tuple[Any, PairExecutionPlan | None, ExecutionOutcome | None]:
     state = strategy.state
     if state.candidate_time is None:
         state.state = StrategyState.ERROR
@@ -1437,6 +1537,7 @@ def record_dry_run_entry_intent(
                 bar=bar,
             ),
             None,
+            None,
         )
     if state.candidate_direction is None:
         state.state = StrategyState.ERROR
@@ -1446,6 +1547,7 @@ def record_dry_run_entry_intent(
                 reason="entry_pending_without_direction",
                 bar=bar,
             ),
+            None,
             None,
         )
     delay = minutes_between(state.candidate_time, bar.timestamp)
@@ -1458,6 +1560,7 @@ def record_dry_run_entry_intent(
                 reason="entry_delay_exceeded",
                 bar=bar,
             ),
+            None,
             None,
         )
 
@@ -1478,6 +1581,7 @@ def record_dry_run_entry_intent(
                 bar=bar,
             ),
             None,
+            None,
         )
 
     costs = fill_costs(
@@ -1493,41 +1597,60 @@ def record_dry_run_entry_intent(
         qff_contracts=sizing.qff_contracts,
         costs=costs,
     )
-    plan = recorder.record_plan(
-        pair_execution_plan_from_order_requests(
-            plan_type=ExecutionPlanType.ENTRY,
-            direction=state.candidate_direction,
-            requests=requests,
-            reason="dry_run_entry_intent",
-            decision_zscore=snapshot.zscore,
-            decision_spread_type=decision_spread_type,
-        )
+    plan = pair_execution_plan_from_order_requests(
+        plan_type=ExecutionPlanType.ENTRY,
+        direction=state.candidate_direction,
+        requests=requests,
+        reason="dry_run_entry_intent",
+        decision_zscore=snapshot.zscore,
+        decision_spread_type=decision_spread_type,
     )
+    if quote_set is not None:
+        plan = apply_live_touch_market_price_policy(
+            plan,
+            quote_set,
+            max_plan_age_seconds=max_plan_age_seconds,
+            plan_age_seconds=0.0,
+        )
+    plan, outcome = coordinator.execute(plan)
+    if outcome.filled:
+        result = strategy.apply_entry_execution(
+            bar=bar,
+            snapshot=snapshot,
+            sizing=sizing,
+            costs=costs,
+            orders=list(outcome.orders),
+            fills=list(outcome.fills),
+            delay_minutes=delay,
+            reason="dry_run_filled",
+        )
+        return result, plan, outcome
+
     clear_entry_candidate(state)
-    state.state = StrategyState.PAUSED
+    state.state = outcome.recommended_state or StrategyState.PAUSED
     return (
         strategy.mark_to_market_result(
             action=StrategyAction.DRY_RUN_INTENT,
-            reason=(
-                "dry_run_entry_intent_recorded"
-                if plan.accepted
-                else "dry_run_entry_intent_rejected"
-            ),
+            reason=f"dry_run_entry_{outcome.status.value}",
             bar=bar,
         ),
         plan,
+        outcome,
     )
 
 
-def record_dry_run_exit_intent(
+def execute_dry_run_exit(
     strategy: PairStrategy,
-    recorder: DryRunExecutionRecorder,
+    coordinator: ExecutionCoordinator,
     bar: MarketBar,
     snapshot: IndicatorSnapshot,
     decision_spread_type: str | None,
+    quote_set: LiveQuoteSet | None,
+    max_plan_age_seconds: int | None,
     *,
-    reason: str,
-) -> tuple[Any, PairExecutionPlan | None]:
+    plan_reason: str,
+    exit_reason: str,
+) -> tuple[Any, PairExecutionPlan | None, ExecutionOutcome | None]:
     state = strategy.state
     if state.position_direction is None or state.qff_contracts == 0:
         state.state = StrategyState.ERROR
@@ -1538,6 +1661,7 @@ def record_dry_run_exit_intent(
                 bar=bar,
             ),
             None,
+            None,
         )
     costs = fill_costs(
         tsm_units=state.tsm_units,
@@ -1547,32 +1671,54 @@ def record_dry_run_exit_intent(
         fees=strategy.fees,
     )
     requests = strategy.build_exit_order_requests(bar=bar, costs=costs)
-    plan = recorder.record_plan(
-        pair_execution_plan_from_order_requests(
-            plan_type=ExecutionPlanType.EXIT,
-            direction=state.position_direction,
-            requests=requests,
-            reason=reason,
-            decision_zscore=snapshot.zscore,
-            decision_spread_type=decision_spread_type,
-        )
+    plan = pair_execution_plan_from_order_requests(
+        plan_type=ExecutionPlanType.EXIT,
+        direction=state.position_direction,
+        requests=requests,
+        reason=plan_reason,
+        decision_zscore=snapshot.zscore,
+        decision_spread_type=decision_spread_type,
     )
-    state.state = StrategyState.PAUSED
-    state.exit_signal_idx = -1
-    state.exit_signal_time = None
-    state.exit_signal_zscore = None
+    if quote_set is not None:
+        plan = apply_live_touch_market_price_policy(
+            plan,
+            quote_set,
+            max_plan_age_seconds=max_plan_age_seconds,
+            plan_age_seconds=0.0,
+        )
+    plan, outcome = coordinator.execute(plan)
+    if outcome.filled:
+        result = strategy.apply_exit_execution(
+            bar=bar,
+            snapshot=snapshot,
+            costs=costs,
+            orders=list(outcome.orders),
+            fills=list(outcome.fills),
+            exit_reason=exit_reason,
+            reason="dry_run_filled"
+            if exit_reason != "rollover_force_exit"
+            else "rollover_force_exit",
+        )
+        return result, plan, outcome
+
+    state.state = outcome.recommended_state or StrategyState.PAUSED
     return (
         strategy.mark_to_market_result(
             action=StrategyAction.DRY_RUN_INTENT,
-            reason=(
-                "dry_run_exit_intent_recorded"
-                if plan.accepted
-                else "dry_run_exit_intent_rejected"
-            ),
+            reason=f"dry_run_exit_{outcome.status.value}",
             bar=bar,
         ),
         plan,
+        outcome,
     )
+
+
+def dry_run_execution_event_type(outcome: ExecutionOutcome) -> str:
+    if outcome.status == ExecutionOutcomeStatus.FILLED:
+        return "dry_run_execution_filled"
+    if outcome.status == ExecutionOutcomeStatus.REJECTED:
+        return "dry_run_execution_rejected"
+    return "dry_run_execution_failed"
 
 
 def clear_entry_candidate(state: StrategyRuntimeState) -> None:

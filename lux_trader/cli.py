@@ -23,6 +23,10 @@ from .cli_helpers import (
 from .execution_intent import pair_execution_plan_from_jsonable
 from .execution_recorder import DryRunExecutionRecorder
 from .execution_simulator import DryRunExecutionSimulator, ExecutionSimulationScenario
+from .live_execution_gate import (
+    assert_live_execution_gate_open,
+    evaluate_live_execution_gate,
+)
 from .live_market_data import CcxtTickerMarketData, FubonQffMarketData, ensure_taipei
 from .live_runner import (
     LiveDryRunRunner,
@@ -542,32 +546,19 @@ def command_simulate_execution(args: argparse.Namespace) -> int:
 
 def command_live_order_doctor(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    env_gates = {
-        "PROJECT_LUX_ALLOW_LIVE_ORDER": os.getenv(
-            "PROJECT_LUX_ALLOW_LIVE_ORDER", ""
-        ).strip()
-        == "1",
-        "FUBON_ALLOW_LIVE_ORDER": os.getenv("FUBON_ALLOW_LIVE_ORDER", "").strip()
-        == "1",
-        "BINANCE_ALLOW_LIVE_ORDER": os.getenv("BINANCE_ALLOW_LIVE_ORDER", "").strip()
-        == "1",
-    }
-    checks = [
-        f"store_path={config.store_path}",
-        f"safety.allow_live_order={config.safety.allow_live_order}",
-        f"live_execution.enabled={config.live_execution.enabled}",
-        (
-            "live_execution.require_readonly_reconciliation="
-            f"{config.live_execution.require_readonly_reconciliation}"
-        ),
-        f"live_execution.max_plan_age_seconds={config.live_execution.max_plan_age_seconds}",
-        f"live_execution.qff_first={config.live_execution.qff_first}",
-        "phase5_adapter=not_implemented",
-    ]
-    checks.extend(f"env.{name}={enabled}" for name, enabled in env_gates.items())
-    print("Live order doctor checks passed")
-    for check in checks:
-        print(f"- {check}")
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        report = build_live_execution_gate_report(config, store)
+    finally:
+        store.close()
+
+    print(f"Live execution gate status={'open' if report.passed else 'closed'}")
+    print(f"store_path={config.store_path}")
+    print("phase5_adapter=not_implemented")
+    for check in report.checks:
+        status = "PASS" if check.passed else "FAIL"
+        print(f"- {status} {check.check_type}: {check.message}")
     return 0
 
 
@@ -579,6 +570,13 @@ def command_live_execute(args: argparse.Namespace) -> int:
         else LiveTerminalReporter(color=False if args.no_color else None)
     )
     try:
+        store = SQLiteStore(config.store_path)
+        try:
+            store.initialize()
+            gate_report = build_live_execution_gate_report(config, store)
+        finally:
+            store.close()
+        assert_live_execution_gate_open(gate_report)
         LiveExecuteRunner(config, reporter=reporter).run(
             resume=args.resume,
             reset_store=args.reset_store,
@@ -591,6 +589,26 @@ def command_live_execute(args: argparse.Namespace) -> int:
     finally:
         reporter.finish()
     return 0
+
+
+def build_live_execution_gate_report(config: object, store: SQLiteStore):
+    plan_payload = store.load_latest_execution_plan_payload()
+    plan = (
+        pair_execution_plan_from_jsonable(plan_payload)
+        if plan_payload is not None
+        else None
+    )
+    return evaluate_live_execution_gate(
+        config,
+        reconciliation_report=store.load_latest_reconciliation_report(),
+        plan=plan,
+        plan_has_outcome=(
+            store.execution_plan_has_outcome(plan.plan_id)
+            if plan is not None
+            else False
+        ),
+        now=datetime.now().astimezone(),
+    )
 
 
 def command_live_doctor(args: argparse.Namespace) -> int:

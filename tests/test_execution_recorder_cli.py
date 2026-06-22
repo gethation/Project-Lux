@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from datetime import datetime
 
@@ -17,6 +18,12 @@ from lux_trader.cli import (
     command_simulate_execution,
     qff_book_diagnostic_lines,
 )
+from lux_trader.config import load_config
+from lux_trader.execution import (
+    ExecutionCoordinator,
+    ExecutionOutcomeStatus,
+    SimulatedExecutionAdapter,
+)
 from lux_trader.execution_intent import ExecutionLeg, ExecutionPlanType, PairExecutionPlan
 from lux_trader.execution_recorder import DryRunExecutionRecorder
 from lux_trader.execution_simulator import (
@@ -26,10 +33,20 @@ from lux_trader.execution_simulator import (
 )
 from lux_trader.models import BrokerName, Direction, OrderSide
 from lux_trader.live_market_data import LiveQuote
+from lux_trader.reconciliation import (
+    ExpectedBrokerState,
+    ReconciliationReport,
+    ReconciliationStatus,
+)
 from lux_trader.store import SQLiteStore
 
 
-def write_config(tmp_path: Path, *, allow_live_order: bool = False) -> Path:
+def write_config(
+    tmp_path: Path,
+    *,
+    allow_live_order: bool = False,
+    live_execution_enabled: bool = False,
+) -> Path:
     config_path = tmp_path / "config.test.toml"
     store_path = (tmp_path / "project_lux.sqlite3").as_posix()
     cache_dir = (tmp_path / "taifex_cache").as_posix()
@@ -52,6 +69,12 @@ def write_config(tmp_path: Path, *, allow_live_order: bool = False) -> Path:
                 "qff_symbol = 'QFFG6'",
                 "binance_symbol = 'TSM/USDT:USDT'",
                 f"taifex_cache_dir = '{cache_dir}'",
+                "",
+                "[live_execution]",
+                f"enabled = {str(live_execution_enabled).lower()}",
+                "require_readonly_reconciliation = true",
+                "max_plan_age_seconds = 120",
+                "qff_first = true",
             ]
         ),
         encoding="utf-8",
@@ -106,6 +129,35 @@ def short_entry_plan() -> PairExecutionPlan:
     )
 
 
+def fresh_short_entry_plan(timestamp: datetime) -> PairExecutionPlan:
+    plan = short_entry_plan()
+    return replace(
+        plan,
+        timestamp=timestamp,
+        row_index=88,
+        legs=tuple(
+            replace(leg, timestamp=timestamp, row_index=88)
+            for leg in plan.legs
+        ),
+    )
+
+
+def matched_reconciliation_report(config, timestamp: datetime) -> ReconciliationReport:
+    return ReconciliationReport(
+        timestamp=timestamp,
+        status=ReconciliationStatus.MATCHED,
+        expected=ExpectedBrokerState(
+            timestamp=timestamp,
+            tsm_symbol=config.live.binance_symbol,
+            qff_symbol=config.live.qff_symbol,
+            expected_tsm_units=0.0,
+            expected_qff_contracts=0,
+        ),
+        snapshots=(),
+        issues=(),
+    )
+
+
 def test_store_initializes_execution_tables(tmp_path: Path) -> None:
     store = SQLiteStore(tmp_path / "project_lux.sqlite3")
     try:
@@ -123,6 +175,7 @@ def test_store_initializes_execution_tables(tmp_path: Path) -> None:
     assert "execution_legs" in tables
     assert "execution_checks" in tables
     assert "execution_simulations" in tables
+    assert "execution_outcomes" in tables
 
 
 def test_recorder_records_valid_plan_without_orders_fills_or_trades(
@@ -151,6 +204,33 @@ def test_recorder_records_valid_plan_without_orders_fills_or_trades(
         assert summary["orders"] == 0
         assert summary["fills"] == 0
         assert summary["trades"] == 0
+    finally:
+        store.close()
+
+
+def test_execution_coordinator_records_simulated_filled_outcome(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteStore(tmp_path / "project_lux.sqlite3")
+    try:
+        store.initialize()
+        plan, outcome = ExecutionCoordinator(
+            store,
+            DryRunExecutionRecorder(store),
+            SimulatedExecutionAdapter(),
+        ).execute(short_entry_plan())
+        store.commit()
+
+        assert plan.status.value == "recorded"
+        assert outcome.status == ExecutionOutcomeStatus.FILLED
+        assert len(outcome.orders) == 2
+        assert len(outcome.fills) == 2
+        assert all(order.order_id.startswith("DRYRUN-") for order in outcome.orders)
+        assert count_table(store.connection, "execution_plans") == 1
+        assert count_table(store.connection, "execution_outcomes") == 1
+        summary = store.build_execution_summary()
+        assert summary["outcome_count"] == 1
+        assert summary["outcome_status_counts"] == {"filled": 1}
     finally:
         store.close()
 
@@ -459,9 +539,48 @@ def test_live_order_doctor_reports_phase5_gates(
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert "Live order doctor checks passed" in output
-    assert "live_execution.enabled=False" in output
+    assert "Live execution gate status=closed" in output
+    assert "FAIL live_execution_enabled" in output
+    assert "FAIL execution_plan_present" in output
     assert "phase5_adapter=not_implemented" in output
+
+
+def test_live_order_doctor_reports_open_gate_when_store_and_env_are_ready(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    parser = build_parser()
+    config_path = write_config(
+        tmp_path,
+        allow_live_order=True,
+        live_execution_enabled=True,
+    )
+    config = load_config(config_path)
+    now = datetime.now().astimezone()
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        store.record_reconciliation_report(matched_reconciliation_report(config, now))
+        store.record_execution_plan(fresh_short_entry_plan(now))
+        store.commit()
+    finally:
+        store.close()
+    for name in (
+        "PROJECT_LUX_ALLOW_LIVE_ORDER",
+        "FUBON_ALLOW_LIVE_ORDER",
+        "BINANCE_ALLOW_LIVE_ORDER",
+    ):
+        monkeypatch.setenv(name, "1")
+
+    exit_code = command_live_order_doctor(
+        parser.parse_args(["live-order-doctor", "--config", str(config_path)])
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Live execution gate status=open" in output
+    assert "FAIL" not in output
 
 
 def test_live_execute_extension_point_fails_fast(tmp_path: Path) -> None:
@@ -474,5 +593,44 @@ def test_live_execute_extension_point_fails_fast(tmp_path: Path) -> None:
         command_live_execute(args)
     except SystemExit as exc:
         assert "live-execute gate closed" in str(exc)
+    else:
+        raise AssertionError("Expected SystemExit")
+
+
+def test_live_execute_open_gate_still_fails_before_adapter(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    parser = build_parser()
+    config_path = write_config(
+        tmp_path,
+        allow_live_order=True,
+        live_execution_enabled=True,
+    )
+    config = load_config(config_path)
+    now = datetime.now().astimezone()
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        store.record_reconciliation_report(matched_reconciliation_report(config, now))
+        store.record_execution_plan(fresh_short_entry_plan(now))
+        store.commit()
+    finally:
+        store.close()
+    for name in (
+        "PROJECT_LUX_ALLOW_LIVE_ORDER",
+        "FUBON_ALLOW_LIVE_ORDER",
+        "BINANCE_ALLOW_LIVE_ORDER",
+    ):
+        monkeypatch.setenv(name, "1")
+
+    args = parser.parse_args(
+        ["live-execute", "--config", str(config_path), "--quiet-ui"]
+    )
+
+    try:
+        command_live_execute(args)
+    except SystemExit as exc:
+        assert "extension point is reserved for Phase 5" in str(exc)
     else:
         raise AssertionError("Expected SystemExit")

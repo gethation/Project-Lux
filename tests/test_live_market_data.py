@@ -1147,7 +1147,7 @@ def test_live_paper_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
     assert "WARN stale_tsm skipped_minute" in terminal_output.getvalue()
 
 
-def test_live_dry_run_records_intent_without_orders_fills_or_trades(tmp_path) -> None:
+def test_live_dry_run_records_simulated_entry_and_opens_position(tmp_path) -> None:
     config = small_live_config(tmp_path)
     config = replace(config, strategy=replace(config.strategy, entry_z=1.0))
     qff, tsm, usd = dry_run_quote_providers(
@@ -1184,24 +1184,51 @@ def test_live_dry_run_records_intent_without_orders_fills_or_trades(tmp_path) ->
     assert result.bars_processed == 2
     assert result.plans_recorded == 1
     output = terminal_output.getvalue()
-    assert "dry_run_intent" in output
-    assert "EVENT dry_run intent_recorded" in output
+    assert "OPEN entry_fill" in output
+    assert "ENTRY_PENDING entry_signal" not in output
+    assert "EVENT entry_signal zscore_crossed" in output
+    assert "EVENT entry_fill dry_run_filled" in output
+    assert "EVENT dry_run execution_filled" in output
 
     store = SQLiteStore(config.store_path)
     try:
         store.initialize()
         assert count_table(store, "execution_plans") == 1
+        assert count_table(store, "execution_outcomes") == 1
         assert count_table(store, "execution_legs") == 2
-        assert count_table(store, "orders") == 0
-        assert count_table(store, "fills") == 0
+        assert count_table(store, "orders") == 2
+        assert count_table(store, "fills") == 2
         assert count_table(store, "trades") == 0
         state = store.load_resume_state()
         assert state is not None
-        assert state.strategy.state == StrategyState.PAUSED
+        assert state.strategy.state == StrategyState.OPEN
+        assert state.strategy.position_direction is not None
         plan = store.load_latest_execution_plan_payload()
         assert plan is not None
         assert plan["status"] == "recorded"
         assert plan["plan_type"] == "entry"
+        assert plan["price_policy"] == "live_touch_market"
+        assert plan["order_type"] == "market"
+        assert plan["max_plan_age_seconds"] == config.live_execution.max_plan_age_seconds
+        expected_prices = sorted(leg["expected_price"] for leg in plan["legs"])
+        assert all(leg["order_type"] == "market" for leg in plan["legs"])
+        assert all(leg["trigger_bid"] is not None for leg in plan["legs"])
+        assert all(leg["trigger_ask"] is not None for leg in plan["legs"])
+        assert all(leg["price"] == leg["expected_price"] for leg in plan["legs"])
+        fill_prices = sorted(
+            row["price"]
+            for row in store.connection.execute(
+                "SELECT price FROM fills ORDER BY price"
+            ).fetchall()
+        )
+        assert fill_prices == expected_prices
+        order_ids = [
+            row["order_id"]
+            for row in store.connection.execute(
+                "SELECT order_id FROM orders ORDER BY order_id"
+            ).fetchall()
+        ]
+        assert all(order_id.startswith("DRYRUN-") for order_id in order_ids)
     finally:
         store.close()
 
@@ -1277,6 +1304,7 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
         assert count_table(store, "warmup_bars") == config.live.warmup_minutes
         assert count_table(store, "live_runs") == 2
         assert count_table(store, "execution_plans") == 1
+        assert count_table(store, "execution_outcomes") == 1
         duplicate_bars = store.connection.execute(
             """
             SELECT COUNT(*)
@@ -1291,7 +1319,7 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
         assert duplicate_bars == 0
         state = store.load_resume_state()
         assert state is not None
-        assert state.strategy.state == StrategyState.PAUSED
+        assert state.strategy.state == StrategyState.OPEN
     finally:
         store.close()
 
@@ -1410,9 +1438,13 @@ def test_live_dry_run_exit_pending_records_exit_intent(tmp_path) -> None:
         assert plan["qff_symbol"] == "QFF202607"
         assert plan["qff_expiry"] == "2026-07-15"
         assert plan["contract_policy_state"] == "active"
-        assert count_table(store, "orders") == 0
-        assert count_table(store, "fills") == 0
-        assert count_table(store, "trades") == 0
+        assert count_table(store, "execution_outcomes") == 1
+        assert count_table(store, "orders") == 2
+        assert count_table(store, "fills") == 2
+        assert count_table(store, "trades") == 1
+        state = store.load_resume_state()
+        assert state is not None
+        assert state.strategy.state == StrategyState.FLAT
     finally:
         store.close()
 
@@ -1488,9 +1520,13 @@ def test_live_dry_run_force_exit_records_rollover_exit_intent(tmp_path) -> None:
             ).fetchall()
         ]
         assert "rollover_force_exit" in event_types
-        assert count_table(store, "orders") == 0
-        assert count_table(store, "fills") == 0
-        assert count_table(store, "trades") == 0
+        assert count_table(store, "execution_outcomes") == 1
+        assert count_table(store, "orders") == 2
+        assert count_table(store, "fills") == 2
+        assert count_table(store, "trades") == 1
+        state = store.load_resume_state()
+        assert state is not None
+        assert state.strategy.state == StrategyState.FLAT
     finally:
         store.close()
 

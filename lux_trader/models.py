@@ -122,6 +122,12 @@ class OrderRequest:
     qff_symbol: str | None = None
     qff_expiry: str | None = None
     contract_policy_state: str | None = None
+    order_type: str = "market"
+    expected_price: float | None = None
+    trigger_bid: float | None = None
+    trigger_ask: float | None = None
+    trigger_mid: float | None = None
+    price_source: str | None = None
 
 
 @dataclass(frozen=True)

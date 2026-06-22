@@ -16,6 +16,7 @@ from .models import (
     OrderRequest,
     OrderResult,
     OrderSide,
+    PositionSizing,
     StrategyAction,
     StrategyState,
 )
@@ -324,16 +325,58 @@ class PairStrategy:
         )
         return self._bar_result(action, reason, bar, orders, fills, trade)
 
+    def fill_pending_entry(
+        self,
+        bar: MarketBar,
+        snapshot: IndicatorSnapshot,
+        *,
+        reason: str = "entry_filled",
+    ) -> BarResult:
+        if self.state.candidate_time is None:
+            self.state.state = StrategyState.ERROR
+            return self._bar_result(
+                StrategyAction.ERROR,
+                "entry_pending_without_candidate_time",
+                bar,
+                [],
+                [],
+                None,
+            )
+        delay_minutes = minutes_between(self.state.candidate_time, bar.timestamp)
+        action, fill_reason, orders, fills = self._fill_entry(
+            bar=bar,
+            snapshot=snapshot,
+            delay_minutes=delay_minutes,
+            reason=reason,
+        )
+        return self._bar_result(action, fill_reason, bar, orders, fills, None)
+
+    def fill_pending_exit(
+        self,
+        bar: MarketBar,
+        snapshot: IndicatorSnapshot,
+        *,
+        exit_reason: str,
+        reason: str = "exit_filled",
+    ) -> BarResult:
+        action, fill_reason, orders, fills, trade = self._fill_exit(
+            bar=bar,
+            snapshot=snapshot,
+            exit_reason=exit_reason,
+            reason=reason,
+        )
+        return self._bar_result(action, fill_reason, bar, orders, fills, trade)
+
     def _fill_entry(
         self,
         bar: MarketBar,
         snapshot: IndicatorSnapshot,
         delay_minutes: int,
+        reason: str = "entry_filled",
     ) -> tuple[StrategyAction, str, list[OrderResult], list[Fill]]:
         if self.state.candidate_direction is None:
             self.state.state = StrategyState.ERROR
             return StrategyAction.ERROR, "entry_pending_without_direction", [], []
-        zscore = snapshot.zscore
         sizing = size_position_for_direction(
             self.state.candidate_direction,
             bar.tsm_twd_fair,
@@ -353,12 +396,50 @@ class PairStrategy:
             qff_price=bar.qff_close_filled,
             fees=self.fees,
         )
-        orders, fills = self._place_entry_orders(bar, sizing.tsm_units, sizing.qff_contracts, costs)
+        orders, fills = self._place_entry_orders(
+            bar,
+            sizing.tsm_units,
+            sizing.qff_contracts,
+            costs,
+        )
+        result = self.apply_entry_execution(
+            bar=bar,
+            snapshot=snapshot,
+            sizing=sizing,
+            costs=costs,
+            orders=orders,
+            fills=fills,
+            delay_minutes=delay_minutes,
+            reason=reason,
+        )
+        return result.action, result.reason, result.orders, result.fills
 
+    def apply_entry_execution(
+        self,
+        *,
+        bar: MarketBar,
+        snapshot: IndicatorSnapshot,
+        sizing: PositionSizing,
+        costs: dict[str, float],
+        orders: list[OrderResult],
+        fills: list[Fill],
+        delay_minutes: int,
+        reason: str,
+    ) -> BarResult:
+        if self.state.candidate_direction is None:
+            self.state.state = StrategyState.ERROR
+            return self._bar_result(
+                StrategyAction.ERROR,
+                "entry_pending_without_direction",
+                bar,
+                [],
+                [],
+                None,
+            )
         self.state.position_direction = self.state.candidate_direction
         self.state.entry_tsm = bar.tsm_twd_fair
         self.state.entry_qff = bar.qff_close_filled
-        self.state.entry_zscore = zscore
+        self.state.entry_zscore = snapshot.zscore
         self.state.tsm_units = sizing.tsm_units
         self.state.qff_units = sizing.qff_units
         self.state.qff_contracts = sizing.qff_contracts
@@ -372,7 +453,7 @@ class PairStrategy:
             "entry_idx": bar.row_index,
             "entry_time": bar.timestamp,
             "entry_delay_minutes": delay_minutes,
-            "entry_fill_zscore": zscore,
+            "entry_fill_zscore": snapshot.zscore,
             "direction": self.state.position_direction.value,
             "entry_tsm_twd_fair": bar.tsm_twd_fair,
             "entry_qff_close": bar.qff_close_filled,
@@ -393,7 +474,14 @@ class PairStrategy:
         }
         self._clear_candidate()
         self.state.state = StrategyState.OPEN
-        return StrategyAction.ENTRY_FILL, "entry_filled", orders, fills
+        return self._bar_result(
+            StrategyAction.ENTRY_FILL,
+            reason,
+            bar,
+            orders,
+            fills,
+            None,
+        )
 
     def _fill_exit(
         self,
@@ -401,12 +489,12 @@ class PairStrategy:
         bar: MarketBar,
         snapshot: IndicatorSnapshot,
         exit_reason: str,
+        reason: str = "exit_filled",
     ) -> tuple[StrategyAction, str, list[OrderResult], list[Fill], dict[str, Any]]:
         if self.state.open_trade is None or self.state.position_direction is None:
             self.state.state = StrategyState.ERROR
             return StrategyAction.ERROR, "exit_without_open_trade", [], [], {}
 
-        open_trade = self.state.open_trade
         costs = fill_costs(
             tsm_units=self.state.tsm_units,
             tsm_price=bar.tsm_twd_fair,
@@ -415,7 +503,39 @@ class PairStrategy:
             fees=self.fees,
         )
         orders, fills = self._place_exit_orders(bar, costs)
+        result = self.apply_exit_execution(
+            bar=bar,
+            snapshot=snapshot,
+            costs=costs,
+            orders=orders,
+            fills=fills,
+            exit_reason=exit_reason,
+            reason=reason,
+        )
+        return result.action, result.reason, result.orders, result.fills, result.trade or {}
 
+    def apply_exit_execution(
+        self,
+        *,
+        bar: MarketBar,
+        snapshot: IndicatorSnapshot,
+        costs: dict[str, float],
+        orders: list[OrderResult],
+        fills: list[Fill],
+        exit_reason: str,
+        reason: str,
+    ) -> BarResult:
+        if self.state.open_trade is None or self.state.position_direction is None:
+            self.state.state = StrategyState.ERROR
+            return self._bar_result(
+                StrategyAction.ERROR,
+                "exit_without_open_trade",
+                bar,
+                [],
+                [],
+                {},
+            )
+        open_trade = self.state.open_trade
         tsm_pnl = self.state.tsm_units * (
             bar.tsm_twd_fair - float(open_trade["entry_tsm_twd_fair"])
         )
@@ -477,7 +597,14 @@ class PairStrategy:
         self.state.exit_signal_idx = -1
         self.state.exit_signal_time = None
         self.state.exit_signal_zscore = None
-        return StrategyAction.EXIT_FILL, "exit_filled", orders, fills, trade
+        return self._bar_result(
+            StrategyAction.EXIT_FILL,
+            reason,
+            bar,
+            orders,
+            fills,
+            trade,
+        )
 
     def _place_entry_orders(
         self,

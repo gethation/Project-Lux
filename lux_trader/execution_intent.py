@@ -27,6 +27,10 @@ class ExecutionPlanStatus(StrEnum):
     RECORDED = "recorded"
 
 
+class ExecutionOrderType(StrEnum):
+    MARKET = "market"
+
+
 @dataclass(frozen=True)
 class ExecutionLeg:
     broker: BrokerName
@@ -40,6 +44,12 @@ class ExecutionLeg:
     qff_symbol: str | None = None
     qff_expiry: str | None = None
     contract_policy_state: str | None = None
+    order_type: str = ExecutionOrderType.MARKET.value
+    expected_price: float | None = None
+    trigger_bid: float | None = None
+    trigger_ask: float | None = None
+    trigger_mid: float | None = None
+    price_source: str | None = None
     raw: dict[str, Any] | None = None
 
 
@@ -68,6 +78,10 @@ class PairExecutionPlan:
     qff_symbol: str | None = None
     qff_expiry: str | None = None
     contract_policy_state: str | None = None
+    order_type: str = ExecutionOrderType.MARKET.value
+    price_policy: str | None = None
+    plan_age_seconds: float | None = None
+    max_plan_age_seconds: int | None = None
     checks: tuple[ExecutionCheck, ...] = ()
 
     @property
@@ -121,6 +135,13 @@ class PairExecutionPlanValidator:
             payload={"actual_leg_count": len(plan.legs)},
         )
 
+        add(
+            "order_type_supported",
+            plan.order_type == ExecutionOrderType.MARKET.value,
+            "first live execution policy only supports market orders",
+            payload={"order_type": plan.order_type},
+        )
+
         broker_counts: dict[BrokerName, int] = {}
         for leg in plan.legs:
             broker_counts[leg.broker] = broker_counts.get(leg.broker, 0) + 1
@@ -161,6 +182,38 @@ class PairExecutionPlanValidator:
                     "leg_row_index": leg.row_index,
                 },
             )
+            add(
+                "leg_order_type_matches_plan",
+                leg.order_type == plan.order_type,
+                "execution leg order type must match the parent plan",
+                broker=leg.broker,
+                symbol=leg.symbol,
+                payload={
+                    "plan_order_type": plan.order_type,
+                    "leg_order_type": leg.order_type,
+                },
+            )
+            if plan.price_policy is not None:
+                add(
+                    "expected_price_positive",
+                    _is_positive_number(leg.expected_price),
+                    "execution leg expected price must be positive for live price policy",
+                    broker=leg.broker,
+                    symbol=leg.symbol,
+                    payload={"expected_price": leg.expected_price},
+                )
+                add(
+                    "trigger_book_present",
+                    _is_positive_number(leg.trigger_bid)
+                    and _is_positive_number(leg.trigger_ask),
+                    "execution leg must record trigger bid and ask",
+                    broker=leg.broker,
+                    symbol=leg.symbol,
+                    payload={
+                        "trigger_bid": leg.trigger_bid,
+                        "trigger_ask": leg.trigger_ask,
+                    },
+                )
 
         tsm_leg = _single_leg(plan.legs, BrokerName.BINANCE_TSM)
         qff_leg = _single_leg(plan.legs, BrokerName.FUBON_QFF)
@@ -275,6 +328,12 @@ def execution_leg_from_order_request(request: OrderRequest) -> ExecutionLeg:
         qff_symbol=request.qff_symbol,
         qff_expiry=request.qff_expiry,
         contract_policy_state=request.contract_policy_state,
+        order_type=request.order_type,
+        expected_price=request.expected_price,
+        trigger_bid=request.trigger_bid,
+        trigger_ask=request.trigger_ask,
+        trigger_mid=request.trigger_mid,
+        price_source=request.price_source,
         raw={"source": "order_request"},
     )
 
@@ -292,6 +351,12 @@ def execution_leg_from_jsonable(payload: dict[str, Any]) -> ExecutionLeg:
         qff_symbol=payload.get("qff_symbol"),
         qff_expiry=payload.get("qff_expiry"),
         contract_policy_state=payload.get("contract_policy_state"),
+        order_type=str(payload.get("order_type", ExecutionOrderType.MARKET.value)),
+        expected_price=payload.get("expected_price"),
+        trigger_bid=payload.get("trigger_bid"),
+        trigger_ask=payload.get("trigger_ask"),
+        trigger_mid=payload.get("trigger_mid"),
+        price_source=payload.get("price_source"),
         raw=payload.get("raw"),
     )
 
@@ -323,6 +388,10 @@ def pair_execution_plan_from_jsonable(payload: dict[str, Any]) -> PairExecutionP
         qff_symbol=payload.get("qff_symbol"),
         qff_expiry=payload.get("qff_expiry"),
         contract_policy_state=payload.get("contract_policy_state"),
+        order_type=str(payload.get("order_type", ExecutionOrderType.MARKET.value)),
+        price_policy=payload.get("price_policy"),
+        plan_age_seconds=payload.get("plan_age_seconds"),
+        max_plan_age_seconds=payload.get("max_plan_age_seconds"),
         checks=tuple(
             execution_check_from_jsonable(check)
             for check in payload.get("checks", [])
@@ -338,6 +407,10 @@ def pair_execution_plan_from_order_requests(
     reason: str = "",
     decision_zscore: float | None = None,
     decision_spread_type: str | None = None,
+    order_type: str = ExecutionOrderType.MARKET.value,
+    price_policy: str | None = None,
+    plan_age_seconds: float | None = None,
+    max_plan_age_seconds: int | None = None,
     plan_id: str | None = None,
 ) -> PairExecutionPlan:
     legs = tuple(execution_leg_from_order_request(request) for request in requests)
@@ -372,6 +445,10 @@ def pair_execution_plan_from_order_requests(
         qff_symbol=qff_symbol,
         qff_expiry=qff_expiry,
         contract_policy_state=contract_policy_state,
+        order_type=order_type,
+        price_policy=price_policy,
+        plan_age_seconds=plan_age_seconds,
+        max_plan_age_seconds=max_plan_age_seconds,
     )
 
 
@@ -383,7 +460,9 @@ def _single_leg(
     return matches[0] if len(matches) == 1 else None
 
 
-def _is_positive_number(value: float) -> bool:
+def _is_positive_number(value: float | None) -> bool:
+    if value is None:
+        return False
     return isfinite(float(value)) and float(value) > 0.0
 
 

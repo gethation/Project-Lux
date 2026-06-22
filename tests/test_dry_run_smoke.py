@@ -117,7 +117,7 @@ def record_real_readonly_reconciliation(
         store.close()
 
 
-def test_real_readonly_reconciliation_then_live_dry_run_records_intent() -> None:
+def test_real_readonly_reconciliation_then_live_dry_run_simulates_entry() -> None:
     config = load_integrated_smoke_config()
     remove_sqlite_family(config.store_path)
     state = seed_pending_entry_state(config)
@@ -133,7 +133,7 @@ def test_real_readonly_reconciliation_then_live_dry_run_records_intent() -> None
     assert result.plans_recorded >= 1
     output = terminal_output.getvalue()
     assert "EVENT startup live_loop" in output
-    assert "dry_run_intent" in output
+    assert "execution_filled" in output
 
     connection = sqlite3.connect(config.store_path)
     try:
@@ -145,6 +145,7 @@ def test_real_readonly_reconciliation_then_live_dry_run_records_intent() -> None
                 "market_ticks",
                 "live_runs",
                 "execution_plans",
+                "execution_outcomes",
                 "execution_legs",
                 "orders",
                 "fills",
@@ -156,9 +157,10 @@ def test_real_readonly_reconciliation_then_live_dry_run_records_intent() -> None
         assert counts["market_ticks"] > 0
         assert counts["live_runs"] == 1
         assert counts["execution_plans"] >= 1
+        assert counts["execution_outcomes"] >= 1
         assert counts["execution_legs"] >= 2
-        assert counts["orders"] == 0
-        assert counts["fills"] == 0
+        assert counts["orders"] >= 2
+        assert counts["fills"] >= 2
         assert counts["trades"] == 0
 
         source_counts = {
@@ -178,6 +180,15 @@ def test_real_readonly_reconciliation_then_live_dry_run_records_intent() -> None
             """
         ).fetchone()
         assert latest_plan == ("recorded", "entry")
+        latest_outcome = connection.execute(
+            """
+            SELECT status
+            FROM execution_outcomes
+            ORDER BY outcome_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        assert latest_outcome == ("filled",)
     finally:
         connection.close()
 
@@ -199,6 +210,7 @@ def test_real_readonly_reconciliation_then_live_dry_run_records_intent() -> None
                 "warmup_bars",
                 "live_runs",
                 "execution_plans",
+                "execution_outcomes",
                 "orders",
                 "fills",
                 "trades",
@@ -207,8 +219,9 @@ def test_real_readonly_reconciliation_then_live_dry_run_records_intent() -> None
         assert counts["warmup_bars"] == config.live.warmup_minutes
         assert counts["live_runs"] == 2
         assert counts["execution_plans"] >= 1
-        assert counts["orders"] == 0
-        assert counts["fills"] == 0
+        assert counts["execution_outcomes"] >= 1
+        assert counts["orders"] >= 2
+        assert counts["fills"] >= 2
         assert counts["trades"] == 0
 
         duplicate_bars = connection.execute(

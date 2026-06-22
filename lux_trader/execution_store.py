@@ -119,6 +119,17 @@ class ExecutionStore:
             return None
         return json.loads(row["payload_json"])
 
+    def plan_has_outcome(self, plan_id: str) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM execution_outcomes
+            WHERE plan_id = ?
+            """,
+            (plan_id,),
+        ).fetchone()
+        return bool(row["count"] if row is not None else 0)
+
     def record_simulation(self, result: ExecutionSimulationResult) -> int:
         payload = result.to_jsonable()
         cursor = self.connection.execute(
@@ -137,6 +148,27 @@ class ExecutionStore:
                 result.symbol,
                 result.message,
                 result.recommended_state,
+                json.dumps(payload, default=json_default),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    def record_outcome(self, outcome: Any) -> int:
+        payload = outcome.to_jsonable()
+        recommended_state = getattr(outcome, "recommended_state", None)
+        cursor = self.connection.execute(
+            """
+            INSERT INTO execution_outcomes (
+                plan_id, timestamp, status, message, recommended_state,
+                payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                outcome.plan_id,
+                timestamp_text(outcome.timestamp),
+                outcome.status.value,
+                outcome.message,
+                recommended_state.value if recommended_state else None,
                 json.dumps(payload, default=json_default),
             ),
         )
@@ -166,10 +198,19 @@ class ExecutionStore:
             or 0
         )
         simulation_count = self._count("execution_simulations")
+        outcome_count = self._count("execution_outcomes")
         status_rows = self.connection.execute(
             """
             SELECT status, COUNT(*) AS count
             FROM execution_plans
+            GROUP BY status
+            ORDER BY status
+            """
+        ).fetchall()
+        outcome_status_rows = self.connection.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM execution_outcomes
             GROUP BY status
             ORDER BY status
             """
@@ -193,8 +234,13 @@ class ExecutionStore:
             "check_count": check_count,
             "failed_check_count": failed_check_count,
             "simulation_count": simulation_count,
+            "outcome_count": outcome_count,
             "status_counts": {
                 str(row["status"]): int(row["count"]) for row in status_rows
+            },
+            "outcome_status_counts": {
+                str(row["status"]): int(row["count"])
+                for row in outcome_status_rows
             },
             "latest_plan": dict(latest) if latest is not None else None,
             "orders": table_counts["orders"],

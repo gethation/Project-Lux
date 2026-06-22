@@ -354,6 +354,17 @@ class SQLiteStore:
                 payload_json TEXT NOT NULL,
                 FOREIGN KEY(plan_id) REFERENCES execution_plans(plan_id)
             );
+
+            CREATE TABLE IF NOT EXISTS execution_outcomes (
+                outcome_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT NOT NULL,
+                recommended_state TEXT,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(plan_id) REFERENCES execution_plans(plan_id)
+            );
             """
         )
         self._ensure_live_metadata_columns()
@@ -500,6 +511,12 @@ class SQLiteStore:
                     {
                         "order_id": order.order_id,
                         "fee_twd": request.fee_twd,
+                        "order_type": request.order_type,
+                        "expected_price": request.expected_price,
+                        "trigger_bid": request.trigger_bid,
+                        "trigger_ask": request.trigger_ask,
+                        "trigger_mid": request.trigger_mid,
+                        "price_source": request.price_source,
                     },
                     default=json_default,
                 ),
@@ -529,7 +546,10 @@ class SQLiteStore:
                 fill.qff_symbol,
                 fill.qff_expiry,
                 fill.contract_policy_state,
-                json.dumps({"fill_id": fill.fill_id}, default=json_default),
+                json.dumps(
+                    {"fill_id": fill.fill_id, "actual_fill_price": fill.price},
+                    default=json_default,
+                ),
             ),
         )
 
@@ -926,11 +946,17 @@ class SQLiteStore:
     def load_latest_execution_plan_payload(self) -> dict[str, Any] | None:
         return ExecutionStore(self.connection).load_latest_plan_payload()
 
+    def execution_plan_has_outcome(self, plan_id: str) -> bool:
+        return ExecutionStore(self.connection).plan_has_outcome(plan_id)
+
     def record_execution_simulation(
         self,
         result: ExecutionSimulationResult,
     ) -> int:
         return ExecutionStore(self.connection).record_simulation(result)
+
+    def record_execution_outcome(self, outcome: Any) -> int:
+        return ExecutionStore(self.connection).record_outcome(outcome)
 
     def load_latest_execution_simulation_payload(self) -> dict[str, Any] | None:
         return ExecutionStore(self.connection).load_latest_simulation_payload()
