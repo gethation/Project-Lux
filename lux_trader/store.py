@@ -149,8 +149,14 @@ class SQLiteStore:
                 entry_allowed INTEGER NOT NULL,
                 close_allowed INTEGER NOT NULL,
                 friday_night_close_only INTEGER NOT NULL,
+                weekend_session_close_only INTEGER NOT NULL DEFAULT 0,
+                friday_session_end_force_close INTEGER NOT NULL DEFAULT 0,
                 qff_close_filled REAL NOT NULL,
                 tsm_twd_fair REAL NOT NULL,
+                qff_was_filled INTEGER NOT NULL DEFAULT 0,
+                qff_entry_price REAL,
+                tsm_entry_twd_fair REAL,
+                qff_entry_open_was_filled INTEGER NOT NULL DEFAULT 0,
                 qff_symbol TEXT,
                 qff_expiry TEXT,
                 contract_policy_state TEXT,
@@ -245,6 +251,7 @@ class SQLiteStore:
                 qff_close_filled REAL NOT NULL,
                 tsm_twd_fair REAL NOT NULL,
                 spread REAL NOT NULL,
+                qff_was_filled INTEGER NOT NULL DEFAULT 0,
                 qff_symbol TEXT,
                 qff_expiry TEXT,
                 contract_policy_state TEXT
@@ -381,8 +388,18 @@ class SQLiteStore:
             "long_spread",
             "long_zscore",
             "decision_zscore",
+            "qff_entry_price",
+            "tsm_entry_twd_fair",
         ):
             self._ensure_column("bars", column, "REAL")
+        for column in (
+            "weekend_session_close_only",
+            "friday_session_end_force_close",
+            "qff_was_filled",
+            "qff_entry_open_was_filled",
+        ):
+            self._ensure_column("bars", column, "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("warmup_bars", "qff_was_filled", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("bars", "decision_spread_type", "TEXT")
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -671,7 +688,10 @@ class SQLiteStore:
             INSERT OR REPLACE INTO bars (
                 row_index, timestamp, spread, spread_mean, spread_std,
                 spread_zscore, zscore_valid, entry_allowed, close_allowed,
-                friday_night_close_only, qff_close_filled, tsm_twd_fair,
+                friday_night_close_only, weekend_session_close_only,
+                friday_session_end_force_close, qff_close_filled, tsm_twd_fair,
+                qff_was_filled, qff_entry_price, tsm_entry_twd_fair,
+                qff_entry_open_was_filled,
                 qff_symbol, qff_expiry, contract_policy_state,
                 short_spread, short_zscore, long_spread, long_zscore,
                 decision_spread_type, decision_zscore,
@@ -679,7 +699,7 @@ class SQLiteStore:
                 actual_leg_notional_twd, realized_pnl, realized_fee_twd,
                 unrealized_pnl, equity, running_max_equity, drawdown_twd,
                 drawdown_pct
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 bar.row_index,
@@ -692,8 +712,14 @@ class SQLiteStore:
                 int(snapshot.entry_allowed),
                 int(snapshot.close_allowed),
                 int(snapshot.friday_night_close_only),
+                int(snapshot.weekend_session_close_only),
+                int(snapshot.friday_session_end_force_close),
                 bar.qff_close_filled,
                 bar.tsm_twd_fair,
+                int(bar.qff_was_filled),
+                bar.qff_entry_price,
+                bar.tsm_entry_twd_fair,
+                int(bar.qff_entry_open_was_filled),
                 bar.qff_symbol,
                 bar.qff_expiry,
                 bar.contract_policy_state,
@@ -766,8 +792,8 @@ class SQLiteStore:
             """
             INSERT OR REPLACE INTO warmup_bars (
                 timestamp, qff_close, qff_close_filled, tsm_twd_fair, spread,
-                qff_symbol, qff_expiry, contract_policy_state
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                qff_was_filled, qff_symbol, qff_expiry, contract_policy_state
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -776,6 +802,7 @@ class SQLiteStore:
                     bar.qff_close_filled,
                     bar.tsm_twd_fair,
                     bar.spread,
+                    int(bar.qff_was_filled),
                     bar.qff_symbol,
                     bar.qff_expiry,
                     bar.contract_policy_state,
@@ -808,7 +835,7 @@ class SQLiteStore:
             self.connection.execute(
                 f"""
                 SELECT timestamp, qff_close, qff_close_filled, tsm_twd_fair, spread,
-                       qff_symbol, qff_expiry, contract_policy_state
+                       qff_was_filled, qff_symbol, qff_expiry, contract_policy_state
                 FROM warmup_bars
                 {warmup_where}
                 """,
@@ -820,7 +847,7 @@ class SQLiteStore:
                 f"""
                 SELECT timestamp, qff_close_filled AS qff_close,
                        qff_close_filled, tsm_twd_fair, spread,
-                       qff_symbol, qff_expiry, contract_policy_state
+                       qff_was_filled, qff_symbol, qff_expiry, contract_policy_state
                 FROM bars
                 {bars_where}
                 """,
@@ -837,6 +864,7 @@ class SQLiteStore:
                 qff_close_filled=float(row["qff_close_filled"]),
                 tsm_twd_fair=float(row["tsm_twd_fair"]),
                 spread=float(row["spread"]),
+                qff_was_filled=bool(row["qff_was_filled"]),
                 qff_symbol=row["qff_symbol"],
                 qff_expiry=row["qff_expiry"],
                 contract_policy_state=row["contract_policy_state"],
@@ -1020,6 +1048,9 @@ class SQLiteStore:
                 SUM(entry_allowed) AS entry_allowed_minutes,
                 SUM(close_allowed) AS close_allowed_minutes,
                 SUM(friday_night_close_only) AS friday_night_close_only_minutes,
+                SUM(weekend_session_close_only) AS weekend_session_close_only_minutes,
+                SUM(friday_session_end_force_close) AS friday_session_end_force_close_minutes,
+                SUM(qff_was_filled) AS qff_forward_filled_session_minutes,
                 SUM(CASE WHEN position != 'flat' THEN 1 ELSE 0 END) AS exposure_minutes,
                 MIN(drawdown_twd) AS max_drawdown_twd,
                 MIN(drawdown_pct) AS max_drawdown_pct
@@ -1043,6 +1074,8 @@ class SQLiteStore:
                 SUM(tsm_fee_twd) AS total_tsm_fee_twd,
                 SUM(qff_fee_twd) AS total_qff_fee_twd,
                 SUM(qff_tax_twd) AS total_qff_tax_twd,
+                SUM(CASE WHEN exit_reason = 'friday_session_end' THEN 1 ELSE 0 END) AS friday_session_forced_exits,
+                SUM(holding_minutes) AS exposure_elapsed_minutes,
                 AVG(total_pnl) AS avg_trade_pnl_twd
             FROM trades
             """
@@ -1052,12 +1085,25 @@ class SQLiteStore:
         total_pnl = final_equity - strategy.initial_capital_twd
         gross_loss = float(trade_stats["gross_loss_twd"] or 0.0)
         gross_profit = float(trade_stats["gross_profit_twd"] or 0.0)
+        start_text = display_timestamp(bar_stats["start"])
+        end_text = display_timestamp(bar_stats["end"])
+        elapsed_minutes = 0
+        if bar_stats["start"] and bar_stats["end"]:
+            elapsed_minutes = int(
+                (
+                    datetime.fromisoformat(bar_stats["end"])
+                    - datetime.fromisoformat(bar_stats["start"])
+                ).total_seconds()
+                // 60
+            )
+        exposure_elapsed = int(trade_stats["exposure_elapsed_minutes"] or 0)
 
         return {
             "fee_defaults_as_of": "2026-06-17",
             "parameters": {
                 "entry_z": strategy.entry_z,
                 "exit_z": strategy.exit_z,
+                "zscore_window": strategy.zscore_window,
                 "leg_notional_twd": strategy.leg_notional_twd,
                 "initial_capital_twd": strategy.initial_capital_twd,
                 "max_entry_delay_minutes": strategy.max_entry_delay_minutes,
@@ -1067,14 +1113,26 @@ class SQLiteStore:
                 "qff_contract_multiplier": fees.qff_contract_multiplier,
             },
             "rows": int(bar_count),
-            "start": display_timestamp(bar_stats["start"]),
-            "end": display_timestamp(bar_stats["end"]),
+            "start": start_text,
+            "end": end_text,
             "entry_allowed_minutes": int(bar_stats["entry_allowed_minutes"] or 0),
             "close_allowed_minutes": int(bar_stats["close_allowed_minutes"] or 0),
             "friday_night_close_only_minutes": int(
                 bar_stats["friday_night_close_only_minutes"] or 0
             ),
+            "weekend_session_close_only_minutes": int(
+                bar_stats["weekend_session_close_only_minutes"] or 0
+            ),
+            "friday_session_end_force_close_minutes": int(
+                bar_stats["friday_session_end_force_close_minutes"] or 0
+            ),
+            "qff_forward_filled_session_minutes": int(
+                bar_stats["qff_forward_filled_session_minutes"] or 0
+            ),
             "trade_count": trade_count,
+            "friday_session_forced_exits": int(
+                trade_stats["friday_session_forced_exits"] or 0
+            ),
             "winning_trades": int(trade_stats["winning_trades"] or 0),
             "losing_trades": int(trade_stats["losing_trades"] or 0),
             "win_rate": float((trade_stats["winning_trades"] or 0) / trade_count)
@@ -1094,7 +1152,10 @@ class SQLiteStore:
             "avg_trade_pnl_twd": float(trade_stats["avg_trade_pnl_twd"] or 0.0),
             "max_drawdown_twd": float(bar_stats["max_drawdown_twd"] or 0.0),
             "max_drawdown_pct": float(bar_stats["max_drawdown_pct"] or 0.0),
-            "exposure_minutes": int(bar_stats["exposure_minutes"] or 0),
-            "exposure_ratio": float((bar_stats["exposure_minutes"] or 0) / bar_count),
+            "elapsed_minutes": elapsed_minutes,
+            "exposure_minutes": exposure_elapsed,
+            "exposure_ratio": float(exposure_elapsed / elapsed_minutes)
+            if elapsed_minutes
+            else 0.0,
             "final_equity_twd": final_equity,
         }

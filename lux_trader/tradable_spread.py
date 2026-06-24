@@ -25,6 +25,7 @@ def estimate_tradable_spreads(
     indicator: IndicatorEngine,
     *,
     stale_seconds: float,
+    qff_book_stale_seconds: float,
     last_qff_close: float | None,
 ) -> TradableSpreadSnapshot:
     mid_spread = estimate_mid_spread(
@@ -37,6 +38,7 @@ def estimate_tradable_spreads(
         quote_set,
         observed_at,
         stale_seconds=stale_seconds,
+        qff_book_stale_seconds=qff_book_stale_seconds,
         tsm_side="bid",
         usdttwd_side="bid",
         qff_side="ask",
@@ -45,6 +47,7 @@ def estimate_tradable_spreads(
         quote_set,
         observed_at,
         stale_seconds=stale_seconds,
+        qff_book_stale_seconds=qff_book_stale_seconds,
         tsm_side="ask",
         usdttwd_side="ask",
         qff_side="bid",
@@ -89,6 +92,7 @@ def estimate_directional_spread(
     observed_at: Any,
     *,
     stale_seconds: float,
+    qff_book_stale_seconds: float,
     tsm_side: str,
     usdttwd_side: str,
     qff_side: str,
@@ -97,10 +101,13 @@ def estimate_directional_spread(
     for name, quote in (
         ("tsm", quote_set.tsm),
         ("usdttwd", quote_set.usdttwd),
-        ("qff", quote_set.qff),
     ):
         if not quote_is_fresh(quote, observed, stale_seconds):
             return None, f"stale_{name}"
+    if qff_book_quote_missing(quote_set.qff):
+        return None, "stale_qff"
+    if not quote_is_fresh(quote_set.qff, observed, qff_book_stale_seconds):
+        return None, "stale_qff"
 
     tsm_price = book_price(quote_set.tsm, tsm_side)
     usdttwd_price = book_price(quote_set.usdttwd, usdttwd_side)
@@ -128,6 +135,10 @@ def estimate_zscore(indicator: IndicatorEngine, spread: float | None) -> float |
 def quote_is_fresh(quote: LiveQuote, observed_at: Any, stale_seconds: float) -> bool:
     age = abs((ensure_taipei(observed_at) - ensure_taipei(quote.timestamp)).total_seconds())
     return age <= stale_seconds
+
+
+def qff_book_quote_missing(quote: LiveQuote) -> bool:
+    return isinstance(quote.raw, dict) and quote.raw.get("book_missing") is True
 
 
 def book_price(quote: LiveQuote, side: str) -> float | None:

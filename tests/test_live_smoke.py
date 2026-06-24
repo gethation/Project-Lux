@@ -113,12 +113,11 @@ def test_qff_warmup_check_smoke_uses_fubon_and_taifex_network() -> None:
     assert result.output_csv is None
 
 
-def test_warmup_live_smoke_writes_1440_seed_bars_only() -> None:
+def test_warmup_live_smoke_writes_seed_bars_only() -> None:
     config = load_smoke_config()
     result = WarmupRunner(config).run(reset_store=True)
 
     assert result.bars_written == config.live.warmup_minutes
-    assert result.bars_written == 1440
 
     connection = sqlite3.connect(config.store_path)
     try:
@@ -127,7 +126,7 @@ def test_warmup_live_smoke_writes_1440_seed_bars_only() -> None:
             for table in ("warmup_bars", "bars", "orders", "fills", "trades")
         }
         assert counts == {
-            "warmup_bars": 1440,
+            "warmup_bars": config.live.warmup_minutes,
             "bars": 0,
             "orders": 0,
             "fills": 0,

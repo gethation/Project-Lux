@@ -56,15 +56,16 @@ def test_strategy_entry_open_exit_cycle(strategy_config, fee_config) -> None:
 
     result0 = strategy.on_bar(bar0, make_snapshot(bar0, 2.1))
     result1 = strategy.on_bar(bar1, make_snapshot(bar1, 1.0))
-    result2 = strategy.on_bar(bar2, make_snapshot(bar2, -0.1))
-    result3 = strategy.on_bar(bar3, make_snapshot(bar3, -0.2))
+    result2 = strategy.on_bar(bar2, make_snapshot(bar2, -1.1))
+    result3 = strategy.on_bar(bar3, make_snapshot(bar3, -1.2))
 
     assert result0.action == StrategyAction.ENTRY_SIGNAL
     assert result1.action == StrategyAction.ENTRY_FILL
-    assert strategy.state.state == StrategyState.FLAT
+    assert result1.reason == "entry_filled"
     assert result2.action == StrategyAction.EXIT_SIGNAL
     assert result3.action == StrategyAction.EXIT_FILL
     assert result3.trade is not None
+    assert strategy.state.state == StrategyState.FLAT
 
 
 def test_entry_delay_exceeded_cancels_pending(strategy_config, fee_config) -> None:

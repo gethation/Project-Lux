@@ -16,6 +16,7 @@ from lux_trader.cli import (
     command_live_dry_run,
     command_live_order_doctor,
     command_simulate_execution,
+    live_marketdata_enabled,
     qff_book_diagnostic_lines,
 )
 from lux_trader.config import load_config
@@ -261,7 +262,7 @@ def test_live_doctor_prints_live_session_status(
             return value
 
     monkeypatch.setattr(cli_module, "datetime", FixedDateTime)
-    monkeypatch.delenv("LUX_LIVE_MARKETDATA", raising=False)
+    monkeypatch.setenv("LUX_LIVE_MARKETDATA", "0")
     parser = build_parser()
     args = parser.parse_args(["live-doctor", "--config", str(write_config(tmp_path))])
 
@@ -271,6 +272,16 @@ def test_live_doctor_prints_live_session_status(
     assert exit_code == 0
     assert "live_session=closed" in output
     assert "next_trading_start=2026-06-22T08:45:00+08:00" in output
+
+
+def test_live_marketdata_enabled_defaults_to_on(monkeypatch) -> None:
+    monkeypatch.delenv("LUX_LIVE_MARKETDATA", raising=False)
+    assert live_marketdata_enabled()
+
+
+def test_live_marketdata_enabled_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("LUX_LIVE_MARKETDATA", "0")
+    assert not live_marketdata_enabled()
 
 
 def test_qff_book_diagnostic_lines_marks_stale() -> None:

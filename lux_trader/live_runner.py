@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -44,9 +46,13 @@ from .live_market_data import (
     TaifexQffTradeDownloader,
     QuoteProvider,
     WarmupBuilder,
+    build_qff_session_index,
+    build_qff_session_warmup_index,
     build_qff_warmup_source_report,
     ensure_taipei,
     floor_minute,
+    parse_timestamp,
+    prioritized_qff_close_frame,
 )
 from .store import SQLiteStore
 from .models import Direction, IndicatorSnapshot, MarketBar, StrategyAction, StrategyState
@@ -62,6 +68,16 @@ from .terminal_ui import (
     compact_warning_code,
 )
 from .tradable_spread import TradableSpreadSnapshot, estimate_tradable_spreads
+
+QFF_RECONNECT_GRACE_SECONDS = 10.0
+QFF_RECONNECT_RETRY_SECONDS = 30.0
+QFF_WATCHDOG_SECONDS = 120.0
+
+
+@dataclass(frozen=True)
+class WindowsTimeSyncResult:
+    ok: bool
+    detail: str
 
 
 @dataclass(frozen=True)
@@ -244,10 +260,7 @@ class QffWarmupCheckRunner:
             end_minute = floor_minute(end or datetime.now().astimezone()) - timedelta(
                 minutes=1
             )
-            start_minute = end_minute - timedelta(
-                minutes=self.config.live.warmup_minutes - 1
-            )
-            qff_fetch_start = start_minute - QFF_FORWARD_FILL_LOOKBACK
+            qff_fetch_start = end_minute - QFF_FORWARD_FILL_LOOKBACK
             taifex_provider = self.taifex_provider or TaifexQffTradeDownloader(
                 self.config.live.taifex_cache_dir
             )
@@ -261,12 +274,24 @@ class QffWarmupCheckRunner:
                 raise RuntimeError("TAIFEX QFF warmup data is empty")
             if fubon_frame.empty:
                 raise RuntimeError("Fubon QFF intraday candles are empty")
+            combined_qff = prioritized_qff_close_frame(
+                [("taifex", taifex_frame), ("fubon", fubon_frame)]
+            )
+            warmup_index = build_qff_session_warmup_index(
+                combined_qff["close"],
+                end=end_minute,
+                count=self.config.live.warmup_minutes,
+            )
+            session_index = build_qff_session_index(combined_qff["close"], end=end_minute)
+            start_minute = warmup_index[0].to_pydatetime()
 
             report = build_qff_warmup_source_report(
                 [("taifex", taifex_frame), ("fubon", fubon_frame)],
                 start_minute=start_minute,
                 end_minute=end_minute,
                 qff_fetch_start=qff_fetch_start,
+                warmup_index=warmup_index,
+                fill_index=session_index,
             )
             if len(report.frame) != self.config.live.warmup_minutes:
                 raise RuntimeError(
@@ -380,6 +405,154 @@ def close_provider_quietly(provider: Any | None) -> None:
             close()
         except Exception:
             pass
+
+
+def run_windows_time_sync(timeout_seconds: float) -> WindowsTimeSyncResult:
+    try:
+        result = subprocess.run(
+            ["w32tm", "/resync", "/force"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return WindowsTimeSyncResult(False, "timeout")
+    except FileNotFoundError:
+        return WindowsTimeSyncResult(False, "not_found")
+    except Exception as exc:
+        return WindowsTimeSyncResult(False, type(exc).__name__)
+    if result.returncode == 0:
+        return WindowsTimeSyncResult(True, "ok")
+    return WindowsTimeSyncResult(False, f"exit_{result.returncode}")
+
+
+def fetch_binance_usdm_market_time(symbol: str) -> datetime:
+    import ccxt
+
+    exchange = ccxt.binanceusdm({"enableRateLimit": True, "timeout": 15_000})
+    errors: list[str] = []
+    try:
+        try:
+            server_time = exchange.fetch_time()
+            if server_time is not None:
+                return parse_timestamp(server_time)
+        except Exception as exc:
+            errors.append(f"fetch_time:{type(exc).__name__}")
+
+        try:
+            exchange.load_markets()
+            order_book = dict(exchange.fetch_order_book(symbol, limit=1) or {})
+            timestamp = order_book.get("timestamp")
+            if timestamp is not None:
+                return parse_timestamp(timestamp)
+            errors.append("order_book:no_timestamp")
+        except Exception as exc:
+            errors.append(f"order_book:{type(exc).__name__}")
+    finally:
+        close = getattr(exchange, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+    raise RuntimeError(";".join(errors) or "market_time_unavailable")
+
+
+def clock_skew_seconds(local_now: datetime, market_now: datetime) -> float:
+    return abs((ensure_taipei(local_now) - ensure_taipei(market_now)).total_seconds())
+
+
+def run_live_startup_preflight(
+    config: AppConfig,
+    reporter: Any,
+    clock: Callable[[], datetime],
+    *,
+    platform_name: str = sys.platform,
+    sync_runner: Callable[[float], WindowsTimeSyncResult] = run_windows_time_sync,
+    market_time_probe: Callable[[str], datetime] = fetch_binance_usdm_market_time,
+) -> None:
+    local_now = ensure_taipei(clock())
+    if platform_name.startswith("win") and config.live.sync_windows_time_on_startup:
+        reporter.event(local_now, "startup", "sync_windows_time")
+        sync_result = sync_runner(config.live.windows_time_sync_timeout_seconds)
+        if not sync_result.ok:
+            reporter.warn(
+                ensure_taipei(clock()),
+                "windows_time_sync",
+                f"resync_failed:{sync_result.detail}",
+            )
+
+    local_now = ensure_taipei(clock())
+    try:
+        market_now = ensure_taipei(market_time_probe(config.live.binance_symbol))
+    except Exception as exc:
+        reporter.error(
+            local_now,
+            f"clock_skew unavailable:{type(exc).__name__}",
+        )
+        raise RuntimeError("Unable to verify market clock skew") from exc
+
+    skew = clock_skew_seconds(local_now, market_now)
+    if skew > config.live.clock_skew_fail_seconds:
+        reporter.error(
+            local_now,
+            "clock_skew "
+            f"local={local_now.isoformat()} "
+            f"market={market_now.isoformat()} "
+            f"skew={skew:.3f}s",
+        )
+        raise RuntimeError(
+            "Clock skew exceeds limit: "
+            f"local={local_now.isoformat()} "
+            f"market={market_now.isoformat()} "
+            f"skew={skew:.3f}s "
+            f"limit={config.live.clock_skew_fail_seconds:.3f}s"
+        )
+    reporter.event(local_now, "startup", f"clock_ok skew={skew:.3f}s")
+
+
+def warn_market_fetch_failure_once_per_minute(
+    reporter: Any,
+    observed_at: datetime,
+    source: str,
+    exc: Exception,
+    last_warning_minute: dict[str, datetime],
+) -> None:
+    warning_minute = floor_minute(observed_at)
+    if last_warning_minute.get(source) == warning_minute:
+        return
+    reporter.warn(
+        observed_at,
+        f"fetch_{source}",
+        f"failed:{type(exc).__name__}",
+    )
+    last_warning_minute[source] = warning_minute
+
+
+def fetch_quote_or_cached(
+    provider: QuoteProvider | FubonQffMarketData,
+    symbol: str,
+    source: str,
+    cache: dict[str, Any],
+    reporter: Any,
+    observed_at: datetime,
+    last_warning_minute: dict[str, datetime],
+) -> Any | None:
+    try:
+        quote = provider.fetch_quote(symbol)
+    except Exception as exc:
+        warn_market_fetch_failure_once_per_minute(
+            reporter,
+            observed_at,
+            source,
+            exc,
+            last_warning_minute,
+        )
+        return cache.get(source)
+    cache[source] = quote
+    return quote
 
 
 def prepare_live_runtime(
@@ -1122,6 +1295,7 @@ class LiveRuntime:
         self.qff_provider = qff_provider
         self.tsm_provider = tsm_provider
         self.usdttwd_provider = usdttwd_provider
+        self._uses_default_clock = clock is None
         self.clock = clock or (lambda: datetime.now().astimezone())
         self.sleeper = sleeper or time.sleep
         self.reporter = reporter or NullLiveReporter()
@@ -1135,6 +1309,8 @@ class LiveRuntime:
         skip_warmup: bool = False,
     ) -> LiveRuntimeResult:
         self.handler.validate_config(self.config)
+        if self._uses_default_clock:
+            run_live_startup_preflight(self.config, self.reporter, self.clock)
         store = SQLiteStore(self.config.store_path)
         live_run_id: int | None = None
         qff_provider_to_close: Any | None = None
@@ -1188,6 +1364,12 @@ class LiveRuntime:
             store.commit()
             self.reporter.event(runtime.started_at, "startup", "live_loop")
             last_non_trading_event_minute: datetime | None = None
+            qff_books_torn_down_for_non_trading = False
+            qff_reconnecting_until: datetime | None = None
+            last_qff_books_restart_at: datetime | None = None
+            last_qff_reconnect_warning_minute: datetime | None = None
+            last_quotes: dict[str, Any] = {}
+            last_fetch_warning_minute: dict[str, datetime] = {}
 
             while max_iterations is None or stats.iterations < max_iterations:
                 observed_at = ensure_taipei(self.clock())
@@ -1196,6 +1378,11 @@ class LiveRuntime:
                     self.config.trading_calendar.closed_dates,
                 )
                 if not session_status.is_trading:
+                    if not qff_books_torn_down_for_non_trading:
+                        teardown_qff_books_if_supported(qff_provider)
+                        qff_books_torn_down_for_non_trading = True
+                        qff_reconnecting_until = None
+                        last_qff_books_restart_at = None
                     builder.reset_current_minute()
                     self.reporter.live_non_trading(
                         observed_at,
@@ -1223,20 +1410,114 @@ class LiveRuntime:
                     self._sleep_if_needed(stats.iterations, max_iterations)
                     continue
 
-                quote_set = LiveQuoteSet(
-                    qff=qff_provider.fetch_quote(qff_symbol),
-                    tsm=tsm_provider.fetch_quote(self.config.live.binance_symbol),
-                    usdttwd=usdttwd_provider.fetch_quote(
-                        self.config.live.bitopro_symbol
-                    ),
+                if qff_books_torn_down_for_non_trading:
+                    last_qff_books_restart_at = restart_qff_books_if_supported(
+                        qff_provider,
+                        qff_symbol,
+                        self.reporter,
+                        observed_at,
+                        last_restart_at=last_qff_books_restart_at,
+                    )
+                    qff_reconnecting_until = observed_at + timedelta(
+                        seconds=QFF_RECONNECT_GRACE_SECONDS
+                    )
+                    qff_books_torn_down_for_non_trading = False
+
+                qff_quote = fetch_quote_or_cached(
+                    qff_provider,
+                    qff_symbol,
+                    "qff",
+                    last_quotes,
+                    self.reporter,
+                    observed_at,
+                    last_fetch_warning_minute,
                 )
+                tsm_quote = fetch_quote_or_cached(
+                    tsm_provider,
+                    self.config.live.binance_symbol,
+                    "tsm",
+                    last_quotes,
+                    self.reporter,
+                    observed_at,
+                    last_fetch_warning_minute,
+                )
+                usdttwd_quote = fetch_quote_or_cached(
+                    usdttwd_provider,
+                    self.config.live.bitopro_symbol,
+                    "usdttwd",
+                    last_quotes,
+                    self.reporter,
+                    observed_at,
+                    last_fetch_warning_minute,
+                )
+                if qff_quote is None or tsm_quote is None or usdttwd_quote is None:
+                    fetch_key = "quote_set"
+                    warning_minute = floor_minute(observed_at)
+                    if last_fetch_warning_minute.get(fetch_key) != warning_minute:
+                        self.reporter.warn(
+                            observed_at,
+                            "market_data_fetch",
+                            "skip_iteration",
+                        )
+                        last_fetch_warning_minute[fetch_key] = warning_minute
+                    stats.iterations += 1
+                    self._sleep_if_needed(stats.iterations, max_iterations)
+                    continue
+                quote_set = LiveQuoteSet(
+                    qff=qff_quote,
+                    tsm=tsm_quote,
+                    usdttwd=usdttwd_quote,
+                )
+                qff_reconnecting = (
+                    qff_reconnecting_until is not None
+                    and observed_at <= qff_reconnecting_until
+                    and not qff_book_is_fresh_for_signal(
+                        quote_set.qff,
+                        observed_at,
+                        self.config,
+                    )
+                )
+                if qff_book_is_fresh_for_signal(quote_set.qff, observed_at, self.config):
+                    qff_reconnecting_until = None
+                    qff_reconnecting = False
+                elif qff_book_age_seconds(quote_set.qff, observed_at) > QFF_WATCHDOG_SECONDS:
+                    restarted_at = restart_qff_books_if_supported(
+                        qff_provider,
+                        qff_symbol,
+                        self.reporter,
+                        observed_at,
+                        last_restart_at=last_qff_books_restart_at,
+                    )
+                    if restarted_at != last_qff_books_restart_at:
+                        qff_reconnecting_until = observed_at + timedelta(
+                            seconds=QFF_RECONNECT_GRACE_SECONDS
+                        )
+                        qff_reconnecting = True
+                    last_qff_books_restart_at = restarted_at
                 live_spread_snapshot = estimate_tradable_spreads(
                     quote_set,
                     observed_at,
                     indicator,
                     stale_seconds=self.config.live.stale_seconds,
+                    qff_book_stale_seconds=self.config.live.qff_book_stale_seconds,
                     last_qff_close=builder.last_qff_close,
                 )
+                if qff_reconnecting and (
+                    live_spread_snapshot.short_spread is None
+                    or live_spread_snapshot.long_spread is None
+                ):
+                    live_spread_snapshot = replace(
+                        live_spread_snapshot,
+                        missing_reason="qff_reconnecting",
+                    )
+                    warning_minute = floor_minute(observed_at)
+                    if last_qff_reconnect_warning_minute != warning_minute:
+                        self.reporter.warn(
+                            observed_at,
+                            "qff_reconnecting",
+                            "skip_signal",
+                        )
+                        last_qff_reconnect_warning_minute = warning_minute
                 self.reporter.live(
                     observed_at,
                     live_spread_snapshot,
@@ -1287,6 +1568,9 @@ class LiveRuntime:
                             next_row_index=next_row_index,
                             stats=stats,
                             max_iterations=max_iterations,
+                            signal_block_override="qff_reconnecting"
+                            if qff_reconnecting
+                            else None,
                         )
                         qff_symbol = switch_result["qff_symbol"]
                         qff_expiry = switch_result["qff_expiry"]
@@ -1353,6 +1637,7 @@ class LiveRuntime:
         next_row_index: int,
         stats: LiveRuntimeStats,
         max_iterations: int | None,
+        signal_block_override: str | None = None,
     ) -> dict[str, Any]:
         bar = replace(
             build_result.bar,
@@ -1430,19 +1715,27 @@ class LiveRuntime:
             indicator,
             self.config,
         )
+        if signal_block_override is not None and (
+            tradable_snapshot.short_spread is None
+            or tradable_snapshot.long_spread is None
+        ):
+            tradable_snapshot = replace(
+                tradable_snapshot,
+                missing_reason=signal_block_override,
+            )
         (
             decision_snapshot,
             decision_spread_type,
             decision_zscore,
-            missing_signal_book,
+            signal_block_reason,
         ) = build_live_decision_snapshot(
             self.config,
             strategy.state,
             snapshot,
             tradable_snapshot,
         )
-        if missing_signal_book:
-            self.reporter.warn(bar.timestamp, "missing_book", "skip_signal")
+        if signal_block_reason is not None:
+            self.reporter.warn(bar.timestamp, signal_block_reason, "skip_signal")
 
         mode_result = self.handler.handle_bar(
             config=self.config,
@@ -2267,10 +2560,62 @@ def subscribe_qff_books_if_supported(
         )
 
 
+def teardown_qff_books_if_supported(provider: object) -> None:
+    teardown = getattr(provider, "teardown_books_session", None)
+    if callable(teardown):
+        teardown()
+
+
+def restart_qff_books_if_supported(
+    provider: object,
+    symbol: str,
+    reporter: Any,
+    timestamp: datetime,
+    *,
+    last_restart_at: datetime | None,
+) -> datetime:
+    timestamp = ensure_taipei(timestamp)
+    if (
+        last_restart_at is not None
+        and (timestamp - ensure_taipei(last_restart_at)).total_seconds()
+        < QFF_RECONNECT_RETRY_SECONDS
+    ):
+        return last_restart_at
+    restart = getattr(provider, "restart_books_session", None)
+    if callable(restart):
+        try:
+            reporter.event(timestamp, "qff_books", f"restart_books_{symbol}")
+            restart(symbol)
+        except Exception as exc:
+            reporter.warn(
+                timestamp,
+                "qff_books",
+                f"restart_failed:{type(exc).__name__}",
+            )
+    else:
+        unsubscribe_qff_books_if_supported(provider, symbol)
+        subscribe_qff_books_if_supported(provider, symbol, reporter, timestamp)
+    return timestamp
+
+
 def unsubscribe_qff_books_if_supported(provider: object, symbol: str) -> None:
     unsubscribe = getattr(provider, "unsubscribe_books", None)
     if callable(unsubscribe):
         unsubscribe(symbol)
+
+
+def qff_book_age_seconds(quote: Any, observed_at: datetime) -> float:
+    return abs((ensure_taipei(observed_at) - ensure_taipei(quote.timestamp)).total_seconds())
+
+
+def qff_book_is_fresh_for_signal(
+    quote: Any,
+    observed_at: datetime,
+    config: AppConfig,
+) -> bool:
+    if getattr(quote, "bid", None) is None or getattr(quote, "ask", None) is None:
+        return False
+    return qff_book_age_seconds(quote, observed_at) <= config.live.qff_book_stale_seconds
 
 
 def initialize_contract_state(
@@ -2366,6 +2711,7 @@ def build_tradable_snapshot_for_bar(
         bar.timestamp + timedelta(minutes=1),
         indicator,
         stale_seconds=config.live.stale_seconds,
+        qff_book_stale_seconds=config.live.qff_book_stale_seconds,
         last_qff_close=bar.qff_close_filled,
     )
     return replace(
@@ -2380,12 +2726,12 @@ def build_live_decision_snapshot(
     state: StrategyRuntimeState,
     snapshot: IndicatorSnapshot,
     tradable_snapshot: TradableSpreadSnapshot,
-) -> tuple[IndicatorSnapshot, str | None, float | None, bool]:
+) -> tuple[IndicatorSnapshot, str | None, float | None, str | None]:
     if state.state == StrategyState.FLAT and snapshot.entry_allowed:
         candidates: list[tuple[str, float, float | None]] = []
-        missing_signal_book = False
+        signal_block_reason: str | None = None
         if tradable_snapshot.short_zscore is None:
-            missing_signal_book = True
+            signal_block_reason = tradable_snapshot.missing_reason or "missing_book"
         elif tradable_snapshot.short_zscore > config.strategy.entry_z:
             candidates.append(
                 (
@@ -2395,7 +2741,7 @@ def build_live_decision_snapshot(
                 )
             )
         if tradable_snapshot.long_zscore is None:
-            missing_signal_book = True
+            signal_block_reason = tradable_snapshot.missing_reason or "missing_book"
         elif tradable_snapshot.long_zscore < -config.strategy.entry_z:
             candidates.append(
                 (
@@ -2409,7 +2755,7 @@ def build_live_decision_snapshot(
                 replace(snapshot, zscore=None, zscore_valid=False),
                 None,
                 None,
-                missing_signal_book,
+                signal_block_reason,
             )
         decision_type, decision_zscore, decision_spread = max(
             candidates,
@@ -2424,7 +2770,7 @@ def build_live_decision_snapshot(
             ),
             decision_type,
             decision_zscore,
-            False,
+            None,
         )
 
     if state.state == StrategyState.OPEN and state.position_direction is not None:
@@ -2441,7 +2787,7 @@ def build_live_decision_snapshot(
                 replace(snapshot, zscore=None, zscore_valid=False),
                 decision_type,
                 None,
-                True,
+                tradable_snapshot.missing_reason or "missing_book",
             )
         return (
             replace(
@@ -2452,10 +2798,10 @@ def build_live_decision_snapshot(
             ),
             decision_type,
             decision_zscore,
-            False,
+            None,
         )
 
-    return snapshot, "mid", snapshot.zscore, False
+    return snapshot, "mid", snapshot.zscore, None
 
 
 def switch_to_contract(

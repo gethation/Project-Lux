@@ -29,6 +29,19 @@ The first milestone intentionally does not use Fubon or Binance live APIs. It re
 the PoC CSV, recomputes the rolling z-score, runs the strategy state machine, records
 paper orders/fills/trades, and supports resume from SQLite.
 
+Current replay reference uses the PoC QFF-session dataset:
+
+```text
+data\processed\qff_tsm_spread_zscore_1m_taipei_qff_session_w500.csv
+```
+
+The strategy parameters are `zscore_window=500`, `entry_z=2.0`, and `exit_z=1.0`.
+Indicators only consume QFF trading-session bars. QFF non-trading minutes are
+excluded, while missing QFF minutes inside an active trading session are
+forward-filled. `exit_z=1.0` means exit only after the spread crosses to the moving
+average's opposite side: short-spread positions exit at `z < -1`, long-spread
+positions exit at `z > 1`.
+
 ## Environment
 
 This machine uses Miniconda. Run Python commands through the `Quant` environment:
@@ -131,12 +144,12 @@ The live smoke path logs into Fubon marketdata, resolves the expiry-buffer activ
 contract, reads Fubon 1m candles, downloads TAIFEX previous-30-trading-day CSV ZIP files into
 `data\taifex_cache`, fetches Binance `TSM/USDT:USDT` and BitoPro `USDT/TWD`, then runs
 `warmup-live` through `WarmupRunner`. `qff-warmup-check` can be used alone to validate
-the Fubon + TAIFEX QFF leg before touching Binance/BitoPro. Passing criteria are 1440
-`warmup_bars` and zero `bars`, `orders`, `fills`, or `trades`.
+the Fubon + TAIFEX QFF leg before touching Binance/BitoPro. Default passing criteria
+are 500 QFF session `warmup_bars` and zero `bars`, `orders`, `fills`, or `trades`.
 
 The full startup smoke in `tests/test_live_smoke.py` uses
 `data\live_paper_startup_smoke.sqlite3`: it starts `live-paper` from an empty store,
-expects `warmup_auto start/done_1440`, polls real quotes long enough to finalize or
+expects `warmup_auto start/done_<warmup_bars>`, polls real quotes long enough to finalize or
 skip a minute with a recorded warning, then runs a second `--resume` style pass and
 checks that warmup is not rebuilt.
 

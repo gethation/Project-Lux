@@ -9,7 +9,8 @@ from zipfile import ZipFile
 import pandas as pd
 import pytest
 
-from lux_trader.config import AppConfig, LiveMarketDataConfig, SafetyConfig
+import lux_trader.live_runner as live_runner
+from lux_trader.config import AppConfig, LiveMarketDataConfig, SafetyConfig, load_config
 from lux_trader.execution import (
     ExecutionOutcome,
     ExecutionOutcomeStatus,
@@ -37,11 +38,13 @@ from lux_trader.live_runner import (
     LiveExecuteRunner,
     LivePaperRunner,
     QffContractResolution,
+    WindowsTimeSyncResult,
     QffWarmupCheckRunner,
     WarmupRunner,
     build_live_decision_snapshot,
     cancel_entry_pending_for_contract_switch,
     mark_pending_contract_switch_if_needed,
+    run_live_startup_preflight,
     should_force_exit_for_contract_policy,
     should_switch_contract_before_processing,
 )
@@ -66,12 +69,18 @@ from conftest import make_app_config
 
 
 class FakeQffProvider:
-    def __init__(self, rows: pd.DataFrame | None = None, quotes: list[LiveQuote] | None = None) -> None:
+    def __init__(
+        self,
+        rows: pd.DataFrame | None = None,
+        quotes: list[LiveQuote | Exception] | None = None,
+    ) -> None:
         self.rows = rows if rows is not None else pd.DataFrame(columns=["timestamp", "close"])
         self.quotes = list(quotes or [])
         self.select_calls = 0
         self.fetch_1m_calls: list[tuple[str, datetime, datetime]] = []
         self.quote_calls: list[str] = []
+        self.teardown_books_calls = 0
+        self.restart_books_calls: list[str] = []
 
     def select_front_month_symbol(self, product: str) -> str:
         self.select_calls += 1
@@ -85,11 +94,24 @@ class FakeQffProvider:
         self.quote_calls.append(symbol)
         if not self.quotes:
             raise RuntimeError("No fake QFF quotes left")
-        return self.quotes.pop(0)
+        quote = self.quotes.pop(0)
+        if isinstance(quote, Exception):
+            raise quote
+        return quote
+
+    def teardown_books_session(self) -> None:
+        self.teardown_books_calls += 1
+
+    def restart_books_session(self, symbol: str, *, after_hours: bool | None = None) -> None:
+        self.restart_books_calls.append(symbol)
 
 
 class FakeOhlcvProvider:
-    def __init__(self, rows: pd.DataFrame, quotes: list[LiveQuote] | None = None) -> None:
+    def __init__(
+        self,
+        rows: pd.DataFrame,
+        quotes: list[LiveQuote | Exception] | None = None,
+    ) -> None:
         self.rows = rows
         self.quotes = list(quotes or [])
         self.fetch_ohlcv_calls: list[tuple[str, datetime, datetime]] = []
@@ -103,7 +125,10 @@ class FakeOhlcvProvider:
         self.quote_calls.append(symbol)
         if not self.quotes:
             raise RuntimeError("No fake quotes left")
-        return self.quotes.pop(0)
+        quote = self.quotes.pop(0)
+        if isinstance(quote, Exception):
+            raise quote
+        return quote
 
 
 class FakeLiveExecutionAdapter:
@@ -212,19 +237,20 @@ class FakeCcxtExchange:
         order_book: dict[str, object],
         ticker: dict[str, object] | None = None,
         fail_first_order_book: Exception | None = None,
+        fail_order_books: list[Exception] | None = None,
     ) -> None:
         self.order_book = order_book
         self.ticker = ticker or {"last": 20.0, "timestamp": 1781743501000}
-        self.fail_first_order_book = fail_first_order_book
+        self.fail_order_books = list(fail_order_books or [])
+        if fail_first_order_book is not None:
+            self.fail_order_books.insert(0, fail_first_order_book)
         self.fetch_order_book_calls: list[tuple[str, int | None]] = []
         self.fetch_ticker_calls: list[str] = []
 
     def fetch_order_book(self, symbol: str, limit: int | None = None) -> dict[str, object]:
         self.fetch_order_book_calls.append((symbol, limit))
-        if self.fail_first_order_book is not None:
-            exc = self.fail_first_order_book
-            self.fail_first_order_book = None
-            raise exc
+        if self.fail_order_books:
+            raise self.fail_order_books.pop(0)
         return self.order_book
 
     def fetch_ticker(self, symbol: str) -> dict[str, object]:
@@ -236,6 +262,7 @@ class FakeFubonWebSocket:
     def __init__(self) -> None:
         self.listeners: dict[str, object] = {}
         self.connected = False
+        self.connect_calls = 0
         self.subscriptions: list[dict[str, object]] = []
         self.unsubscriptions: list[dict[str, object]] = []
         self.disconnected = False
@@ -245,6 +272,7 @@ class FakeFubonWebSocket:
 
     def connect(self) -> None:
         self.connected = True
+        self.connect_calls += 1
 
     def subscribe(self, params: dict[str, object]) -> None:
         self.subscriptions.append(params)
@@ -304,6 +332,10 @@ def small_live_config(tmp_path: Path) -> AppConfig:
             polling_seconds=0.0,
             minute_finalize_delay_seconds=1.0,
             stale_seconds=10.0,
+            qff_book_stale_seconds=55.0,
+            sync_windows_time_on_startup=True,
+            clock_skew_fail_seconds=60.0,
+            windows_time_sync_timeout_seconds=15.0,
             max_leg_timestamp_skew_seconds=10.0,
             warmup_minutes=3,
             qff_product="QFF",
@@ -318,6 +350,224 @@ def small_live_config(tmp_path: Path) -> AppConfig:
     )
 
 
+def write_minimal_config(tmp_path: Path, live_body: str = "") -> Path:
+    config_path = tmp_path / "config.test.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[paths]",
+                "store_path = 'project_lux.sqlite3'",
+                "input_csv = ''",
+                "",
+                "[live_market_data]",
+                live_body,
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def test_load_config_defaults_live_freshness_and_clock_preflight(tmp_path) -> None:
+    config = load_config(write_minimal_config(tmp_path))
+
+    assert config.live.stale_seconds == pytest.approx(10.0)
+    assert config.live.qff_book_stale_seconds == pytest.approx(55.0)
+    assert config.live.sync_windows_time_on_startup is True
+    assert config.live.clock_skew_fail_seconds == pytest.approx(60.0)
+    assert config.live.windows_time_sync_timeout_seconds == pytest.approx(15.0)
+
+
+def test_load_config_reads_live_freshness_and_clock_preflight(tmp_path) -> None:
+    config = load_config(
+        write_minimal_config(
+            tmp_path,
+            "\n".join(
+                [
+                    "stale_seconds = 10.0",
+                    "qff_book_stale_seconds = 42.5",
+                    "sync_windows_time_on_startup = false",
+                    "clock_skew_fail_seconds = 12.5",
+                    "windows_time_sync_timeout_seconds = 3.0",
+                ]
+            ),
+        )
+    )
+
+    assert config.live.stale_seconds == pytest.approx(10.0)
+    assert config.live.qff_book_stale_seconds == pytest.approx(42.5)
+    assert config.live.sync_windows_time_on_startup is False
+    assert config.live.clock_skew_fail_seconds == pytest.approx(12.5)
+    assert config.live.windows_time_sync_timeout_seconds == pytest.approx(3.0)
+
+
+def test_live_startup_preflight_syncs_windows_time_and_accepts_clock_skew(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    terminal_output = io.StringIO()
+    sync_timeouts: list[float] = []
+    market_symbols: list[str] = []
+
+    def sync_runner(timeout_seconds: float) -> WindowsTimeSyncResult:
+        sync_timeouts.append(timeout_seconds)
+        return WindowsTimeSyncResult(True, "ok")
+
+    def market_time_probe(symbol: str) -> datetime:
+        market_symbols.append(symbol)
+        return ts("2026-06-23T11:45:00+08:00")
+
+    run_live_startup_preflight(
+        config,
+        LiveTerminalReporter(terminal_output, color=False),
+        lambda: ts("2026-06-23T11:45:00+08:00"),
+        platform_name="win32",
+        sync_runner=sync_runner,
+        market_time_probe=market_time_probe,
+    )
+
+    assert sync_timeouts == [15.0]
+    assert market_symbols == ["TSM/USDT:USDT"]
+    output = terminal_output.getvalue()
+    assert "EVENT startup sync_windows_time" in output
+    assert "EVENT startup clock_ok skew=0.000s" in output
+
+
+def test_live_startup_preflight_warns_on_sync_failure_but_allows_good_skew(
+    tmp_path,
+) -> None:
+    config = small_live_config(tmp_path)
+    terminal_output = io.StringIO()
+
+    run_live_startup_preflight(
+        config,
+        LiveTerminalReporter(terminal_output, color=False),
+        lambda: ts("2026-06-23T11:45:00+08:00"),
+        platform_name="win32",
+        sync_runner=lambda _: WindowsTimeSyncResult(False, "exit_1"),
+        market_time_probe=lambda _: ts("2026-06-23T11:44:59+08:00"),
+    )
+
+    output = terminal_output.getvalue()
+    assert "WARN windows_time_sync resync_failed:exit_1" in output
+    assert "EVENT startup clock_ok skew=1.000s" in output
+
+
+def test_live_startup_preflight_skips_windows_sync_on_non_windows(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    terminal_output = io.StringIO()
+
+    def sync_runner(_: float) -> WindowsTimeSyncResult:
+        raise AssertionError("sync should be skipped")
+
+    run_live_startup_preflight(
+        config,
+        LiveTerminalReporter(terminal_output, color=False),
+        lambda: ts("2026-06-23T11:45:00+08:00"),
+        platform_name="linux",
+        sync_runner=sync_runner,
+        market_time_probe=lambda _: ts("2026-06-23T11:45:00+08:00"),
+    )
+
+    output = terminal_output.getvalue()
+    assert "sync_windows_time" not in output
+    assert "EVENT startup clock_ok skew=0.000s" in output
+
+
+def test_live_startup_preflight_rejects_bad_clock_skew(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    terminal_output = io.StringIO()
+
+    with pytest.raises(RuntimeError, match="Clock skew exceeds limit"):
+        run_live_startup_preflight(
+            config,
+            LiveTerminalReporter(terminal_output, color=False),
+            lambda: ts("2026-06-23T03:45:00+08:00"),
+            platform_name="win32",
+            sync_runner=lambda _: WindowsTimeSyncResult(True, "ok"),
+            market_time_probe=lambda _: ts("2026-06-23T11:45:00+08:00"),
+        )
+
+    output = terminal_output.getvalue()
+    assert "EVENT startup sync_windows_time" in output
+    assert "ERR clock_skew local=2026-06-23T03:45:00+08:00" in output
+
+
+def test_live_startup_preflight_rejects_unavailable_market_time(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    terminal_output = io.StringIO()
+
+    def market_time_probe(_: str) -> datetime:
+        raise RuntimeError("market down")
+
+    with pytest.raises(RuntimeError, match="Unable to verify market clock skew"):
+        run_live_startup_preflight(
+            config,
+            LiveTerminalReporter(terminal_output, color=False),
+            lambda: ts("2026-06-23T11:45:00+08:00"),
+            platform_name="win32",
+            sync_runner=lambda _: WindowsTimeSyncResult(True, "ok"),
+            market_time_probe=market_time_probe,
+        )
+
+    assert "ERR clock_skew unavailable:RuntimeError" in terminal_output.getvalue()
+
+
+def test_live_runtime_clock_preflight_failure_stops_before_qff_provider(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config = small_live_config(tmp_path)
+    qff = FakeQffProvider(pd.DataFrame())
+    tsm = FakeOhlcvProvider(pd.DataFrame())
+    usd = FakeOhlcvProvider(pd.DataFrame())
+
+    def fail_preflight(*_: object, **__: object) -> None:
+        raise RuntimeError("clock skew test")
+
+    monkeypatch.setattr(live_runner, "run_live_startup_preflight", fail_preflight)
+
+    with pytest.raises(RuntimeError, match="clock skew test"):
+        LivePaperRunner(
+            config,
+            qff_provider=qff,
+            tsm_provider=tsm,
+            usdttwd_provider=usd,
+            sleeper=lambda _: None,
+        ).run(max_iterations=0)
+
+    assert qff.select_calls == 0
+    assert qff.fetch_1m_calls == []
+    assert qff.quote_calls == []
+    assert qff.restart_books_calls == []
+
+
+def test_live_runtime_skips_clock_preflight_when_clock_is_injected(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config = small_live_config(tmp_path)
+    seed_warmup_bars(config)
+    qff = FakeQffProvider(pd.DataFrame())
+    tsm = FakeOhlcvProvider(pd.DataFrame())
+    usd = FakeOhlcvProvider(pd.DataFrame())
+
+    def fail_preflight(*_: object, **__: object) -> None:
+        raise AssertionError("preflight should be skipped")
+
+    monkeypatch.setattr(live_runner, "run_live_startup_preflight", fail_preflight)
+
+    result = LivePaperRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        clock=lambda: ts("2026-06-23T08:45:00+08:00"),
+        sleeper=lambda _: None,
+    ).run(max_iterations=0, skip_warmup=True)
+
+    assert result.iterations == 0
+    assert qff.select_calls == 1
+
+
 def count_table(store: SQLiteStore, table: str) -> int:
     row = store.connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
     return int(row["count"])
@@ -327,23 +577,23 @@ def dry_run_warmup_rows() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     return (
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 100.0),
-                ("2026-06-18T08:43:00+08:00", 100.0),
-                ("2026-06-18T08:44:00+08:00", 100.0),
+                ("2026-06-18T04:58:00+08:00", 100.0),
+                ("2026-06-18T04:59:00+08:00", 100.0),
+                ("2026-06-18T05:00:00+08:00", 100.0),
             ]
         ),
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 20.0),
-                ("2026-06-18T08:43:00+08:00", 20.0),
-                ("2026-06-18T08:44:00+08:00", 20.0),
+                ("2026-06-18T04:58:00+08:00", 20.0),
+                ("2026-06-18T04:59:00+08:00", 20.0),
+                ("2026-06-18T05:00:00+08:00", 20.0),
             ]
         ),
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 25.0),
-                ("2026-06-18T08:43:00+08:00", 25.0),
-                ("2026-06-18T08:44:00+08:00", 25.0),
+                ("2026-06-18T04:58:00+08:00", 25.0),
+                ("2026-06-18T04:59:00+08:00", 25.0),
+                ("2026-06-18T05:00:00+08:00", 25.0),
             ]
         ),
     )
@@ -471,6 +721,179 @@ def test_live_dry_run_closed_calendar_skips_market_data_and_bars(tmp_path) -> No
             """
         ).fetchone()[0]
         assert non_trading_events == 1
+    finally:
+        store.close()
+
+
+def test_live_runtime_tears_down_qff_books_during_non_trading_and_restarts_on_open(
+    tmp_path,
+) -> None:
+    config = small_live_config(tmp_path)
+    seed_warmup_bars(config)
+    qff, tsm, usd = dry_run_quote_providers(
+        [
+            "2026-06-23T04:58:01+08:00",
+            "2026-06-23T08:45:00+08:00",
+        ]
+    )
+
+    result = LiveDryRunRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        clock=dry_run_clock(
+            [
+                "2026-06-23T04:58:00+08:00",
+                "2026-06-23T04:58:01+08:00",
+                "2026-06-23T05:01:00+08:00",
+                "2026-06-23T08:45:00+08:00",
+                "2026-06-23T08:45:01+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+    ).run(max_iterations=3, skip_warmup=True)
+
+    assert result.iterations == 3
+    assert qff.teardown_books_calls == 1
+    assert qff.restart_books_calls == ["QFF202607"]
+    assert qff.quote_calls == ["QFF202607", "QFF202607"]
+
+
+def test_live_runtime_qff_watchdog_restarts_once_with_backoff(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    seed_warmup_bars(config)
+    qff_rows, tsm_rows, usd_rows = dry_run_warmup_rows()
+    qff = FakeQffProvider(
+        qff_rows,
+        quotes=[
+            quote("qff", "2026-06-23T08:40:00+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("qff", "2026-06-23T08:40:00+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("qff", "2026-06-23T08:40:00+08:00", 100.0, bid=99.9, ask=100.1),
+        ],
+    )
+    tsm = FakeOhlcvProvider(
+        tsm_rows,
+        quotes=[
+            quote("tsm", "2026-06-23T08:45:01+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("tsm", "2026-06-23T08:45:11+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("tsm", "2026-06-23T08:45:20+08:00", 20.0, bid=19.99, ask=20.01),
+        ],
+    )
+    usd = FakeOhlcvProvider(
+        usd_rows,
+        quotes=[
+            quote("usd", "2026-06-23T08:45:01+08:00", 30.0, bid=29.99, ask=30.01),
+            quote("usd", "2026-06-23T08:45:11+08:00", 30.0, bid=29.99, ask=30.01),
+            quote("usd", "2026-06-23T08:45:20+08:00", 30.0, bid=29.99, ask=30.01),
+        ],
+    )
+    terminal_output = io.StringIO()
+
+    result = LiveDryRunRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        clock=dry_run_clock(
+            [
+                "2026-06-23T08:45:00+08:00",
+                "2026-06-23T08:45:01+08:00",
+                "2026-06-23T08:45:11+08:00",
+                "2026-06-23T08:45:20+08:00",
+                "2026-06-23T08:45:21+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(terminal_output, color=False),
+    ).run(max_iterations=3, skip_warmup=True)
+
+    assert result.iterations == 3
+    assert qff.restart_books_calls == ["QFF202607"]
+    assert "WARN qff_reconnecting skip_signal" in terminal_output.getvalue()
+
+
+def test_live_runtime_uses_cached_quote_after_transient_fetch_failure(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    seed_warmup_bars(config)
+    qff, _, usd = dry_run_quote_providers(
+        [
+            "2026-06-23T08:45:00+08:00",
+            "2026-06-23T08:45:01+08:00",
+        ]
+    )
+    tsm = FakeOhlcvProvider(
+        pd.DataFrame(),
+        quotes=[
+            quote("tsm", "2026-06-23T08:45:00+08:00", 20.0, bid=19.99, ask=20.01),
+            RuntimeError("request timeout"),
+        ],
+    )
+    terminal_output = io.StringIO()
+
+    result = LiveDryRunRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        clock=dry_run_clock(
+            [
+                "2026-06-23T08:45:00+08:00",
+                "2026-06-23T08:45:00+08:00",
+                "2026-06-23T08:45:01+08:00",
+                "2026-06-23T08:45:01+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(terminal_output, color=False),
+    ).run(max_iterations=2, skip_warmup=True)
+
+    assert result.iterations == 2
+    assert "WARN fetch_tsm failed:RuntimeError" in terminal_output.getvalue()
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        assert count_table(store, "market_ticks") == 6
+    finally:
+        store.close()
+
+
+def test_live_runtime_skips_iteration_when_fetch_fails_without_cached_quote(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    seed_warmup_bars(config)
+    qff = FakeQffProvider(
+        pd.DataFrame(),
+        quotes=[
+            quote("qff", "2026-06-23T08:45:00+08:00", 100.0, bid=99.9, ask=100.1),
+        ],
+    )
+    tsm = FakeOhlcvProvider(pd.DataFrame(), quotes=[RuntimeError("request timeout")])
+    usd = FakeOhlcvProvider(
+        pd.DataFrame(),
+        quotes=[
+            quote("usd", "2026-06-23T08:45:00+08:00", 30.0, bid=29.99, ask=30.01),
+        ],
+    )
+    terminal_output = io.StringIO()
+
+    result = LiveDryRunRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        clock=lambda: ts("2026-06-23T08:45:00+08:00"),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(terminal_output, color=False),
+    ).run(max_iterations=1, skip_warmup=True)
+
+    assert result.iterations == 1
+    output = terminal_output.getvalue()
+    assert "WARN fetch_tsm failed:RuntimeError" in output
+    assert "WARN market_data_fetch skip_iteration" in output
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        assert count_table(store, "market_ticks") == 0
     finally:
         store.close()
 
@@ -641,6 +1064,35 @@ def test_ccxt_quote_retries_binance_invalid_depth_with_supported_limit() -> None
     ]
 
 
+def test_ccxt_quote_falls_back_to_ticker_when_supported_depth_retry_fails() -> None:
+    provider = object.__new__(CcxtTickerMarketData)
+    provider.exchange_id = "binanceusdm"
+    provider.exchange = FakeCcxtExchange(
+        order_book={},
+        ticker={"last": 459.65, "timestamp": 1781743501000},
+        fail_order_books=[
+            RuntimeError(
+                'binanceusdm {"code":-4021,"msg":"1 is not valid depth limit"}'
+            ),
+            TimeoutError("read timeout"),
+        ],
+    )
+
+    fetched = provider.fetch_quote("TSM/USDT:USDT")
+
+    assert fetched.price == pytest.approx(459.65)
+    assert fetched.bid is None
+    assert fetched.ask is None
+    assert fetched.raw is not None
+    assert fetched.raw["book_limit_used"] == 5
+    assert "retry_limit_5:TimeoutError" in fetched.raw["book_error"]
+    assert provider.exchange.fetch_order_book_calls == [
+        ("TSM/USDT:USDT", 1),
+        ("TSM/USDT:USDT", 5),
+    ]
+    assert provider.exchange.fetch_ticker_calls == ["TSM/USDT:USDT"]
+
+
 def test_ccxt_quote_empty_book_does_not_fallback_to_ticker_bid_ask() -> None:
     provider = object.__new__(CcxtTickerMarketData)
     provider.exchange_id = "fake"
@@ -731,6 +1183,38 @@ def test_fubon_books_subscription_can_unsubscribe_old_symbol() -> None:
     provider.unsubscribe_books("QFFG6")
 
     assert websocket.unsubscriptions == [{"id": "sub-1"}]
+
+
+def test_fubon_books_restart_clears_cache_disconnects_and_resubscribes() -> None:
+    provider = FubonQffMarketData(None, book_wait_timeout_seconds=0.0)
+    provider.intraday = FakeFubonIntraday({"REGULAR": {"data": []}, "AFTERHOURS": {"data": []}})
+    websocket = FakeFubonWebSocket()
+    provider.websocket = websocket
+
+    provider.ensure_books_subscription("QFFG6", after_hours=True)
+    websocket.emit(
+        {
+            "event": "data",
+            "channel": "books",
+            "data": {
+                "symbol": "QFFG6",
+                "time": "2026-06-18T08:45:01+08:00",
+                "bids": [{"price": 2409.0, "size": 3}],
+                "asks": [{"price": 2411.0, "size": 4}],
+            },
+        }
+    )
+
+    provider.restart_books_session("QFFG6", after_hours=False)
+
+    assert websocket.disconnected
+    assert websocket.connect_calls == 2
+    assert websocket.subscriptions == [
+        {"channel": "books", "symbol": "QFFG6", "afterHours": True},
+        {"channel": "books", "symbol": "QFFG6", "afterHours": False},
+    ]
+    assert provider._latest_books == {}
+    assert provider._book_subscribed_symbols == {"QFFG6"}
 
 
 def test_fubon_quote_rest_diagnostics_does_not_fill_book_fields() -> None:
@@ -887,7 +1371,7 @@ def test_warmup_builder_uses_prior_qff_close_to_seed_forward_fill(tmp_path) -> N
     qff = FakeQffProvider(
         rows(
             [
-                ("2026-06-18T08:44:00+08:00", 99.0),
+                ("2026-06-18T08:45:00+08:00", 99.0),
                 ("2026-06-18T08:46:00+08:00", 101.0),
             ]
         )
@@ -919,7 +1403,7 @@ def test_warmup_builder_uses_prior_qff_close_to_seed_forward_fill(tmp_path) -> N
         usdttwd_provider=usd,
     ).build(qff_symbol="QFF202607", end=ts("2026-06-18T08:48:00+08:00"))
 
-    assert bars[0].qff_close is None
+    assert bars[0].qff_close == 99.0
     assert bars[0].qff_close_filled == 99.0
     assert bars[1].qff_close_filled == 101.0
 
@@ -946,7 +1430,7 @@ def test_warmup_builder_fails_when_initial_qff_cannot_be_filled(tmp_path) -> Non
         )
     )
 
-    with pytest.raises(RuntimeError, match="QFF warmup cannot forward-fill"):
+    with pytest.raises(RuntimeError, match="QFF session warmup has only"):
         WarmupBuilder(
             live_config=config.live,
             qff_intraday_provider=qff,
@@ -1042,27 +1526,27 @@ def test_live_paper_runner_uses_paper_broker_and_minute_boundaries(tmp_path) -> 
     warmup_qff = FakeQffProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 100.0),
-                ("2026-06-18T08:43:00+08:00", 100.0),
-                ("2026-06-18T08:44:00+08:00", 100.0),
+                ("2026-06-18T04:58:00+08:00", 100.0),
+                ("2026-06-18T04:59:00+08:00", 100.0),
+                ("2026-06-18T05:00:00+08:00", 100.0),
             ]
         )
     )
     warmup_tsm = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 20.0),
-                ("2026-06-18T08:43:00+08:00", 20.0),
-                ("2026-06-18T08:44:00+08:00", 20.0),
+                ("2026-06-18T04:58:00+08:00", 20.0),
+                ("2026-06-18T04:59:00+08:00", 20.0),
+                ("2026-06-18T05:00:00+08:00", 20.0),
             ]
         )
     )
     warmup_usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 30.0),
-                ("2026-06-18T08:43:00+08:00", 30.0),
-                ("2026-06-18T08:44:00+08:00", 30.0),
+                ("2026-06-18T04:58:00+08:00", 30.0),
+                ("2026-06-18T04:59:00+08:00", 30.0),
+                ("2026-06-18T05:00:00+08:00", 30.0),
             ]
         )
     )
@@ -1152,27 +1636,27 @@ def test_live_paper_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
     warmup_qff = FakeQffProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 100.0),
-                ("2026-06-18T08:43:00+08:00", 100.0),
-                ("2026-06-18T08:44:00+08:00", 100.0),
+                ("2026-06-18T04:58:00+08:00", 100.0),
+                ("2026-06-18T04:59:00+08:00", 100.0),
+                ("2026-06-18T05:00:00+08:00", 100.0),
             ]
         )
     )
     warmup_tsm = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 20.0),
-                ("2026-06-18T08:43:00+08:00", 20.0),
-                ("2026-06-18T08:44:00+08:00", 20.0),
+                ("2026-06-18T04:58:00+08:00", 20.0),
+                ("2026-06-18T04:59:00+08:00", 20.0),
+                ("2026-06-18T05:00:00+08:00", 20.0),
             ]
         )
     )
     warmup_usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 30.0),
-                ("2026-06-18T08:43:00+08:00", 30.0),
-                ("2026-06-18T08:44:00+08:00", 30.0),
+                ("2026-06-18T04:58:00+08:00", 30.0),
+                ("2026-06-18T04:59:00+08:00", 30.0),
+                ("2026-06-18T05:00:00+08:00", 30.0),
             ]
         )
     )
@@ -1721,27 +2205,27 @@ def test_live_paper_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
     qff = FakeQffProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 100.0),
-                ("2026-06-18T08:43:00+08:00", 101.0),
-                ("2026-06-18T08:44:00+08:00", 102.0),
+                ("2026-06-18T04:58:00+08:00", 100.0),
+                ("2026-06-18T04:59:00+08:00", 101.0),
+                ("2026-06-18T05:00:00+08:00", 102.0),
             ]
         )
     )
     tsm = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 20.0),
-                ("2026-06-18T08:43:00+08:00", 20.5),
-                ("2026-06-18T08:44:00+08:00", 21.0),
+                ("2026-06-18T04:58:00+08:00", 20.0),
+                ("2026-06-18T04:59:00+08:00", 20.5),
+                ("2026-06-18T05:00:00+08:00", 21.0),
             ]
         )
     )
     usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 30.0),
-                ("2026-06-18T08:43:00+08:00", 30.0),
-                ("2026-06-18T08:44:00+08:00", 30.0),
+                ("2026-06-18T04:58:00+08:00", 30.0),
+                ("2026-06-18T04:59:00+08:00", 30.0),
+                ("2026-06-18T05:00:00+08:00", 30.0),
             ]
         )
     )
@@ -1791,27 +2275,27 @@ def test_live_paper_uses_existing_seed_without_rebuilding(tmp_path) -> None:
     warmup_qff = FakeQffProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 100.0),
-                ("2026-06-18T08:43:00+08:00", 101.0),
-                ("2026-06-18T08:44:00+08:00", 102.0),
+                ("2026-06-18T04:58:00+08:00", 100.0),
+                ("2026-06-18T04:59:00+08:00", 101.0),
+                ("2026-06-18T05:00:00+08:00", 102.0),
             ]
         )
     )
     warmup_tsm = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 20.0),
-                ("2026-06-18T08:43:00+08:00", 20.5),
-                ("2026-06-18T08:44:00+08:00", 21.0),
+                ("2026-06-18T04:58:00+08:00", 20.0),
+                ("2026-06-18T04:59:00+08:00", 20.5),
+                ("2026-06-18T05:00:00+08:00", 21.0),
             ]
         )
     )
     warmup_usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 30.0),
-                ("2026-06-18T08:43:00+08:00", 30.0),
-                ("2026-06-18T08:44:00+08:00", 30.0),
+                ("2026-06-18T04:58:00+08:00", 30.0),
+                ("2026-06-18T04:59:00+08:00", 30.0),
+                ("2026-06-18T05:00:00+08:00", 30.0),
             ]
         )
     )
@@ -1849,27 +2333,27 @@ def test_live_paper_skip_warmup_requires_existing_seed(tmp_path) -> None:
     qff = FakeQffProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 100.0),
-                ("2026-06-18T08:43:00+08:00", 101.0),
-                ("2026-06-18T08:44:00+08:00", 102.0),
+                ("2026-06-18T04:58:00+08:00", 100.0),
+                ("2026-06-18T04:59:00+08:00", 101.0),
+                ("2026-06-18T05:00:00+08:00", 102.0),
             ]
         )
     )
     tsm = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 20.0),
-                ("2026-06-18T08:43:00+08:00", 20.5),
-                ("2026-06-18T08:44:00+08:00", 21.0),
+                ("2026-06-18T04:58:00+08:00", 20.0),
+                ("2026-06-18T04:59:00+08:00", 20.5),
+                ("2026-06-18T05:00:00+08:00", 21.0),
             ]
         )
     )
     usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:42:00+08:00", 30.0),
-                ("2026-06-18T08:43:00+08:00", 30.0),
-                ("2026-06-18T08:44:00+08:00", 30.0),
+                ("2026-06-18T04:58:00+08:00", 30.0),
+                ("2026-06-18T04:59:00+08:00", 30.0),
+                ("2026-06-18T05:00:00+08:00", 30.0),
             ]
         )
     )
@@ -2054,7 +2538,7 @@ def test_live_decision_ignores_mid_entry_when_tradable_spread_does_not_cross(tmp
         long_zscore=-1.7,
     )
 
-    decision, decision_type, decision_zscore, missing_book = build_live_decision_snapshot(
+    decision, decision_type, decision_zscore, signal_block_reason = build_live_decision_snapshot(
         config,
         state,
         snapshot,
@@ -2065,7 +2549,7 @@ def test_live_decision_ignores_mid_entry_when_tradable_spread_does_not_cross(tmp
     assert decision.zscore is None
     assert decision_type is None
     assert decision_zscore is None
-    assert not missing_book
+    assert signal_block_reason is None
 
 
 def test_live_decision_uses_short_spread_for_short_entry(tmp_path) -> None:
@@ -2080,7 +2564,7 @@ def test_live_decision_uses_short_spread_for_short_entry(tmp_path) -> None:
         long_zscore=-1.5,
     )
 
-    decision, decision_type, decision_zscore, missing_book = build_live_decision_snapshot(
+    decision, decision_type, decision_zscore, signal_block_reason = build_live_decision_snapshot(
         config,
         state,
         indicator_snapshot(zscore=1.7),
@@ -2092,7 +2576,7 @@ def test_live_decision_uses_short_spread_for_short_entry(tmp_path) -> None:
     assert decision.spread == pytest.approx(2.2)
     assert decision_type == "shortSpread"
     assert decision_zscore == pytest.approx(2.2)
-    assert not missing_book
+    assert signal_block_reason is None
 
 
 def test_live_decision_uses_long_spread_for_long_entry(tmp_path) -> None:
@@ -2107,7 +2591,7 @@ def test_live_decision_uses_long_spread_for_long_entry(tmp_path) -> None:
         long_zscore=-2.2,
     )
 
-    decision, decision_type, decision_zscore, missing_book = build_live_decision_snapshot(
+    decision, decision_type, decision_zscore, signal_block_reason = build_live_decision_snapshot(
         config,
         state,
         indicator_snapshot(zscore=-1.7),
@@ -2119,7 +2603,35 @@ def test_live_decision_uses_long_spread_for_long_entry(tmp_path) -> None:
     assert decision.spread == pytest.approx(-2.2)
     assert decision_type == "longSpread"
     assert decision_zscore == pytest.approx(-2.2)
-    assert not missing_book
+    assert signal_block_reason is None
+
+
+def test_live_decision_reports_tradable_snapshot_missing_reason(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    state = StrategyRuntimeState(state=StrategyState.FLAT)
+    tradable = TradableSpreadSnapshot(
+        mid_spread=1.7,
+        mid_zscore=1.7,
+        short_spread=None,
+        short_zscore=None,
+        long_spread=None,
+        long_zscore=None,
+        missing_reason="stale_qff",
+    )
+
+    decision, decision_type, decision_zscore, signal_block_reason = (
+        build_live_decision_snapshot(
+            config,
+            state,
+            indicator_snapshot(zscore=1.7),
+            tradable,
+        )
+    )
+
+    assert not decision.zscore_valid
+    assert decision_type is None
+    assert decision_zscore is None
+    assert signal_block_reason == "stale_qff"
 
 
 def test_live_decision_uses_opposite_tradable_spread_for_exit(tmp_path) -> None:

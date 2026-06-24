@@ -58,11 +58,17 @@ class MarketBar:
     qff_close_filled: float
     tsm_twd_fair: float
     spread: float
+    qff_entry_price: float | None = None
+    tsm_entry_twd_fair: float | None = None
+    qff_was_filled: bool = False
+    qff_entry_open_was_filled: bool = False
     expected_zscore: float | None = None
     expected_zscore_valid: bool | None = None
     entry_allowed: bool = False
     close_allowed: bool = False
     friday_night_close_only: bool = False
+    weekend_session_close_only: bool = False
+    friday_session_end_force_close: bool = False
     qff_symbol: str | None = None
     qff_expiry: str | None = None
     contract_policy_state: str | None = None
@@ -79,6 +85,8 @@ class IndicatorSnapshot:
     entry_allowed: bool
     close_allowed: bool
     friday_night_close_only: bool
+    weekend_session_close_only: bool = False
+    friday_session_end_force_close: bool = False
 
 
 @dataclass(frozen=True)

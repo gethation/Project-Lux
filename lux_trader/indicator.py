@@ -46,6 +46,8 @@ class IndicatorEngine:
             entry_allowed=bar.entry_allowed,
             close_allowed=bar.close_allowed,
             friday_night_close_only=bar.friday_night_close_only,
+            weekend_session_close_only=bar.weekend_session_close_only,
+            friday_session_end_force_close=bar.friday_session_end_force_close,
         )
 
     def to_jsonable(self) -> dict[str, Any]:

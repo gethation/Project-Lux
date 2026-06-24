@@ -30,6 +30,23 @@ def test_friday_night_is_close_only() -> None:
     assert bars[0].friday_night_close_only
 
 
+def test_weekend_session_is_close_only_and_marks_force_close() -> None:
+    bars = TradingCalendar().annotate(
+        [
+            make_bar(0, datetime.fromisoformat("2026-06-12T13:43:00+08:00")),
+            make_bar(1, datetime.fromisoformat("2026-06-12T17:25:00+08:00")),
+            make_bar(2, datetime.fromisoformat("2026-06-12T17:26:00+08:00")),
+            make_bar(3, datetime.fromisoformat("2026-06-15T08:45:00+08:00")),
+        ]
+    )
+
+    assert bars[1].close_allowed
+    assert not bars[1].entry_allowed
+    assert bars[1].weekend_session_close_only
+    assert bars[2].friday_session_end_force_close
+    assert bars[3].entry_allowed
+
+
 def test_live_calendar_closed_date_blocks_day_and_night_sessions() -> None:
     closed_dates = (date(2026, 6, 19),)
 

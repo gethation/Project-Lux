@@ -41,6 +41,14 @@ def should_exit(zscore: float, direction: Direction, exit_z: float) -> bool:
     return zscore > exit_z
 
 
+def entry_tsm_price(bar: MarketBar) -> float:
+    return bar.tsm_entry_twd_fair if bar.tsm_entry_twd_fair is not None else bar.tsm_twd_fair
+
+
+def entry_qff_price(bar: MarketBar) -> float:
+    return bar.qff_entry_price if bar.qff_entry_price is not None else bar.qff_close_filled
+
+
 @dataclass
 class StrategyRuntimeState:
     state: StrategyState = StrategyState.FLAT
@@ -268,8 +276,18 @@ class PairStrategy:
                         reason = "entry_zscore_crossed"
 
             elif self.state.state == StrategyState.OPEN and self.state.position_direction:
+                if bar.friday_session_end_force_close and snapshot.close_allowed:
+                    action, reason, new_orders, new_fills, trade = self._fill_exit(
+                        bar=bar,
+                        snapshot=snapshot,
+                        exit_reason="friday_session_end",
+                        reason="friday_session_end",
+                    )
+                    orders.extend(new_orders)
+                    fills.extend(new_fills)
                 if (
-                    snapshot.close_allowed
+                    action == StrategyAction.NONE
+                    and snapshot.close_allowed
                     and snapshot.zscore_valid
                     and snapshot.zscore is not None
                     and should_exit(
@@ -379,8 +397,8 @@ class PairStrategy:
             return StrategyAction.ERROR, "entry_pending_without_direction", [], []
         sizing = size_position_for_direction(
             self.state.candidate_direction,
-            bar.tsm_twd_fair,
-            bar.qff_close_filled,
+            entry_tsm_price(bar),
+            entry_qff_price(bar),
             self.strategy,
             self.fees,
         )
@@ -391,9 +409,9 @@ class PairStrategy:
 
         costs = fill_costs(
             tsm_units=sizing.tsm_units,
-            tsm_price=bar.tsm_twd_fair,
+            tsm_price=entry_tsm_price(bar),
             qff_contracts=sizing.qff_contracts,
-            qff_price=bar.qff_close_filled,
+            qff_price=entry_qff_price(bar),
             fees=self.fees,
         )
         orders, fills = self._place_entry_orders(
@@ -437,8 +455,8 @@ class PairStrategy:
                 None,
             )
         self.state.position_direction = self.state.candidate_direction
-        self.state.entry_tsm = bar.tsm_twd_fair
-        self.state.entry_qff = bar.qff_close_filled
+        self.state.entry_tsm = entry_tsm_price(bar)
+        self.state.entry_qff = entry_qff_price(bar)
         self.state.entry_zscore = snapshot.zscore
         self.state.tsm_units = sizing.tsm_units
         self.state.qff_units = sizing.qff_units
@@ -455,8 +473,12 @@ class PairStrategy:
             "entry_delay_minutes": delay_minutes,
             "entry_fill_zscore": snapshot.zscore,
             "direction": self.state.position_direction.value,
-            "entry_tsm_twd_fair": bar.tsm_twd_fair,
-            "entry_qff_close": bar.qff_close_filled,
+            "entry_tsm_twd_fair": entry_tsm_price(bar),
+            "entry_qff_close": entry_qff_price(bar),
+            "entry_fill_price_type": "open"
+            if bar.tsm_entry_twd_fair is not None or bar.qff_entry_price is not None
+            else "close",
+            "entry_qff_open_was_filled": bar.qff_entry_open_was_filled,
             "tsm_units": sizing.tsm_units,
             "qff_units": sizing.qff_units,
             "qff_contracts": sizing.qff_contracts,
@@ -579,7 +601,7 @@ class PairStrategy:
             "net_pnl_twd": net_pnl,
             "total_pnl": net_pnl,
             "exit_reason": exit_reason,
-            "holding_minutes": bar.row_index - int(open_trade["entry_idx"]),
+            "holding_minutes": minutes_between(open_trade["entry_time"], bar.timestamp),
         }
 
         self.state.realized_pnl += gross_pnl - costs["total_fee_twd"]
@@ -642,6 +664,8 @@ class PairStrategy:
             tsm_symbol=self.tsm_symbol,
             tsm_units=tsm_units,
             qff_contracts=qff_contracts,
+            tsm_price=entry_tsm_price(bar),
+            qff_price=entry_qff_price(bar),
             tsm_fee=costs["tsm_fee_twd"],
             qff_fee=costs["qff_fee_twd"] + costs["qff_tax_twd"],
         )
@@ -657,6 +681,8 @@ class PairStrategy:
             tsm_symbol=self.tsm_symbol,
             tsm_units=-self.state.tsm_units,
             qff_contracts=-self.state.qff_contracts,
+            tsm_price=bar.tsm_twd_fair,
+            qff_price=bar.qff_close_filled,
             tsm_fee=costs["tsm_fee_twd"],
             qff_fee=costs["qff_fee_twd"] + costs["qff_tax_twd"],
         )
@@ -726,6 +752,8 @@ def build_pair_order_requests(
     tsm_symbol: str,
     tsm_units: float,
     qff_contracts: int,
+    tsm_price: float,
+    qff_price: float,
     tsm_fee: float,
     qff_fee: float,
 ) -> list[OrderRequest]:
@@ -735,7 +763,7 @@ def build_pair_order_requests(
             symbol=tsm_symbol,
             side=OrderSide.BUY if tsm_units > 0 else OrderSide.SELL,
             quantity=abs(tsm_units),
-            price=bar.tsm_twd_fair,
+            price=tsm_price,
             timestamp=bar.timestamp,
             row_index=bar.row_index,
             fee_twd=tsm_fee,
@@ -748,7 +776,7 @@ def build_pair_order_requests(
             symbol=bar.qff_symbol or "QFF",
             side=OrderSide.BUY if qff_contracts > 0 else OrderSide.SELL,
             quantity=abs(qff_contracts),
-            price=bar.qff_close_filled,
+            price=qff_price,
             timestamp=bar.timestamp,
             row_index=bar.row_index,
             fee_twd=qff_fee,

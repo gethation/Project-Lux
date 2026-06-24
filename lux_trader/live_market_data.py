@@ -18,7 +18,12 @@ from zipfile import ZipFile
 
 import pandas as pd
 
-from .calendar import annotate_live_bar_with_closed_dates, in_night_session
+from .calendar import (
+    annotate_live_bar_with_closed_dates,
+    in_day_session,
+    in_night_session,
+    session_start_date,
+)
 from .config import LiveMarketDataConfig
 from .models import MarketBar
 
@@ -26,7 +31,7 @@ from .models import MarketBar
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 TIMEFRAME = "1m"
 ONE_MINUTE_MS = 60_000
-QFF_FORWARD_FILL_LOOKBACK = timedelta(days=7)
+QFF_FORWARD_FILL_LOOKBACK = timedelta(days=14)
 TAIFEX_PREVIOUS_30_URL = (
     "https://www.taifex.com.tw/cht/3/dlFutPrevious30DaysSalesData"
 )
@@ -191,6 +196,109 @@ def midpoint_or_single_side(
     if ask is not None:
         return ask
     return None
+
+
+def market_time(hour: int, minute: int) -> datetime.time:
+    return datetime.min.replace(hour=hour, minute=minute).time()
+
+
+def build_qff_session_index(
+    qff_close: pd.Series,
+    *,
+    end: datetime | None = None,
+) -> pd.DatetimeIndex:
+    qff_close = qff_close.dropna().sort_index()
+    if qff_close.empty:
+        return pd.DatetimeIndex([], tz=TAIPEI_TZ)
+    end_ts = pd.Timestamp(ensure_taipei(end)) if end is not None else qff_close.index.max()
+    qff_close = qff_close.loc[qff_close.index <= end_ts]
+    if qff_close.empty:
+        return pd.DatetimeIndex([], tz=TAIPEI_TZ)
+
+    pieces: list[pd.DatetimeIndex] = []
+    first_timestamp = qff_close.index.min().to_pydatetime()
+    first_day = min(first_timestamp.date(), session_start_date(first_timestamp))
+    last_day = end_ts.date()
+    for day in pd.date_range(first_day, last_day, freq="D", tz=TAIPEI_TZ):
+        day_date = day.date()
+        day_mask = [
+            ts.date() == day_date and in_day_session(ts.to_pydatetime())
+            for ts in qff_close.index
+        ]
+        if qff_close.loc[day_mask].notna().any():
+            pieces.append(
+                pd.date_range(
+                    datetime.combine(day_date, market_time(8, 45), tzinfo=TAIPEI_TZ),
+                    datetime.combine(day_date, market_time(13, 45), tzinfo=TAIPEI_TZ),
+                    freq="min",
+                )
+            )
+
+        night_mask = [
+            session_start_date(ts.to_pydatetime()) == day_date
+            and in_night_session(ts.to_pydatetime())
+            for ts in qff_close.index
+        ]
+        if qff_close.loc[night_mask].notna().any():
+            pieces.append(
+                pd.date_range(
+                    datetime.combine(day_date, market_time(17, 25), tzinfo=TAIPEI_TZ),
+                    datetime.combine(
+                        day_date + timedelta(days=1),
+                        market_time(5, 0),
+                        tzinfo=TAIPEI_TZ,
+                    ),
+                    freq="min",
+                )
+            )
+
+    if not pieces:
+        return pd.DatetimeIndex([], tz=TAIPEI_TZ)
+    index = pieces[0].append(pieces[1:]).unique().sort_values()
+    index = index[(index >= qff_close.index.min()) & (index <= end_ts)]
+    return pd.DatetimeIndex(index)
+
+
+def build_qff_session_warmup_index(
+    qff_close: pd.Series,
+    *,
+    end: datetime,
+    count: int,
+) -> pd.DatetimeIndex:
+    session_index = build_qff_session_index(qff_close, end=end)
+    if len(session_index) < count:
+        raise RuntimeError(
+            f"QFF session warmup has only {len(session_index)} bars, need {count}"
+        )
+    return pd.DatetimeIndex(session_index[-count:])
+
+
+def prioritized_qff_close_frame(
+    frames: list[tuple[str, pd.DataFrame]],
+) -> pd.DataFrame:
+    combined_parts: list[pd.DataFrame] = []
+    for priority, (source, frame) in enumerate(frames):
+        series = close_series(frame, source)
+        if series.empty:
+            continue
+        combined_parts.append(
+            pd.DataFrame(
+                {
+                    "timestamp": series.index,
+                    "close": series.to_numpy(),
+                    "source": source,
+                    "priority": priority,
+                }
+            )
+        )
+    if not combined_parts:
+        output = pd.DataFrame(columns=["close", "source", "priority"])
+        output.index = pd.DatetimeIndex([], tz=TAIPEI_TZ)
+        return output
+    combined = pd.concat(combined_parts, ignore_index=True).sort_values(
+        ["timestamp", "priority"]
+    )
+    return combined.drop_duplicates("timestamp", keep="last").set_index("timestamp")
 
 
 def third_wednesday(year: int, month: int) -> date:
@@ -454,9 +562,14 @@ class CcxtTickerMarketData:
             book_error = str(exc)
             if "not valid depth limit" in book_error or '"code":-4021' in book_error:
                 book_limit_used = 5
-                fetched_book = self.exchange.fetch_order_book(symbol, limit=5)
-                order_book = dict(fetched_book or {})
-                book_error = None
+                try:
+                    fetched_book = self.exchange.fetch_order_book(symbol, limit=5)
+                    order_book = dict(fetched_book or {})
+                    book_error = None
+                except Exception as retry_exc:
+                    book_error = (
+                        f"{book_error}; retry_limit_5:{type(retry_exc).__name__}"
+                    )
 
         bid, bid_size = first_book_level(order_book.get("bids"))
         ask, ask_size = first_book_level(order_book.get("asks"))
@@ -832,6 +945,28 @@ class FubonQffMarketData:
         if self.sdk is not None:
             self.sdk.logout()
 
+    def teardown_books_session(self) -> None:
+        with self._book_condition:
+            self._latest_books.clear()
+            self._book_subscription_ids.clear()
+            self._book_subscribed_symbols.clear()
+            self._websocket_connected = False
+            self._book_condition.notify_all()
+        if self.websocket is not None:
+            try:
+                self.websocket.disconnect()
+            except Exception:
+                pass
+
+    def restart_books_session(
+        self,
+        symbol: str,
+        *,
+        after_hours: bool | None = None,
+    ) -> None:
+        self.teardown_books_session()
+        self.ensure_books_subscription(symbol, after_hours=after_hours)
+
     def _require_intraday(self) -> Any:
         if self.intraday is None:
             self.connect()
@@ -931,6 +1066,10 @@ class FubonQffMarketData:
 
     def _handle_websocket_error(self, error: Any) -> None:
         with self._book_condition:
+            self._latest_books.clear()
+            self._book_subscription_ids.clear()
+            self._book_subscribed_symbols.clear()
+            self._websocket_connected = False
             self._book_condition.notify_all()
 
     def _handle_websocket_message(self, raw_message: Any) -> None:
@@ -1054,9 +1193,7 @@ class WarmupBuilder:
         end: datetime | None = None,
     ) -> list[MarketBar]:
         end_minute = floor_minute(end or datetime.now(TAIPEI_TZ)) - timedelta(minutes=1)
-        start_minute = end_minute - timedelta(minutes=self.live_config.warmup_minutes - 1)
-        index = pd.date_range(start_minute, end_minute, freq="min")
-        qff_fetch_start = start_minute - QFF_FORWARD_FILL_LOOKBACK
+        qff_fetch_start = end_minute - QFF_FORWARD_FILL_LOOKBACK
 
         qff_parts: list[tuple[str, pd.DataFrame]] = []
         if self.qff_fallback_provider is not None:
@@ -1079,11 +1216,24 @@ class WarmupBuilder:
             )
         if not qff_parts:
             raise RuntimeError("No QFF warmup providers configured")
+        combined_qff = prioritized_qff_close_frame(qff_parts)
+        index = build_qff_session_warmup_index(
+            combined_qff["close"] if "close" in combined_qff else pd.Series(dtype=float),
+            end=end_minute,
+            count=self.live_config.warmup_minutes,
+        )
+        start_minute = index[0].to_pydatetime()
+        session_index = build_qff_session_index(
+            combined_qff["close"] if "close" in combined_qff else pd.Series(dtype=float),
+            end=end_minute,
+        )
         qff_report = build_qff_warmup_source_report(
             qff_parts,
             start_minute=start_minute,
             end_minute=end_minute,
             qff_fetch_start=qff_fetch_start,
+            warmup_index=index,
+            fill_index=session_index,
         )
         if qff_report.null_count:
             first_missing = qff_report.frame.loc[
@@ -1101,13 +1251,17 @@ class WarmupBuilder:
 
         tsm = close_series(
             self.tsm_provider.fetch_ohlcv_1m(
-                self.live_config.binance_symbol, start_minute, end_minute
+                self.live_config.binance_symbol,
+                start_minute,
+                index[-1].to_pydatetime(),
             ),
             "tsm",
         ).reindex(index)
         usd = close_series(
             self.usdttwd_provider.fetch_ohlcv_1m(
-                self.live_config.bitopro_symbol, start_minute, end_minute
+                self.live_config.bitopro_symbol,
+                start_minute,
+                index[-1].to_pydatetime(),
             ),
             "usdttwd",
         ).reindex(index)
@@ -1128,6 +1282,7 @@ class WarmupBuilder:
                     qff_close_filled=float(qff_filled.loc[timestamp]),
                     tsm_twd_fair=float(tsm_twd_fair.loc[timestamp]),
                     spread=float(spread.loc[timestamp]),
+                    qff_was_filled=qff_close is None,
                     qff_symbol=qff_symbol,
                     qff_expiry=qff_expiry,
                     contract_policy_state=contract_policy_state,
@@ -1142,41 +1297,26 @@ def build_qff_warmup_source_report(
     start_minute: datetime,
     end_minute: datetime,
     qff_fetch_start: datetime,
+    warmup_index: pd.DatetimeIndex | None = None,
+    fill_index: pd.DatetimeIndex | None = None,
 ) -> QffWarmupSourceReport:
     start_minute = floor_minute(start_minute)
     end_minute = floor_minute(end_minute)
     qff_fetch_start = floor_minute(qff_fetch_start)
-    warmup_index = pd.date_range(start_minute, end_minute, freq="min")
-    fill_index = pd.date_range(qff_fetch_start, end_minute, freq="min")
+    if warmup_index is None:
+        warmup_index = pd.date_range(start_minute, end_minute, freq="min")
+    else:
+        warmup_index = pd.DatetimeIndex(warmup_index)
+    if fill_index is None:
+        fill_index = pd.date_range(qff_fetch_start, end_minute, freq="min")
+    else:
+        fill_index = pd.DatetimeIndex(fill_index)
 
     source_series: dict[str, pd.Series] = {}
-    combined_parts: list[pd.DataFrame] = []
-    for priority, (source, frame) in enumerate(frames):
+    for source, frame in frames:
         series = close_series(frame, source)
         source_series[source] = series
-        if series.empty:
-            continue
-        combined_parts.append(
-            pd.DataFrame(
-                {
-                    "timestamp": series.index,
-                    "close": series.to_numpy(),
-                    "source": source,
-                    "priority": priority,
-                }
-            )
-        )
-
-    if combined_parts:
-        combined = pd.concat(combined_parts, ignore_index=True).sort_values(
-            ["timestamp", "priority"]
-        )
-        combined = combined.drop_duplicates("timestamp", keep="last").set_index(
-            "timestamp"
-        )
-    else:
-        combined = pd.DataFrame(columns=["close", "source", "priority"])
-        combined.index = pd.DatetimeIndex([], tz=TAIPEI_TZ)
+    combined = prioritized_qff_close_frame(frames)
 
     report = pd.DataFrame({"timestamp": warmup_index})
     for source, series in source_series.items():

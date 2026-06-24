@@ -62,6 +62,14 @@ from .store import SQLiteStore
 from .terminal_ui import LiveTerminalReporter, NullLiveReporter
 
 
+LIVE_MARKETDATA_ENV = "LUX_LIVE_MARKETDATA"
+LIVE_MARKETDATA_DEFAULT = "1"
+
+
+def live_marketdata_enabled() -> bool:
+    return os.getenv(LIVE_MARKETDATA_ENV, LIVE_MARKETDATA_DEFAULT).strip() == "1"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lux_trader")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -951,7 +959,7 @@ def command_live_doctor(args: argparse.Namespace) -> int:
         f"live_order={config.safety.allow_live_order}",
     ]
 
-    if os.getenv("LUX_LIVE_MARKETDATA", "").strip() == "1":
+    if live_marketdata_enabled():
         qff = FubonQffMarketData(config.live.fubon_env_path)
         try:
             qff_contract = resolve_qff_contract(config, qff)
@@ -987,7 +995,7 @@ def command_live_doctor(args: argparse.Namespace) -> int:
                     qff_book_diagnostic_lines(
                         qff_quote,
                         observed_at,
-                        config.live.stale_seconds,
+                        config.live.qff_book_stale_seconds,
                     )
                 )
             except Exception as exc:
@@ -1066,7 +1074,7 @@ def command_warmup_live(args: argparse.Namespace) -> int:
 
 
 def command_qff_warmup_check(args: argparse.Namespace) -> int:
-    if os.getenv("LUX_LIVE_MARKETDATA", "").strip() != "1":
+    if not live_marketdata_enabled():
         raise SystemExit("Set LUX_LIVE_MARKETDATA=1 to run qff-warmup-check")
     config = load_config(args.config)
     result = QffWarmupCheckRunner(config).run(output_csv=args.output_csv)
@@ -1159,3 +1167,7 @@ def main(argv: list[str] | None = None) -> int:
         return command_live_paper(args)
     parser.error(f"Unknown command: {args.command}")
     return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

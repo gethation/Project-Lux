@@ -124,7 +124,7 @@ class TradingCalendar:
             if in_night_session(bar.timestamp):
                 night_active.add(session_start_date(bar.timestamp))
 
-        annotated: list[MarketBar] = []
+        raw_masks: list[tuple[bool, bool, bool, str]] = []
         for bar in rows:
             day_allowed = (
                 in_day_session(bar.timestamp) and bar.timestamp.date() in day_active
@@ -133,15 +133,47 @@ class TradingCalendar:
             night_allowed = in_night_session(bar.timestamp) and session_start in night_active
             close_allowed = day_allowed or night_allowed
             friday_night = night_allowed and session_start.weekday() == 4
+            session_kind = "N" if in_night_session(bar.timestamp) else "D"
+            session_key = f"{session_kind}:{session_start.isoformat()}"
+            raw_masks.append((close_allowed, friday_night, False, session_key))
+
+        force_close = compute_week_end_force_close(rows, raw_masks)
+        weekend_close_only_sessions = {
+            raw_masks[index][3] for index, marked in enumerate(force_close) if marked
+        }
+
+        annotated: list[MarketBar] = []
+        for index, bar in enumerate(rows):
+            close_allowed, friday_night, _, session_key = raw_masks[index]
+            weekend_close_only = close_allowed and session_key in weekend_close_only_sessions
+            close_only = friday_night or weekend_close_only
             annotated.append(
                 replace(
                     bar,
                     close_allowed=close_allowed,
-                    entry_allowed=close_allowed and not friday_night,
+                    entry_allowed=close_allowed and not close_only,
                     friday_night_close_only=close_allowed and friday_night,
+                    weekend_session_close_only=weekend_close_only,
+                    friday_session_end_force_close=force_close[index],
                 )
             )
         return annotated
+
+
+def compute_week_end_force_close(
+    rows: list[MarketBar],
+    raw_masks: list[tuple[bool, bool, bool, str]],
+) -> list[bool]:
+    force_close = [False] * len(rows)
+    close_indices = [
+        index for index, (close_allowed, _, _, _) in enumerate(raw_masks) if close_allowed
+    ]
+    for current_idx, next_idx in zip(close_indices[:-1], close_indices[1:]):
+        current_iso = rows[current_idx].timestamp.isocalendar()
+        next_iso = rows[next_idx].timestamp.isocalendar()
+        if (current_iso.year, current_iso.week) != (next_iso.year, next_iso.week):
+            force_close[current_idx] = True
+    return force_close
 
 
 def is_close_only(timestamp: datetime, close_allowed: bool) -> bool:
@@ -162,6 +194,8 @@ def annotate_live_bar_with_closed_dates(
         close_allowed=status.is_trading,
         entry_allowed=status.is_trading and not status.is_close_only,
         friday_night_close_only=status.is_trading and status.is_close_only,
+        weekend_session_close_only=False,
+        friday_session_end_force_close=False,
     )
 
 

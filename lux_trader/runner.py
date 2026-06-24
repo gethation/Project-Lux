@@ -43,7 +43,12 @@ class SystemRunner:
             if resume and resume_state is None and store.has_bars():
                 raise RuntimeError("Store has bars but no strategy_state row")
 
-            bars = CsvReplayMarketData(self.config.input_csv).load()
+            bars = CsvReplayMarketData(
+                self.config.input_csv,
+                qff_ohlcv_path=self.config.qff_ohlcv_csv,
+                tsm_ohlcv_path=self.config.tsm_ohlcv_csv,
+                usdttwd_ohlcv_path=self.config.usdttwd_ohlcv_csv,
+            ).load()
             if resume_state is None:
                 indicator = IndicatorEngine(window=self.config.strategy.zscore_window)
                 strategy_state = StrategyRuntimeState(

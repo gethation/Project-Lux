@@ -18,7 +18,14 @@ from lux_trader.config import (
 
 
 POC_CSV = Path(
-    r"D:\Users\Documents\Proof of Concept\data\processed\qff_tsm_spread_zscore_1m_taipei.csv"
+    r"D:\Users\Documents\Proof of Concept\data\processed\qff_tsm_spread_zscore_1m_taipei_qff_session_w500.csv"
+)
+POC_QFF_OHLCV = Path(r"D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv")
+POC_TSM_OHLCV = Path(
+    r"D:\Users\Documents\Proof of Concept\data\processed\binance_tsmusdtp_1m_taipei.csv"
+)
+POC_USDTTWD_OHLCV = Path(
+    r"D:\Users\Documents\Proof of Concept\data\processed\bitopro_usdttwd_1m_taipei.csv"
 )
 
 
@@ -26,11 +33,11 @@ POC_CSV = Path(
 def strategy_config() -> StrategyConfig:
     return StrategyConfig(
         entry_z=2.0,
-        exit_z=0.0,
+        exit_z=1.0,
         leg_notional_twd=1_000_000.0,
         initial_capital_twd=2_000_000.0,
         max_entry_delay_minutes=15,
-        zscore_window=1440,
+        zscore_window=500,
     )
 
 
@@ -48,13 +55,16 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
     return AppConfig(
         input_csv=POC_CSV,
         store_path=tmp_path / "project_lux.sqlite3",
+        qff_ohlcv_csv=POC_QFF_OHLCV,
+        tsm_ohlcv_csv=POC_TSM_OHLCV,
+        usdttwd_ohlcv_csv=POC_USDTTWD_OHLCV,
         strategy=StrategyConfig(
             entry_z=2.0,
-            exit_z=0.0,
+            exit_z=1.0,
             leg_notional_twd=1_000_000.0,
             initial_capital_twd=2_000_000.0,
             max_entry_delay_minutes=15,
-            zscore_window=1440,
+            zscore_window=500,
         ),
         fees=FeeConfig(
             tsm_fee_bps=5.0,
@@ -79,8 +89,12 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             polling_seconds=1.0,
             minute_finalize_delay_seconds=1.0,
             stale_seconds=10.0,
+            qff_book_stale_seconds=55.0,
+            sync_windows_time_on_startup=True,
+            clock_skew_fail_seconds=60.0,
+            windows_time_sync_timeout_seconds=15.0,
             max_leg_timestamp_skew_seconds=10.0,
-            warmup_minutes=1440,
+            warmup_minutes=500,
             qff_product="QFF",
             qff_symbol="auto",
             binance_symbol="TSM/USDT:USDT",
