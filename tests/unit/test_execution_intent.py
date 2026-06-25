@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 
-from lux_trader.execution_intent import (
+from lux_trader.execution.intent import (
     ExecutionLeg,
     ExecutionPlanStatus,
     ExecutionPlanType,

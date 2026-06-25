@@ -14,7 +14,7 @@ from lux_trader.core.models import (
     OrderStatus,
     StrategyState,
 )
-from lux_trader.post_trade_reconciliation import PostTradeReconciler
+from lux_trader.reconciliation.post_trade import PostTradeReconciler
 from lux_trader.reconciliation import (
     BrokerPositionSnapshot,
     FakeReadOnlyBroker,

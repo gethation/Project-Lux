@@ -13,7 +13,7 @@ from lux_trader.config import AppConfig, load_config
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.core.time import TAIPEI_TZ
 from lux_trader.market_data import floor_minute
-from lux_trader.live_runner import LiveDryRunRunner
+from lux_trader.runtime.live import LiveDryRunRunner
 from lux_trader.core.models import Direction, StrategyState
 from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
@@ -83,6 +83,31 @@ def seed_pending_entry_state(config: AppConfig) -> StrategyRuntimeState:
     return state
 
 
+def seed_pending_exit_state(config: AppConfig) -> None:
+    signal_time = floor_minute(datetime.now(TAIPEI_TZ))
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        resume_state = store.load_resume_state()
+        assert resume_state is not None
+        assert resume_state.strategy.state == StrategyState.OPEN
+
+        state = resume_state.strategy
+        state.state = StrategyState.EXIT_PENDING
+        state.exit_signal_idx = resume_state.row_index
+        state.exit_signal_time = signal_time
+        state.exit_signal_zscore = 0.0
+        store.save_state(
+            resume_state.row_index,
+            signal_time,
+            state,
+            resume_state.indicator,
+        )
+        store.commit()
+    finally:
+        store.close()
+
+
 def record_real_readonly_reconciliation(
     config: AppConfig,
     state: StrategyRuntimeState,
@@ -119,7 +144,7 @@ def record_real_readonly_reconciliation(
         store.close()
 
 
-def test_real_readonly_reconciliation_then_live_dry_run_simulates_entry() -> None:
+def test_real_live_dry_run_simulates_entry_exit_and_resume() -> None:
     config = load_integrated_smoke_config()
     remove_sqlite_family(config.store_path)
     state = seed_pending_entry_state(config)
@@ -194,6 +219,58 @@ def test_real_readonly_reconciliation_then_live_dry_run_simulates_entry() -> Non
     finally:
         connection.close()
 
+    seed_pending_exit_state(config)
+    exit_output = io.StringIO()
+    exit_result = LiveDryRunRunner(
+        config,
+        reporter=LiveTerminalReporter(exit_output, color=False),
+    ).run(resume=True, max_iterations=70)
+
+    assert exit_result.iterations == 70
+    assert exit_result.plans_recorded == 1
+    assert "execution_filled" in exit_output.getvalue()
+
+    connection = sqlite3.connect(config.store_path)
+    try:
+        counts = {
+            table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "warmup_bars",
+                "live_runs",
+                "execution_plans",
+                "execution_outcomes",
+                "execution_legs",
+                "orders",
+                "fills",
+                "trades",
+            )
+        }
+        assert counts["warmup_bars"] == config.live.warmup_minutes
+        assert counts["live_runs"] == 2
+        assert counts["execution_plans"] == 2
+        assert counts["execution_outcomes"] == 2
+        assert counts["execution_legs"] == 4
+        assert counts["orders"] == 4
+        assert counts["fills"] == 4
+        assert counts["trades"] == 1
+
+        latest_plan = connection.execute(
+            """
+            SELECT status, plan_type
+            FROM execution_plans
+            ORDER BY timestamp DESC, row_index DESC, plan_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        assert latest_plan == ("recorded", "exit")
+
+        state_json = connection.execute(
+            "SELECT state_json FROM strategy_state WHERE id = 1"
+        ).fetchone()[0]
+        assert '"state": "flat"' in state_json
+    finally:
+        connection.close()
+
     resume_output = io.StringIO()
     resume_result = LiveDryRunRunner(
         config,
@@ -219,12 +296,12 @@ def test_real_readonly_reconciliation_then_live_dry_run_simulates_entry() -> Non
             )
         }
         assert counts["warmup_bars"] == config.live.warmup_minutes
-        assert counts["live_runs"] == 2
-        assert counts["execution_plans"] >= 1
-        assert counts["execution_outcomes"] >= 1
-        assert counts["orders"] >= 2
-        assert counts["fills"] >= 2
-        assert counts["trades"] == 0
+        assert counts["live_runs"] == 3
+        assert counts["execution_plans"] == 2
+        assert counts["execution_outcomes"] == 2
+        assert counts["orders"] == 4
+        assert counts["fills"] == 4
+        assert counts["trades"] == 1
 
         duplicate_bars = connection.execute(
             """

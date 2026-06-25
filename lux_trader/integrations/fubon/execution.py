@@ -23,7 +23,7 @@ from ...execution import (
     ExecutionOutcomeStatus,
     order_request_from_execution_leg,
 )
-from ...execution_intent import (
+from ...execution.intent import (
     ExecutionLeg,
     ExecutionOrderType,
     ExecutionPlanType,

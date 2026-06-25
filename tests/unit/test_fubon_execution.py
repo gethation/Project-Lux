@@ -13,7 +13,7 @@ from lux_trader.cli import (
     command_fubon_order_records,
 )
 from lux_trader.execution import ExecutionOutcome, ExecutionOutcomeStatus
-from lux_trader.execution_intent import (
+from lux_trader.execution.intent import (
     ExecutionLeg,
     ExecutionOrderType,
     ExecutionPlanType,

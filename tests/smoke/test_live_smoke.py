@@ -15,7 +15,7 @@ from lux_trader.integrations.binance.market_data import BinanceMarketData
 from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.market_data import FubonQffMarketData
 from lux_trader.market_data import floor_minute
-from lux_trader.live_runner import (
+from lux_trader.runtime.live import (
     LivePaperRunner,
     QffWarmupCheckRunner,
     WarmupRunner,

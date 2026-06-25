@@ -9,7 +9,7 @@ import lux_trader.cli as cli_module
 from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
 from lux_trader.cli import build_parser, command_binance_exec_smoke
 from lux_trader.execution import ExecutionOutcome, ExecutionOutcomeStatus
-from lux_trader.execution_intent import (
+from lux_trader.execution.intent import (
     ExecutionLeg,
     ExecutionOrderType,
     ExecutionPlanType,

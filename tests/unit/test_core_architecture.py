@@ -4,6 +4,8 @@ import ast
 from pathlib import Path
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 FORBIDDEN_TOP_LEVEL_MODULES = {
     "binance_execution",
     "brokers",
@@ -32,7 +34,7 @@ FORBIDDEN_EXTERNAL_MODULES = {"ccxt", "fubon_neo", "sqlite3"}
 
 
 def test_core_does_not_depend_on_runtime_persistence_or_adapters() -> None:
-    core_dir = Path(__file__).resolve().parents[1] / "lux_trader" / "core"
+    core_dir = PROJECT_ROOT / "lux_trader" / "core"
     violations: list[str] = []
 
     for path in sorted(core_dir.glob("*.py")):
@@ -54,11 +56,7 @@ def test_core_does_not_depend_on_runtime_persistence_or_adapters() -> None:
 
 
 def test_market_data_services_do_not_import_external_adapters() -> None:
-    market_data_dir = (
-        Path(__file__).resolve().parents[1]
-        / "lux_trader"
-        / "market_data"
-    )
+    market_data_dir = PROJECT_ROOT / "lux_trader" / "market_data"
     violations: list[str] = []
 
     for path in sorted(market_data_dir.glob("*.py")):
@@ -77,7 +75,7 @@ def test_market_data_services_do_not_import_external_adapters() -> None:
 
 
 def test_fubon_raw_parser_has_single_definition() -> None:
-    package_dir = Path(__file__).resolve().parents[1] / "lux_trader"
+    package_dir = PROJECT_ROOT / "lux_trader"
     definitions: list[str] = []
 
     for path in sorted(package_dir.rglob("*.py")):
@@ -90,11 +88,7 @@ def test_fubon_raw_parser_has_single_definition() -> None:
 
 
 def test_reconciliation_domain_does_not_import_external_adapters() -> None:
-    reconciliation_dir = (
-        Path(__file__).resolve().parents[1]
-        / "lux_trader"
-        / "reconciliation"
-    )
+    reconciliation_dir = PROJECT_ROOT / "lux_trader" / "reconciliation"
     violations: list[str] = []
 
     for path in sorted(reconciliation_dir.glob("*.py")):
@@ -113,7 +107,7 @@ def test_reconciliation_domain_does_not_import_external_adapters() -> None:
 
 
 def test_store_facade_does_not_own_schema_or_split_queries() -> None:
-    store_path = Path(__file__).resolve().parents[1] / "lux_trader" / "store.py"
+    store_path = PROJECT_ROOT / "lux_trader" / "store.py"
     store_text = store_path.read_text(encoding="utf-8")
 
     assert "CREATE TABLE" not in store_text
@@ -124,19 +118,37 @@ def test_store_facade_does_not_own_schema_or_split_queries() -> None:
     assert "ReconciliationStore(self.connection)" in store_text
 
 
-def test_live_runner_is_compatibility_reexport_after_runtime_split() -> None:
-    package_dir = Path(__file__).resolve().parents[1] / "lux_trader"
-    live_runner_path = package_dir / "live_runner.py"
-    tree = ast.parse(live_runner_path.read_text(encoding="utf-8"))
-    top_level_defs = [
-        node.name
-        for node in tree.body
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef))
-    ]
+def test_no_top_level_runtime_compatibility_reexports_remain() -> None:
+    package_dir = PROJECT_ROOT / "lux_trader"
+    removed_shims = {
+        "execution_intent.py",
+        "execution_price_policy.py",
+        "execution_recorder.py",
+        "execution_simulator.py",
+        "execution_store.py",
+        "live_execution_gate.py",
+        "live_runner.py",
+        "post_trade_reconciliation.py",
+        "real_execution.py",
+    }
 
-    assert top_level_defs == []
+    for filename in removed_shims:
+        assert not (package_dir / filename).exists()
+
     for name in ("bootstrap.py", "warmup.py", "contracts.py", "modes.py", "engine.py"):
         assert (package_dir / "runtime" / "live" / name).exists()
+
+
+def test_cli_is_split_into_parser_dispatch_and_command_modules() -> None:
+    package_dir = PROJECT_ROOT / "lux_trader"
+    cli_dir = package_dir / "cli"
+
+    assert not (package_dir / "cli.py").exists()
+    assert (cli_dir / "__init__.py").exists()
+    assert (cli_dir / "parser.py").exists()
+    assert (cli_dir / "dispatch.py").exists()
+    for name in ("replay.py", "live.py", "broker.py", "execution.py"):
+        assert (cli_dir / "commands" / name).exists()
 
 
 def imported_project_module(node: ast.AST) -> str | None:

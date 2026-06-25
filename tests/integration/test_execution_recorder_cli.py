@@ -25,9 +25,9 @@ from lux_trader.execution import (
     ExecutionOutcomeStatus,
     SimulatedExecutionAdapter,
 )
-from lux_trader.execution_intent import ExecutionLeg, ExecutionPlanType, PairExecutionPlan
-from lux_trader.execution_recorder import DryRunExecutionRecorder
-from lux_trader.execution_simulator import (
+from lux_trader.execution.intent import ExecutionLeg, ExecutionPlanType, PairExecutionPlan
+from lux_trader.execution.recorder import DryRunExecutionRecorder
+from lux_trader.execution.simulation import (
     DryRunExecutionSimulator,
     ExecutionSimulationScenario,
     ExecutionSimulationStatus,

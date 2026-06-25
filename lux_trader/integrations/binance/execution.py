@@ -20,7 +20,7 @@ from ...execution import (
     ExecutionOutcomeStatus,
     order_request_from_execution_leg,
 )
-from ...execution_intent import (
+from ...execution.intent import (
     ExecutionLeg,
     ExecutionOrderType,
     ExecutionPlanType,
@@ -543,4 +543,3 @@ def binance_smoke_env_gates_open() -> dict[str, bool]:
         name: os.getenv(name, "").strip() == "1"
         for name in BINANCE_EXECUTION_SMOKE_ENV_GATES
     }
-

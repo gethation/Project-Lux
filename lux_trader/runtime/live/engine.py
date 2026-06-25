@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -164,7 +163,7 @@ class LiveRuntime:
     ) -> LiveRuntimeResult:
         self.handler.validate_config(self.config)
         if self._uses_default_clock:
-            run_live_startup_preflight_compat(
+            run_live_startup_preflight(
                 self.config,
                 self.reporter,
                 self.clock,
@@ -1084,21 +1083,4 @@ def should_wait_for_finalize_delay(
         floor_minute(observed_at) > current_minute
         and observed_at.second + observed_at.microsecond / 1_000_000 < delay_seconds
     )
-
-
-def run_live_startup_preflight_compat(
-    config: AppConfig,
-    reporter: Any,
-    clock: Callable[[], datetime],
-) -> None:
-    public_module = sys.modules.get("lux_trader.live_runner")
-    public_func = (
-        getattr(public_module, "run_live_startup_preflight", None)
-        if public_module is not None
-        else None
-    )
-    if callable(public_func) and public_func is not run_live_startup_preflight:
-        public_func(config, reporter, clock)
-        return
-    run_live_startup_preflight(config, reporter, clock)
 

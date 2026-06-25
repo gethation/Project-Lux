@@ -9,14 +9,14 @@ from zipfile import ZipFile
 import pandas as pd
 import pytest
 
-import lux_trader.live_runner as live_runner
+import lux_trader.runtime.live.engine as live_engine
 from lux_trader.config import AppConfig, LiveMarketDataConfig, SafetyConfig, load_config
 from lux_trader.execution import (
     ExecutionOutcome,
     ExecutionOutcomeStatus,
     order_request_from_execution_leg,
 )
-from lux_trader.execution_intent import PairExecutionPlan
+from lux_trader.execution.intent import PairExecutionPlan
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.integrations.ccxt_market_data import CcxtTickerMarketData
 from lux_trader.integrations.fubon.market_data import (
@@ -37,20 +37,22 @@ from lux_trader.market_data import (
     qff_symbol_to_taifex_contract_month,
     select_qff_front_month,
 )
-from lux_trader.live_runner import (
-    LiveDryRunRunner,
-    LiveExecuteRunner,
-    LivePaperRunner,
-    QffContractResolution,
+from lux_trader.runtime.live import LiveDryRunRunner, LiveExecuteRunner, LivePaperRunner
+from lux_trader.runtime.live.bootstrap import (
     WindowsTimeSyncResult,
-    QffWarmupCheckRunner,
-    WarmupRunner,
-    build_live_decision_snapshot,
+    run_live_startup_preflight,
+)
+from lux_trader.runtime.live.contracts import (
+    QffContractResolution,
     cancel_entry_pending_for_contract_switch,
     mark_pending_contract_switch_if_needed,
-    run_live_startup_preflight,
     should_force_exit_for_contract_policy,
     should_switch_contract_before_processing,
+)
+from lux_trader.runtime.live.engine import build_live_decision_snapshot
+from lux_trader.runtime.live.warmup import (
+    QffWarmupCheckRunner,
+    WarmupRunner,
 )
 from lux_trader.core.models import (
     BrokerName,
@@ -383,7 +385,7 @@ def test_load_config_defaults_live_freshness_and_clock_preflight(tmp_path) -> No
 
 
 def test_project_config_relative_paths_resolve_from_project_root() -> None:
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
     config = load_config(project_root / "configs" / "live.example.toml")
 
     assert config.store_path == project_root / "data" / "project_lux_live.sqlite3"
@@ -536,7 +538,7 @@ def test_live_runtime_clock_preflight_failure_stops_before_qff_provider(
     def fail_preflight(*_: object, **__: object) -> None:
         raise RuntimeError("clock skew test")
 
-    monkeypatch.setattr(live_runner, "run_live_startup_preflight", fail_preflight)
+    monkeypatch.setattr(live_engine, "run_live_startup_preflight", fail_preflight)
 
     with pytest.raises(RuntimeError, match="clock skew test"):
         LivePaperRunner(
@@ -566,7 +568,7 @@ def test_live_runtime_skips_clock_preflight_when_clock_is_injected(
     def fail_preflight(*_: object, **__: object) -> None:
         raise AssertionError("preflight should be skipped")
 
-    monkeypatch.setattr(live_runner, "run_live_startup_preflight", fail_preflight)
+    monkeypatch.setattr(live_engine, "run_live_startup_preflight", fail_preflight)
 
     result = LivePaperRunner(
         config,

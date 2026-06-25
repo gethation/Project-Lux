@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 from conftest import make_app_config
 
-from lux_trader.live_execution_gate import evaluate_live_execution_gate
+from lux_trader.execution.gate import evaluate_live_execution_gate
 from lux_trader.reconciliation import (
     BrokerOrderSnapshot,
     ExpectedBrokerState,
