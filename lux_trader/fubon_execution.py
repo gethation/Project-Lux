@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from math import isfinite
 from pathlib import Path
 from typing import Any, Callable
@@ -39,11 +41,91 @@ from .models import (
 from .readonly_brokers import checked_result_data, select_futopt_account
 
 
+MONTH_CODES = {
+    "A": 1,
+    "B": 2,
+    "C": 3,
+    "D": 4,
+    "E": 5,
+    "F": 6,
+    "G": 7,
+    "H": 8,
+    "I": 9,
+    "J": 10,
+    "K": 11,
+    "L": 12,
+}
+FUBON_PRODUCT_ALIASES = {
+    "TMF": {"TMF", "FITM"},
+    "QFF": {"QFF"},
+}
+FUBON_FAILED_STATUS_CODES = {"80", "90", "91", "98", "99"}
 FUBON_EXECUTION_SMOKE_ENV_GATES = (
     "PROJECT_LUX_ALLOW_LIVE_ORDER",
     "FUBON_ALLOW_LIVE_ORDER",
     "LUX_FUBON_EXECUTION_SMOKE",
 )
+FUBON_MANUAL_CLOSE_ENV_GATES = (
+    "PROJECT_LUX_ALLOW_LIVE_ORDER",
+    "FUBON_ALLOW_LIVE_ORDER",
+    "LUX_FUBON_MANUAL_CLOSE",
+)
+
+
+@dataclass(frozen=True)
+class FubonContractIdentity:
+    requested_symbol: str
+    product: str
+    contract_month: str | None
+    broker_symbols: frozenset[str]
+
+    @classmethod
+    def from_symbol(
+        cls,
+        symbol: str,
+        *,
+        reference_date: date | None = None,
+    ) -> FubonContractIdentity:
+        requested = str(symbol or "").strip().upper()
+        product = product_prefix_from_symbol(requested) or requested
+        aliases = set(FUBON_PRODUCT_ALIASES.get(product, {product}))
+        aliases.add(requested)
+        return cls(
+            requested_symbol=requested,
+            product=product,
+            contract_month=contract_month_from_symbol(
+                requested,
+                reference_date=reference_date,
+            ),
+            broker_symbols=frozenset(alias.upper() for alias in aliases if alias),
+        )
+
+    def matches(
+        self,
+        row: Any,
+        *,
+        side: OrderSide | str | None = None,
+        lot: float | int | None = None,
+    ) -> bool:
+        raw = fubon_raw_row(row)
+        actual_symbol = (fubon_symbol(raw) or "").strip().upper()
+        if not actual_symbol:
+            return False
+
+        symbol_matches = actual_symbol == self.requested_symbol
+        if not symbol_matches and actual_symbol in self.broker_symbols:
+            row_month = fubon_contract_month(raw)
+            symbol_matches = (
+                self.contract_month is None
+                or row_month == self.contract_month
+            )
+        if not symbol_matches:
+            return False
+        if side is not None and not fubon_side_matches(raw, side):
+            return False
+        if lot is not None and not fubon_lot_matches(raw, lot):
+            return False
+        return True
 
 
 @dataclass(frozen=True)
@@ -77,6 +159,10 @@ class FubonFutureExecutionAdapter:
         self.account = account
         self.sdk_factory = sdk_factory
         self.clock = clock or (lambda: datetime.now().astimezone())
+        self.identity = FubonContractIdentity.from_symbol(
+            self.symbol,
+            reference_date=self.clock().date(),
+        )
         self.sleep = sleep or time.sleep
         self.max_poll_seconds = float(max_poll_seconds)
         self.poll_interval_seconds = float(poll_interval_seconds)
@@ -119,6 +205,7 @@ class FubonFutureExecutionAdapter:
     def fetch_open_orders(self) -> tuple[dict[str, Any], ...]:
         sdk, account = self._ensure_connected()
         rows: list[dict[str, Any]] = []
+        seen: set[tuple[Any, ...]] = set()
         for market_type in self._futopt_market_types():
             raw_rows = checked_result_data(
                 sdk.futopt.get_order_results(account, market_type),
@@ -126,8 +213,32 @@ class FubonFutureExecutionAdapter:
                 empty_ok=True,
             )
             for row in raw_rows:
-                raw = safe_jsonable(row_to_dict(row))
-                if fubon_symbol(raw) == self.symbol and is_fubon_open_order(raw):
+                raw = fubon_raw_row(row)
+                if self.identity.matches(raw) and is_fubon_open_order(raw):
+                    key = fubon_record_key(raw)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append(raw)
+        return tuple(rows)
+
+    def fetch_order_records(self) -> tuple[dict[str, Any], ...]:
+        sdk, account = self._ensure_connected()
+        rows: list[dict[str, Any]] = []
+        seen: set[tuple[Any, ...]] = set()
+        for market_type in self._futopt_market_types():
+            raw_rows = checked_result_data(
+                sdk.futopt.get_order_results(account, market_type),
+                f"Fubon get_order_results {market_type}",
+                empty_ok=True,
+            )
+            for row in raw_rows:
+                raw = fubon_raw_row(row)
+                if self.identity.matches(raw):
+                    key = fubon_record_key(raw)
+                    if key in seen:
+                        continue
+                    seen.add(key)
                     rows.append(raw)
         return tuple(rows)
 
@@ -140,8 +251,8 @@ class FubonFutureExecutionAdapter:
         )
         total = 0.0
         for row in rows:
-            raw = safe_jsonable(row_to_dict(row))
-            if fubon_symbol(raw) != self.symbol:
+            raw = fubon_raw_row(row)
+            if not self.identity.matches(raw):
                 continue
             quantity = fubon_position_quantity(raw)
             if quantity is not None:
@@ -268,7 +379,7 @@ class FubonFutureExecutionAdapter:
             + 1,
         )
         market_type = self._build_order(plan, leg).market_type
-        best_row = safe_jsonable(row_to_dict(fallback_row))
+        best_row = fubon_raw_row(fallback_row)
         for attempt in range(attempts):
             try:
                 rows = checked_result_data(
@@ -293,13 +404,18 @@ class FubonFutureExecutionAdapter:
         order_id: str | None,
         leg: ExecutionLeg,
     ) -> dict[str, Any] | None:
-        candidates = [safe_jsonable(row_to_dict(row)) for row in rows]
+        candidates = [fubon_raw_row(row) for row in rows]
         if order_id:
             for row in candidates:
                 if fubon_order_id(row) == order_id:
                     return row
+                if fubon_seq_no(row) == order_id:
+                    return row
         for row in candidates:
-            if fubon_symbol(row) == leg.symbol:
+            if self.identity.matches(row, side=leg.side, lot=leg.quantity):
+                return row
+        for row in candidates:
+            if self.identity.matches(row):
                 return row
         return None
 
@@ -311,7 +427,7 @@ class FubonFutureExecutionAdapter:
         place_row: Any,
         final_row: dict[str, Any],
     ) -> ExecutionOutcome:
-        place_raw = safe_jsonable(row_to_dict(place_row))
+        place_raw = fubon_raw_row(place_row)
         order_id = fubon_order_id(final_row) or fubon_order_id(place_raw) or "UNKNOWN"
         requested = int(float(leg.quantity))
         filled_lot = fubon_filled_lot(final_row)
@@ -321,6 +437,8 @@ class FubonFutureExecutionAdapter:
         average_price = (
             fubon_average_price(final_row)
             or fubon_average_price(place_raw)
+            or fubon_filled_money_price(final_row, filled_lot)
+            or fubon_filled_money_price(place_raw, filled_lot)
             or leg.expected_price
             or leg.price
         )
@@ -442,6 +560,8 @@ def map_fubon_order_status(
         return ExecutionOutcomeStatus.FILLED
     if filled > 0.0:
         return ExecutionOutcomeStatus.PARTIAL_FILL
+    if normalized in FUBON_FAILED_STATUS_CODES:
+        return ExecutionOutcomeStatus.FAILED
     if any(keyword in normalized for keyword in ("cancel", "reject", "fail", "expire")):
         return ExecutionOutcomeStatus.FAILED
     if any(keyword in normalized for keyword in ("filled", "match")) and full_fill:
@@ -455,6 +575,84 @@ def order_status_from_outcome(status: ExecutionOutcomeStatus) -> OrderStatus:
     if status == ExecutionOutcomeStatus.FAILED:
         return OrderStatus.CANCELED
     return OrderStatus.OPEN
+
+
+def fubon_raw_row(row: Any) -> dict[str, Any]:
+    raw = safe_jsonable(row_to_dict(row))
+    if isinstance(raw, dict):
+        return unwrap_fubon_value(raw)
+    return {"value": raw}
+
+
+def unwrap_fubon_value(raw: dict[str, Any]) -> dict[str, Any]:
+    value = raw.get("value")
+    if len(raw) == 1 and isinstance(value, str):
+        parsed = parse_json_object(value)
+        if parsed is not None:
+            return parsed
+        parsed = parse_fubon_repr_object(value)
+        if parsed is not None:
+            return parsed
+    if isinstance(value, str):
+        parsed = parse_json_object(value)
+        if parsed is not None:
+            merged = dict(raw)
+            merged.pop("value", None)
+            merged.update(parsed)
+            return merged
+        parsed = parse_fubon_repr_object(value)
+        if parsed is not None:
+            merged = dict(raw)
+            merged.pop("value", None)
+            merged.update(parsed)
+            return merged
+    return raw
+
+
+def parse_json_object(value: str) -> dict[str, Any] | None:
+    text = value.strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, dict):
+        return safe_jsonable(parsed)
+    return None
+
+
+def parse_fubon_repr_object(value: str) -> dict[str, Any] | None:
+    text = value.strip()
+    if "{" not in text or "}" not in text:
+        return None
+    body = text[text.find("{") + 1 : text.rfind("}")]
+    parsed: dict[str, Any] = {}
+    for line in body.splitlines():
+        item = line.strip().rstrip(",")
+        if not item or ":" not in item:
+            continue
+        key, raw_value = item.split(":", 1)
+        key = key.strip()
+        parsed[key] = parse_fubon_repr_value(raw_value.strip())
+    return parsed or None
+
+
+def parse_fubon_repr_value(value: str) -> Any:
+    if value == "None":
+        return None
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    numeric = parse_optional_float(value)
+    if numeric is not None:
+        if numeric.is_integer():
+            return int(numeric)
+        return numeric
+    return value
 
 
 def fubon_order_id(row: Any) -> str | None:
@@ -473,9 +671,75 @@ def fubon_order_id(row: Any) -> str | None:
     )
 
 
+def fubon_record_key(row: Any) -> tuple[Any, ...]:
+    raw = row_to_dict(row)
+    return (
+        fubon_order_id(raw),
+        fubon_seq_no(raw),
+        fubon_symbol(raw),
+        fubon_contract_month(raw),
+        fubon_first_text(raw, "buy_sell", "buySell", "bs", "side"),
+        fubon_first_float(raw, "lot", "lots", "quantity", "qty"),
+    )
+
+
+def fubon_seq_no(row: Any) -> str | None:
+    raw = row_to_dict(row)
+    return fubon_first_text(raw, "seq_no", "seqNo")
+
+
 def fubon_symbol(row: Any) -> str | None:
     raw = row_to_dict(row)
     return fubon_first_text(raw, "symbol", "code", "id", "ticker", "stock_no", "prod_id")
+
+
+def fubon_symbol_matches(row: Any, requested_symbol: str) -> bool:
+    return FubonContractIdentity.from_symbol(requested_symbol).matches(row)
+
+
+def product_prefix_from_symbol(symbol: str) -> str | None:
+    match = re.fullmatch(r"([A-Z]+)([A-L])(\d)", symbol.strip().upper())
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def contract_month_from_symbol(
+    symbol: str,
+    *,
+    reference_date: date | None = None,
+) -> str | None:
+    match = re.fullmatch(r"([A-Z]+)([A-L])(\d)", symbol.strip().upper())
+    if match is None:
+        return None
+    month = MONTH_CODES.get(match.group(2))
+    if month is None:
+        return None
+    reference = reference_date or datetime.now().astimezone().date()
+    year_digit = int(match.group(3))
+    decade = reference.year - reference.year % 10
+    year = decade + year_digit
+    while year < reference.year - 1:
+        year += 10
+    return f"{year}{month:02d}"
+
+
+def fubon_contract_month(row: dict[str, Any]) -> str | None:
+    value = fubon_first_text(
+        row,
+        "expiry_date",
+        "expiryDate",
+        "contract_month",
+        "contractMonth",
+        "settlement_month",
+        "settlementMonth",
+    )
+    if value is None:
+        return None
+    digits = re.sub(r"\D", "", value)
+    if len(digits) >= 6:
+        return digits[:6]
+    return None
 
 
 def fubon_status_text(row: Any) -> str:
@@ -484,6 +748,30 @@ def fubon_status_text(row: Any) -> str:
         fubon_first_text(raw, "status", "order_status", "orderStatus", "state")
         or ""
     )
+
+
+def fubon_side_matches(row: Any, side: OrderSide | str) -> bool:
+    expected = normalize_side_text(side)
+    actual = normalize_side_text(
+        fubon_first_text(row_to_dict(row), "buy_sell", "buySell", "bs", "side")
+    )
+    return expected is not None and actual == expected
+
+
+def normalize_side_text(side: OrderSide | str | None) -> str | None:
+    text = str(getattr(side, "value", side) or "").strip().lower()
+    if text in {"buy", "b", "1", "long"} or "buy" in text:
+        return "buy"
+    if text in {"sell", "s", "2", "short"} or "sell" in text:
+        return "sell"
+    return None
+
+
+def fubon_lot_matches(row: Any, lot: float | int) -> bool:
+    actual = fubon_first_float(row_to_dict(row), "lot", "lots", "quantity", "qty")
+    if actual is None:
+        return False
+    return abs(actual - float(lot)) <= 1e-12
 
 
 def fubon_filled_lot(row: Any) -> float | None:
@@ -523,6 +811,16 @@ def fubon_average_price(row: Any) -> float | None:
     )
 
 
+def fubon_filled_money_price(row: Any, filled_lot: float) -> float | None:
+    if filled_lot <= 0:
+        return None
+    raw = row_to_dict(row)
+    money = fubon_first_float(raw, "filled_money", "filledMoney")
+    if money is None:
+        return None
+    return money / filled_lot
+
+
 def fubon_position_quantity(row: dict[str, Any]) -> float | None:
     quantity = fubon_first_float(
         row,
@@ -557,6 +855,8 @@ def is_fubon_final_order(row: dict[str, Any]) -> bool:
     filled = fubon_filled_lot(row) or 0.0
     requested = fubon_first_float(row, "lot", "lots", "quantity", "qty") or 0.0
     if requested > 0 and filled >= requested:
+        return True
+    if status in FUBON_FAILED_STATUS_CODES:
         return True
     return any(
         keyword in status
@@ -606,6 +906,13 @@ def fubon_smoke_env_gates_open() -> dict[str, bool]:
     return {
         name: os.getenv(name, "").strip() == "1"
         for name in FUBON_EXECUTION_SMOKE_ENV_GATES
+    }
+
+
+def fubon_manual_close_env_gates_open() -> dict[str, bool]:
+    return {
+        name: os.getenv(name, "").strip() == "1"
+        for name in FUBON_MANUAL_CLOSE_ENV_GATES
     }
 
 

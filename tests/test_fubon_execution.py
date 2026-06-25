@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
 
 import lux_trader.cli as cli_module
-from lux_trader.cli import build_parser, command_fubon_exec_smoke
+from lux_trader.cli import (
+    build_parser,
+    command_fubon_exec_smoke,
+    command_fubon_manual_close,
+    command_fubon_order_records,
+)
 from lux_trader.execution import ExecutionOutcome, ExecutionOutcomeStatus
 from lux_trader.execution_intent import (
     ExecutionLeg,
@@ -14,7 +19,14 @@ from lux_trader.execution_intent import (
     ExecutionPlanType,
     PairExecutionPlan,
 )
-from lux_trader.fubon_execution import FubonFutureExecutionAdapter
+from lux_trader.fubon_execution import (
+    FubonContractIdentity,
+    FubonFutureExecutionAdapter,
+    contract_month_from_symbol,
+    fubon_raw_row,
+    fubon_symbol_matches,
+    map_fubon_order_status,
+)
 from lux_trader.models import (
     BrokerName,
     Direction,
@@ -169,6 +181,55 @@ def filled_row(*, filled_lot: float = 1.0, status: str = "filled") -> dict:
     }
 
 
+def fubon_repr_order_result() -> dict:
+    return {
+        "value": """FutOptOrderResult {
+    function_type: None,
+    date: "2026/06/25",
+    seq_no: "00110342383",
+    branch_no: "15000",
+    account: "8246253",
+    order_no: "s0E1X",
+    asset_type: 1,
+    market: "TAIMEX",
+    market_type: Future,
+    symbol: "FITM",
+    expiry_date: "202607",
+    buy_sell: Buy,
+    price_type: Market,
+    price: 0,
+    lot: 1,
+    after_lot: 1,
+    time_in_force: IOC,
+    order_type: New,
+    status: 50,
+    is_pre_order: false,
+    filled_lot: 1,
+    filled_money: 46497,
+    user_def: "Projec",
+    last_time: "13:35:47.000",
+    details: None,
+    error_message: None,
+}"""
+    }
+
+
+def qff_repr_order_result() -> dict:
+    return {
+        "value": """FutOptOrderResult {
+    order_no: "qff-order",
+    seq_no: "qff-seq",
+    symbol: "QFF",
+    expiry_date: "202607",
+    buy_sell: Sell,
+    lot: 2,
+    status: 50,
+    filled_lot: 2,
+    filled_money: 480000,
+}"""
+    }
+
+
 def adapter_for(fake_sdk: FakeSdk) -> FubonFutureExecutionAdapter:
     return FubonFutureExecutionAdapter(
         SYMBOL,
@@ -206,6 +267,93 @@ def test_adapter_places_entry_market_auto_order_fields() -> None:
     assert order.price is None
     assert fake_sdk.futopt.place_calls[0]["unblock"] is False
     assert outcome.fills[0].price == 123.0
+
+
+def test_adapter_matches_fubon_repr_order_result_symbol_and_expiry() -> None:
+    fake_sdk = FakeSdk(order_results=[fubon_repr_order_result()])
+
+    outcome = adapter_for(fake_sdk).execute(execution_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.FILLED
+    assert outcome.fills[0].quantity == 1
+    assert outcome.fills[0].price == 46497.0
+    assert outcome.payload["final_order"]["symbol"] == "FITM"
+    assert outcome.payload["final_order"]["expiry_date"] == "202607"
+
+
+def test_adapter_fetch_order_records_filters_by_contract_identity() -> None:
+    other_tmf_month = {
+        "value": """FutOptOrderResult {
+    order_no: "other-month",
+    symbol: "FITM",
+    expiry_date: "202608",
+    buy_sell: Buy,
+    lot: 1,
+    status: 50,
+    filled_lot: 1,
+}"""
+    }
+    fake_sdk = FakeSdk(
+        order_results=[
+            other_tmf_month,
+            qff_repr_order_result(),
+            fubon_repr_order_result(),
+        ]
+    )
+
+    records = adapter_for(fake_sdk).fetch_order_records()
+
+    assert len(records) == 1
+    assert records[0]["order_no"] == "s0E1X"
+    assert records[0]["symbol"] == "FITM"
+
+
+def test_fubon_repr_row_parser_and_tmf_symbol_match() -> None:
+    raw = fubon_raw_row(fubon_repr_order_result())
+
+    assert raw["symbol"] == "FITM"
+    assert raw["filled_lot"] == 1
+    assert raw["is_pre_order"] is False
+    assert contract_month_from_symbol("TMFG6", reference_date=date(2026, 6, 25)) == "202607"
+    assert fubon_symbol_matches(raw, "TMFG6")
+
+
+def test_contract_identity_supports_tmf_and_qff_aliases() -> None:
+    tmf = FubonContractIdentity.from_symbol(
+        "TMFG6",
+        reference_date=date(2026, 6, 25),
+    )
+    qff = FubonContractIdentity.from_symbol(
+        "QFFG6",
+        reference_date=date(2026, 6, 25),
+    )
+
+    assert tmf.product == "TMF"
+    assert tmf.contract_month == "202607"
+    assert "FITM" in tmf.broker_symbols
+    assert tmf.matches(fubon_raw_row(fubon_repr_order_result()), side=OrderSide.BUY, lot=1)
+    assert qff.product == "QFF"
+    assert qff.contract_month == "202607"
+    assert qff.matches(fubon_raw_row(qff_repr_order_result()), side=OrderSide.SELL, lot=2)
+
+
+def test_fubon_status_mapping_uses_fill_quantity_before_status_code() -> None:
+    assert (
+        map_fubon_order_status(status_text="50", requested=1.0, filled=1.0)
+        == ExecutionOutcomeStatus.FILLED
+    )
+    assert (
+        map_fubon_order_status(status_text="50", requested=2.0, filled=1.0)
+        == ExecutionOutcomeStatus.PARTIAL_FILL
+    )
+    assert (
+        map_fubon_order_status(status_text="90", requested=1.0, filled=0.0)
+        == ExecutionOutcomeStatus.FAILED
+    )
+    assert (
+        map_fubon_order_status(status_text="10", requested=1.0, filled=0.0)
+        == ExecutionOutcomeStatus.UNKNOWN
+    )
 
 
 def test_adapter_exit_uses_close_sell_order() -> None:
@@ -328,10 +476,36 @@ class FakeSmokeAdapter:
         *,
         open_orders: tuple[dict, ...] = (),
         position_quantity: float = 0.0,
+        position_quantities: tuple[float, ...] = (1.0, 0.0),
+        order_records: tuple[dict, ...] = (
+            {
+                "order_no": "fake-entry",
+                "symbol": SYMBOL,
+                "buy_sell": "Buy",
+                "status": "filled",
+                "lot": 1,
+                "filled_lot": 1,
+                "average_price": 100.0,
+            },
+            {
+                "order_no": "fake-exit",
+                "symbol": SYMBOL,
+                "buy_sell": "Sell",
+                "status": "filled",
+                "lot": 1,
+                "filled_lot": 1,
+                "average_price": 100.0,
+            },
+        ),
+        entry_status: ExecutionOutcomeStatus = ExecutionOutcomeStatus.FILLED,
         exit_status: ExecutionOutcomeStatus = ExecutionOutcomeStatus.FILLED,
     ) -> None:
         self.open_orders = open_orders
         self.position_quantity = position_quantity
+        self.position_quantities = position_quantities
+        self.position_query_count = 0
+        self.order_records = order_records
+        self.entry_status = entry_status
         self.exit_status = exit_status
         self.executed_plans: list[PairExecutionPlan] = []
         self.close_called = False
@@ -352,7 +526,7 @@ class FakeSmokeAdapter:
         status = (
             self.exit_status
             if plan.plan_type == ExecutionPlanType.EXIT
-            else ExecutionOutcomeStatus.FILLED
+            else self.entry_status
         )
         fills: tuple[Fill, ...] = ()
         if status == ExecutionOutcomeStatus.FILLED:
@@ -395,10 +569,17 @@ class FakeSmokeAdapter:
         )
 
     def fetch_open_orders(self):
-        return ()
+        return self.open_orders
 
     def fetch_position_quantity(self) -> float:
-        return 0.0
+        self.position_query_count += 1
+        if self.position_quantities:
+            index = min(self.position_query_count - 1, len(self.position_quantities) - 1)
+            return self.position_quantities[index]
+        return self.position_quantity
+
+    def fetch_order_records(self):
+        return self.order_records
 
     def close(self) -> None:
         self.close_called = True
@@ -410,10 +591,17 @@ def set_smoke_env(monkeypatch) -> None:
     monkeypatch.setenv("LUX_FUBON_EXECUTION_SMOKE", "1")
 
 
+def set_manual_close_env(monkeypatch) -> None:
+    monkeypatch.setenv("PROJECT_LUX_ALLOW_LIVE_ORDER", "1")
+    monkeypatch.setenv("FUBON_ALLOW_LIVE_ORDER", "1")
+    monkeypatch.setenv("LUX_FUBON_MANUAL_CLOSE", "1")
+
+
 def clear_smoke_env(monkeypatch) -> None:
     monkeypatch.delenv("PROJECT_LUX_ALLOW_LIVE_ORDER", raising=False)
     monkeypatch.delenv("FUBON_ALLOW_LIVE_ORDER", raising=False)
     monkeypatch.delenv("LUX_FUBON_EXECUTION_SMOKE", raising=False)
+    monkeypatch.delenv("LUX_FUBON_MANUAL_CLOSE", raising=False)
 
 
 def test_fubon_exec_smoke_requires_lot_arg(tmp_path: Path) -> None:
@@ -450,6 +638,7 @@ def test_fubon_exec_smoke_rejects_missing_env_gates(
             "1",
             "--confirm-symbol",
             SYMBOL,
+            "--raw-json",
         ]
     )
 
@@ -579,6 +768,10 @@ def test_fubon_exec_smoke_opens_then_closes(
     output = capsys.readouterr().out
     assert exit_code == 0
     assert "Fubon execution smoke complete" in output
+    assert "Fubon execution smoke after_entry: position=1, open_orders=0" in output
+    assert "Fubon execution smoke after_exit: position=0, open_orders=0" in output
+    assert "Fubon execution smoke order_records: count=2" in output
+    assert "fake-entry" in output
     assert len(fake_adapter.executed_plans) == 2
     entry, exit_plan = fake_adapter.executed_plans
     assert entry.plan_type == ExecutionPlanType.ENTRY
@@ -586,6 +779,255 @@ def test_fubon_exec_smoke_opens_then_closes(
     assert exit_plan.plan_type == ExecutionPlanType.EXIT
     assert exit_plan.legs[0].side == OrderSide.SELL
     assert exit_plan.legs[0].quantity == 1.0
+    assert fake_adapter.close_called
+
+
+def test_fubon_exec_smoke_entry_unknown_prints_diagnostics_without_close(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    set_smoke_env(monkeypatch)
+    fake_adapter = FakeSmokeAdapter(
+        entry_status=ExecutionOutcomeStatus.UNKNOWN,
+        position_quantities=(0.0,),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "FubonFutureExecutionAdapter",
+        lambda *args, **kwargs: fake_adapter,
+    )
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "fubon-exec-smoke",
+            "--config",
+            str(write_config(tmp_path)),
+            "--symbol",
+            SYMBOL,
+            "--lot",
+            "1",
+            "--confirm-symbol",
+            SYMBOL,
+            "--raw-json",
+        ]
+    )
+
+    exit_code = command_fubon_exec_smoke(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "entry_unknown_diagnostic: position=0, open_orders=0" in output
+    assert "Fubon execution smoke order_records: count=2" in output
+    assert "CRITICAL manual intervention required" in output
+    assert len(fake_adapter.executed_plans) == 1
+    assert fake_adapter.executed_plans[0].plan_type == ExecutionPlanType.ENTRY
+    assert fake_adapter.close_called
+
+
+def test_fubon_order_records_readonly_prints_position_and_records(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("LUX_READONLY_BROKER", "1")
+    fake_adapter = FakeSmokeAdapter(position_quantities=(0.0,))
+    monkeypatch.setattr(
+        cli_module,
+        "FubonFutureExecutionAdapter",
+        lambda *args, **kwargs: fake_adapter,
+    )
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "fubon-order-records",
+            "--config",
+            str(write_config(tmp_path)),
+            "--symbol",
+            SYMBOL,
+            "--raw-json",
+        ]
+    )
+
+    exit_code = command_fubon_order_records(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert f"Fubon order records: symbol={SYMBOL}" in output
+    assert "Fubon execution smoke readonly: position=0, open_orders=0" in output
+    assert "Fubon execution smoke order_records: count=2" in output
+    assert "fake-entry" in output
+    assert fake_adapter.executed_plans == []
+    assert fake_adapter.close_called
+
+
+def test_fubon_manual_close_requires_env_gates(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    clear_smoke_env(monkeypatch)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "fubon-manual-close",
+            "--config",
+            str(write_config(tmp_path)),
+            "--symbol",
+            SYMBOL,
+            "--side",
+            "sell",
+            "--lot",
+            "1",
+            "--confirm-symbol",
+            SYMBOL,
+        ]
+    )
+
+    with pytest.raises(SystemExit, match="manual close gates closed"):
+        command_fubon_manual_close(args)
+
+
+def test_fubon_manual_close_rejects_confirm_symbol_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    set_manual_close_env(monkeypatch)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "fubon-manual-close",
+            "--config",
+            str(write_config(tmp_path)),
+            "--symbol",
+            SYMBOL,
+            "--side",
+            "sell",
+            "--lot",
+            "1",
+            "--confirm-symbol",
+            "TMFH6",
+        ]
+    )
+
+    with pytest.raises(SystemExit, match="confirm-symbol"):
+        command_fubon_manual_close(args)
+
+
+def test_fubon_manual_close_rejects_open_orders(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    set_manual_close_env(monkeypatch)
+    fake_adapter = FakeSmokeAdapter(open_orders=({"id": "existing"},))
+    monkeypatch.setattr(
+        cli_module,
+        "FubonFutureExecutionAdapter",
+        lambda *args, **kwargs: fake_adapter,
+    )
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "fubon-manual-close",
+            "--config",
+            str(write_config(tmp_path)),
+            "--symbol",
+            SYMBOL,
+            "--side",
+            "sell",
+            "--lot",
+            "1",
+            "--confirm-symbol",
+            SYMBOL,
+        ]
+    )
+
+    with pytest.raises(SystemExit, match="existing open orders"):
+        command_fubon_manual_close(args)
+    assert fake_adapter.executed_plans == []
+    assert fake_adapter.close_called
+
+
+def test_fubon_manual_close_sends_close_order_and_reports_success(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    set_manual_close_env(monkeypatch)
+    fake_adapter = FakeSmokeAdapter(position_quantities=(1.0, 0.0))
+    monkeypatch.setattr(
+        cli_module,
+        "FubonFutureExecutionAdapter",
+        lambda *args, **kwargs: fake_adapter,
+    )
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "fubon-manual-close",
+            "--config",
+            str(write_config(tmp_path)),
+            "--symbol",
+            SYMBOL,
+            "--side",
+            "sell",
+            "--lot",
+            "1",
+            "--confirm-symbol",
+            SYMBOL,
+            "--raw-json",
+        ]
+    )
+
+    exit_code = command_fubon_manual_close(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Fubon manual close complete" in output
+    assert len(fake_adapter.executed_plans) == 1
+    plan = fake_adapter.executed_plans[0]
+    assert plan.plan_type == ExecutionPlanType.EXIT
+    assert plan.legs[0].side == OrderSide.SELL
+    assert fake_adapter.close_called
+
+
+def test_fubon_manual_close_partial_fill_requires_manual_intervention(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    set_manual_close_env(monkeypatch)
+    monkeypatch.setattr(cli_module.time, "sleep", lambda _: None)
+    fake_adapter = FakeSmokeAdapter(
+        position_quantities=(1.0, 1.0),
+        exit_status=ExecutionOutcomeStatus.PARTIAL_FILL,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "FubonFutureExecutionAdapter",
+        lambda *args, **kwargs: fake_adapter,
+    )
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "fubon-manual-close",
+            "--config",
+            str(write_config(tmp_path)),
+            "--symbol",
+            SYMBOL,
+            "--side",
+            "sell",
+            "--lot",
+            "1",
+            "--confirm-symbol",
+            SYMBOL,
+        ]
+    )
+
+    exit_code = command_fubon_manual_close(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "CRITICAL manual intervention required" in output
+    assert len(fake_adapter.executed_plans) == 1
     assert fake_adapter.close_called
 
 

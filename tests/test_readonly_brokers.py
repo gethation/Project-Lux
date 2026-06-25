@@ -10,6 +10,7 @@ from lux_trader.readonly_brokers import (
     FubonReadOnlyBroker,
     checked_result_data,
     normalize_binance_position,
+    normalize_fubon_margin,
     normalize_fubon_order,
     select_futopt_account,
 )
@@ -164,6 +165,23 @@ def test_fubon_order_normalizer_skips_final_orders() -> None:
     assert normalize_fubon_order({"status": "filled", "symbol": "QFFG6"}) is None
     assert normalize_fubon_order({"status": "canceled", "symbol": "QFFG6"}) is None
     assert normalize_fubon_order({"status": "open", "symbol": "QFFG6"}) is not None
+
+
+def test_fubon_margin_normalizer_parses_value_json_string() -> None:
+    margin = normalize_fubon_margin(
+        {
+            "value": (
+                '{"currency":"TWD","today_equity":60110.0,'
+                '"available_margin":60110.0,"initial_margin":0.0}'
+            )
+        }
+    )
+
+    assert margin is not None
+    assert margin.currency == "TWD"
+    assert margin.equity == 60110.0
+    assert margin.available == 60110.0
+    assert margin.margin_used == 0.0
 
 
 def test_fubon_empty_position_result_can_be_treated_as_empty() -> None:

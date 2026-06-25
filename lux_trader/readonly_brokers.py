@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -268,7 +269,7 @@ def select_futopt_account(accounts: list[Any]) -> Any:
 
 
 def normalize_fubon_position(row: Any) -> BrokerPositionSnapshot | None:
-    raw = safe_jsonable(row_to_dict(row))
+    raw = fubon_raw_row(row)
     symbol = first_text(raw, "symbol", "code", "id", "ticker", "stock_no", "prod_id")
     if not symbol:
         return None
@@ -303,7 +304,7 @@ def normalize_fubon_position(row: Any) -> BrokerPositionSnapshot | None:
 
 
 def normalize_fubon_order(row: Any) -> BrokerOrderSnapshot | None:
-    raw = safe_jsonable(row_to_dict(row))
+    raw = fubon_raw_row(row)
     status = first_text(raw, "status", "order_status", "orderStatus", "state") or ""
     if not is_open_order_status(status):
         return None
@@ -322,11 +323,11 @@ def normalize_fubon_order(row: Any) -> BrokerOrderSnapshot | None:
 
 
 def normalize_fubon_margin(row: Any) -> BrokerMarginSnapshot | None:
-    raw = safe_jsonable(row_to_dict(row))
+    raw = fubon_raw_row(row)
     return BrokerMarginSnapshot(
         broker=BrokerName.FUBON_QFF,
         currency=first_text(raw, "currency", "currency_code") or "TWD",
-        equity=first_float(raw, "equity", "account_equity", "balance"),
+        equity=first_float(raw, "equity", "account_equity", "today_equity", "balance"),
         available=first_float(raw, "available", "available_margin", "availableBalance"),
         margin_used=first_float(raw, "margin_used", "used_margin", "initial_margin"),
         raw=raw,
@@ -433,6 +434,84 @@ def mask_account(value: Any, visible: int = 3) -> str:
     if len(text) <= visible:
         return "*" * len(text)
     return "*" * (len(text) - visible) + text[-visible:]
+
+
+def fubon_raw_row(row: Any) -> dict[str, Any]:
+    raw = safe_jsonable(row_to_dict(row))
+    if isinstance(raw, dict):
+        return unwrap_fubon_value(raw)
+    return {"value": raw}
+
+
+def unwrap_fubon_value(raw: dict[str, Any]) -> dict[str, Any]:
+    value = raw.get("value")
+    if len(raw) == 1 and isinstance(value, str):
+        parsed = parse_json_object(value)
+        if parsed is not None:
+            return parsed
+        parsed = parse_fubon_repr_object(value)
+        if parsed is not None:
+            return parsed
+    if isinstance(value, str):
+        parsed = parse_json_object(value)
+        if parsed is not None:
+            merged = dict(raw)
+            merged.pop("value", None)
+            merged.update(parsed)
+            return merged
+        parsed = parse_fubon_repr_object(value)
+        if parsed is not None:
+            merged = dict(raw)
+            merged.pop("value", None)
+            merged.update(parsed)
+            return merged
+    return raw
+
+
+def parse_json_object(value: str) -> dict[str, Any] | None:
+    text = value.strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, dict):
+        return safe_jsonable(parsed)
+    return None
+
+
+def parse_fubon_repr_object(value: str) -> dict[str, Any] | None:
+    text = value.strip()
+    if "{" not in text or "}" not in text:
+        return None
+    body = text[text.find("{") + 1 : text.rfind("}")]
+    parsed: dict[str, Any] = {}
+    for line in body.splitlines():
+        item = line.strip().rstrip(",")
+        if not item or ":" not in item:
+            continue
+        key, raw_value = item.split(":", 1)
+        key = key.strip()
+        parsed[key] = parse_fubon_repr_value(raw_value.strip())
+    return parsed or None
+
+
+def parse_fubon_repr_value(value: str) -> Any:
+    if value == "None":
+        return None
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    numeric = parse_optional_float(value)
+    if numeric is not None:
+        if numeric.is_integer():
+            return int(numeric)
+        return numeric
+    return value
 
 
 def safe_jsonable(value: Any) -> Any:

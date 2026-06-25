@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -35,7 +36,9 @@ from .execution_recorder import DryRunExecutionRecorder
 from .execution_simulator import DryRunExecutionSimulator, ExecutionSimulationScenario
 from .fubon_execution import (
     FUBON_EXECUTION_SMOKE_ENV_GATES,
+    FUBON_MANUAL_CLOSE_ENV_GATES,
     FubonFutureExecutionAdapter,
+    fubon_manual_close_env_gates_open,
     fubon_smoke_env_gates_open,
 )
 from .live_execution_gate import (
@@ -56,6 +59,7 @@ from .reconciliation import (
     ReadOnlyBroker,
     ReconciliationStatus,
 )
+from .readonly_brokers import FubonReadOnlyBroker
 from .models import BrokerName, Direction, OrderSide
 from .runner import SystemRunner
 from .store import SQLiteStore
@@ -91,6 +95,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Check read-only broker reconciliation skeleton config",
     )
     broker_doctor.add_argument("--config", type=Path, required=True)
+
+    fubon_account_funds = subparsers.add_parser(
+        "fubon-account-funds",
+        help="Print Fubon futures account margin/equity using read-only API",
+    )
+    fubon_account_funds.add_argument("--config", type=Path, required=True)
+    fubon_account_funds.add_argument(
+        "--raw-json",
+        action="store_true",
+        help="Print raw Fubon margin rows for field-level audit",
+    )
+
+    fubon_order_records = subparsers.add_parser(
+        "fubon-order-records",
+        help="Print Fubon futures position, open orders, and order records read-only",
+    )
+    fubon_order_records.add_argument("--config", type=Path, required=True)
+    fubon_order_records.add_argument("--symbol", required=True)
+    fubon_order_records.add_argument(
+        "--raw-json",
+        action="store_true",
+        help="Print raw Fubon order result rows",
+    )
+
+    fubon_manual_close = subparsers.add_parser(
+        "fubon-manual-close",
+        help="Emergency close a Fubon futures position with market IOC",
+    )
+    fubon_manual_close.add_argument("--config", type=Path, required=True)
+    fubon_manual_close.add_argument("--symbol", required=True)
+    fubon_manual_close.add_argument("--side", choices=("buy", "sell"), required=True)
+    fubon_manual_close.add_argument("--lot", type=int, required=True)
+    fubon_manual_close.add_argument("--confirm-symbol", required=True)
+    fubon_manual_close.add_argument(
+        "--raw-json",
+        action="store_true",
+        help="Print raw Fubon order result rows after manual close",
+    )
 
     reconcile_brokers = subparsers.add_parser(
         "reconcile-brokers",
@@ -235,6 +277,11 @@ def build_parser() -> argparse.ArgumentParser:
     fubon_exec_smoke.add_argument("--symbol", required=True)
     fubon_exec_smoke.add_argument("--lot", type=int, required=True)
     fubon_exec_smoke.add_argument("--confirm-symbol", required=True)
+    fubon_exec_smoke.add_argument(
+        "--raw-json",
+        action="store_true",
+        help="Print raw Fubon order result rows after the smoke",
+    )
 
     live_doctor = subparsers.add_parser("live-doctor", help="Check live-paper config")
     live_doctor.add_argument("--config", type=Path, required=True)
@@ -366,6 +413,148 @@ def command_broker_doctor(args: argparse.Namespace) -> int:
     for check in checks:
         print(f"- {check}")
     return 0
+
+
+def command_fubon_account_funds(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    if not readonly_broker_enabled():
+        raise SystemExit("Set LUX_READONLY_BROKER=1 to query Fubon account funds")
+
+    broker = FubonReadOnlyBroker(config.live.fubon_env_path)
+    try:
+        snapshot = broker.fetch_snapshot()
+    finally:
+        broker.close()
+
+    print("Fubon account funds")
+    print(f"- account={snapshot.account_id}")
+    print(f"- fetched_at={snapshot.fetched_at.isoformat()}")
+    print(f"- positions={len(snapshot.positions)}")
+    print(f"- open_orders={len(snapshot.open_orders)}")
+    if not snapshot.margins:
+        print("- margins=0")
+        return 0
+
+    print(f"- margins={len(snapshot.margins)}")
+    for index, margin in enumerate(snapshot.margins, start=1):
+        print(
+            f"- margin[{index}] "
+            f"currency={margin.currency} "
+            f"equity={format_optional_number(margin.equity)} "
+            f"available={format_optional_number(margin.available)} "
+            f"margin_used={format_optional_number(margin.margin_used)}"
+        )
+        if args.raw_json:
+            print(
+                json.dumps(
+                    margin.raw or {},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                    default=str,
+                )
+            )
+    return 0
+
+
+def command_fubon_order_records(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    if not readonly_broker_enabled():
+        raise SystemExit("Set LUX_READONLY_BROKER=1 to query Fubon order records")
+    symbol = str(args.symbol).strip()
+    if not symbol:
+        raise SystemExit("--symbol is required")
+
+    adapter = FubonFutureExecutionAdapter(symbol, config.live.fubon_env_path)
+    try:
+        position = adapter.fetch_position_quantity()
+        open_orders = adapter.fetch_open_orders()
+        records = adapter.fetch_order_records()
+    finally:
+        adapter.close()
+
+    print(f"Fubon order records: symbol={symbol}")
+    print_fubon_smoke_position(
+        "readonly",
+        position=position,
+        open_orders=len(open_orders),
+    )
+    print_fubon_smoke_order_records(records, raw_json=bool(args.raw_json))
+    return 0
+
+
+def command_fubon_manual_close(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    require_fubon_manual_close_ready(config, args)
+
+    symbol = str(args.symbol).strip()
+    lot = int(args.lot)
+    side = OrderSide.BUY if str(args.side).lower() == "buy" else OrderSide.SELL
+    adapter = FubonFutureExecutionAdapter(symbol, config.live.fubon_env_path)
+    try:
+        pre_position = adapter.fetch_position_quantity()
+        pre_open_orders = adapter.fetch_open_orders()
+        print_fubon_smoke_position(
+            "manual_close_precheck",
+            position=pre_position,
+            open_orders=len(pre_open_orders),
+        )
+        print_fubon_smoke_order_records(
+            adapter.fetch_order_records(),
+            raw_json=bool(args.raw_json),
+        )
+        if pre_open_orders:
+            raise SystemExit(
+                "Refusing Fubon manual close with existing open orders: "
+                f"{len(pre_open_orders)}"
+            )
+        if abs(pre_position) <= 1e-12:
+            print(
+                "WARN Fubon position query returned zero before manual close; "
+                "continuing because --side/--lot were explicitly provided"
+            )
+
+        timestamp = datetime.now().astimezone().replace(microsecond=0)
+        close_plan = build_fubon_smoke_plan(
+            symbol=symbol,
+            lot=lot,
+            side=side,
+            plan_type=ExecutionPlanType.EXIT,
+            timestamp=timestamp,
+        )
+        outcome = adapter.execute(close_plan)
+        print_fubon_smoke_outcome("manual_close", outcome)
+
+        final_open_orders = adapter.fetch_open_orders()
+        final_position = fetch_fubon_position_with_retry(
+            adapter,
+            expected="zero",
+        )
+        print_fubon_smoke_position(
+            "manual_close_after",
+            position=final_position,
+            open_orders=len(final_open_orders),
+        )
+        print_fubon_smoke_order_records(
+            adapter.fetch_order_records(),
+            raw_json=bool(args.raw_json),
+        )
+        if not outcome.filled or final_open_orders or abs(final_position) > 1e-12:
+            print("CRITICAL manual intervention required")
+            return 1
+        print(
+            "Fubon manual close complete: "
+            f"position={final_position:g}, open_orders={len(final_open_orders)}"
+        )
+        return 0
+    finally:
+        adapter.close()
+
+
+def format_optional_number(value: float | None) -> str:
+    if value is None:
+        return "NA"
+    return f"{value:,.4f}".rstrip("0").rstrip(".")
 
 
 def command_reconcile_brokers(args: argparse.Namespace) -> int:
@@ -817,8 +1006,34 @@ def command_fubon_exec_smoke(args: argparse.Namespace) -> int:
         print_fubon_smoke_outcome("entry", entry_outcome)
         entry_filled_lot = int(sum(fill.quantity for fill in entry_outcome.fills))
         if entry_filled_lot <= 0:
+            diagnostic_position = adapter.fetch_position_quantity()
+            diagnostic_open_orders = adapter.fetch_open_orders()
+            print_fubon_smoke_position(
+                "entry_unknown_diagnostic",
+                position=diagnostic_position,
+                open_orders=len(diagnostic_open_orders),
+            )
+            print_fubon_smoke_order_records(
+                adapter.fetch_order_records(),
+                raw_json=bool(args.raw_json),
+            )
             print("CRITICAL manual intervention required")
             return 1
+        after_entry_position = fetch_fubon_position_with_retry(
+            adapter,
+            expected="nonzero",
+        )
+        after_entry_open_orders = adapter.fetch_open_orders()
+        print_fubon_smoke_position(
+            "after_entry",
+            position=after_entry_position,
+            open_orders=len(after_entry_open_orders),
+        )
+        if abs(after_entry_position) <= 1e-12:
+            print(
+                "WARN Fubon position query returned zero after a filled entry; "
+                "continuing with close attempt because entry fill was reported"
+            )
 
         exit_plan = build_fubon_smoke_plan(
             symbol=symbol,
@@ -831,7 +1046,19 @@ def command_fubon_exec_smoke(args: argparse.Namespace) -> int:
         print_fubon_smoke_outcome("exit", exit_outcome)
 
         final_open_orders = adapter.fetch_open_orders()
-        final_position = adapter.fetch_position_quantity()
+        final_position = fetch_fubon_position_with_retry(
+            adapter,
+            expected="zero",
+        )
+        print_fubon_smoke_position(
+            "after_exit",
+            position=final_position,
+            open_orders=len(final_open_orders),
+        )
+        print_fubon_smoke_order_records(
+            adapter.fetch_order_records(),
+            raw_json=bool(args.raw_json),
+        )
         if (
             not entry_outcome.filled
             or not exit_outcome.filled
@@ -878,6 +1105,47 @@ def require_fubon_exec_smoke_ready(
         )
 
 
+def require_fubon_manual_close_ready(
+    config: object,
+    args: argparse.Namespace,
+) -> None:
+    if not config.safety.allow_live_order:
+        raise SystemExit("safety.allow_live_order=true is required")
+    symbol = str(args.symbol).strip()
+    if not symbol:
+        raise SystemExit("--symbol is required")
+    if str(args.confirm_symbol).strip() != symbol:
+        raise SystemExit("--confirm-symbol must match --symbol")
+    if int(args.lot) <= 0:
+        raise SystemExit("--lot must be positive")
+    gates = fubon_manual_close_env_gates_open()
+    closed = [name for name in FUBON_MANUAL_CLOSE_ENV_GATES if not gates[name]]
+    if closed:
+        raise SystemExit(
+            "Fubon manual close gates closed: "
+            + ", ".join(f"{name}=1" for name in closed)
+        )
+
+
+def fetch_fubon_position_with_retry(
+    adapter: object,
+    *,
+    expected: str,
+    attempts: int = 5,
+    interval_seconds: float = 0.5,
+) -> float:
+    last = 0.0
+    for attempt in range(max(1, attempts)):
+        last = float(adapter.fetch_position_quantity())
+        if expected == "nonzero" and abs(last) > 1e-12:
+            return last
+        if expected == "zero" and abs(last) <= 1e-12:
+            return last
+        if attempt < attempts - 1 and interval_seconds > 0:
+            time.sleep(interval_seconds)
+    return last
+
+
 def build_fubon_smoke_plan(
     *,
     symbol: str,
@@ -918,6 +1186,95 @@ def print_fubon_smoke_outcome(label: str, outcome: object) -> None:
         f"fills={len(outcome.fills)}, filled_lot={filled_lot:g}, "
         f"message={outcome.message}"
     )
+
+
+def print_fubon_smoke_position(
+    label: str,
+    *,
+    position: float,
+    open_orders: int,
+) -> None:
+    print(
+        "Fubon execution smoke "
+        f"{label}: position={position:g}, open_orders={open_orders}"
+    )
+
+
+def print_fubon_smoke_order_records(
+    records: tuple[dict[str, object], ...],
+    *,
+    raw_json: bool,
+) -> None:
+    print(f"Fubon execution smoke order_records: count={len(records)}")
+    for index, record in enumerate(records, start=1):
+        print(
+            f"- record[{index}] "
+            f"order_id={fubon_record_first(record, 'order_no', 'orderNo', 'ord_no', 'seq_no', 'seqNo', 'id') or 'UNKNOWN'} "
+            f"symbol={fubon_record_first(record, 'symbol', 'code', 'prod_id', 'stock_no') or 'UNKNOWN'} "
+            f"side={fubon_record_first(record, 'buy_sell', 'buySell', 'bs', 'side') or 'UNKNOWN'} "
+            f"status={fubon_record_first(record, 'status', 'order_status', 'orderStatus', 'state') or 'UNKNOWN'} "
+            f"lot={fubon_record_first(record, 'lot', 'lots', 'quantity', 'qty') or 'NA'} "
+            f"filled={fubon_record_first(record, 'filled_lot', 'filledLot', 'match_lot', 'matchLot', 'deal_lot', 'dealLot', 'filled') or 'NA'} "
+            f"avg_price={fubon_record_avg_price(record) or 'NA'}"
+        )
+        if raw_json:
+            print(
+                json.dumps(
+                    record,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                    default=str,
+                )
+            )
+
+
+def fubon_record_first(record: dict[str, object], *names: str) -> object | None:
+    for name in names:
+        if name in record and record[name] not in (None, ""):
+            return record[name]
+        lowered = name.lower()
+        for key, value in record.items():
+            if str(key).lower() == lowered and value not in (None, ""):
+                return value
+    return None
+
+
+def fubon_record_avg_price(record: dict[str, object]) -> object | None:
+    direct = fubon_record_first(
+        record,
+        "average_price",
+        "averagePrice",
+        "avg_price",
+        "avgPrice",
+        "match_price",
+        "matchPrice",
+        "deal_price",
+        "dealPrice",
+    )
+    if direct not in (None, ""):
+        return direct
+    filled_money = parse_cli_float(
+        fubon_record_first(record, "filled_money", "filledMoney")
+    )
+    filled_lot = parse_cli_float(
+        fubon_record_first(record, "filled_lot", "filledLot", "deal_lot", "dealLot")
+    )
+    if filled_money is None or filled_lot is None or filled_lot == 0:
+        return None
+    price = filled_money / filled_lot
+    if price.is_integer():
+        return int(price)
+    return price
+
+
+def parse_cli_float(value: object | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_live_execution_gate_report(config: object, store: SQLiteStore):
@@ -1139,6 +1496,12 @@ def main(argv: list[str] | None = None) -> int:
         return command_doctor(args)
     if args.command == "broker-doctor":
         return command_broker_doctor(args)
+    if args.command == "fubon-account-funds":
+        return command_fubon_account_funds(args)
+    if args.command == "fubon-order-records":
+        return command_fubon_order_records(args)
+    if args.command == "fubon-manual-close":
+        return command_fubon_manual_close(args)
     if args.command == "reconcile-brokers":
         return command_reconcile_brokers(args)
     if args.command == "dry-run-doctor":

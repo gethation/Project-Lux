@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from lux_trader.cli import (
     build_parser,
     command_broker_doctor,
+    command_fubon_account_funds,
     command_reconcile_brokers,
 )
 from lux_trader.models import BrokerName
 from lux_trader.reconciliation import (
+    BrokerAccountSnapshot,
+    BrokerMarginSnapshot,
     BrokerReconciler,
     FakeReadOnlyBroker,
     ReconciliationStatus,
@@ -200,3 +204,74 @@ def test_reconcile_brokers_readonly_requires_env_flag(
         assert "LUX_READONLY_BROKER=1" in str(exc)
     else:
         raise AssertionError("Expected SystemExit")
+
+
+def test_fubon_account_funds_requires_readonly_gate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("LUX_READONLY_BROKER", raising=False)
+    parser = build_parser()
+    args = parser.parse_args(
+        ["fubon-account-funds", "--config", str(write_config(tmp_path))]
+    )
+
+    try:
+        command_fubon_account_funds(args)
+    except SystemExit as exc:
+        assert "LUX_READONLY_BROKER=1" in str(exc)
+    else:
+        raise AssertionError("Expected SystemExit")
+
+
+def test_fubon_account_funds_prints_margin_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    class FakeFubonBroker:
+        def __init__(self, env_path):
+            self.env_path = env_path
+            self.closed = False
+
+        def fetch_snapshot(self):
+            return BrokerAccountSnapshot(
+                broker=BrokerName.FUBON_QFF,
+                account_id="****253",
+                fetched_at=datetime(2026, 6, 25, 9, 0, tzinfo=timezone.utc),
+                margins=(
+                    BrokerMarginSnapshot(
+                        broker=BrokerName.FUBON_QFF,
+                        currency="TWD",
+                        equity=1_234_567.0,
+                        available=1_000_000.25,
+                        margin_used=234_566.75,
+                        raw={"equity": 1234567, "available_margin": 1000000.25},
+                    ),
+                ),
+            )
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setenv("LUX_READONLY_BROKER", "1")
+    monkeypatch.setattr("lux_trader.cli.FubonReadOnlyBroker", FakeFubonBroker)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "fubon-account-funds",
+            "--config",
+            str(write_config(tmp_path)),
+            "--raw-json",
+        ]
+    )
+
+    exit_code = command_fubon_account_funds(args)
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Fubon account funds" in output
+    assert "account=****253" in output
+    assert "equity=1,234,567" in output
+    assert "available=1,000,000.25" in output
+    assert '"available_margin": 1000000.25' in output
