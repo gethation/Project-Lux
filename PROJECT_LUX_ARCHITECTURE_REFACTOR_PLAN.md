@@ -75,8 +75,6 @@ Completed on 2026-06-25.
   coordinator, and live execution gate into `lux_trader/execution/`.
 - Split reconciliation into models, broker protocol/fake broker, reconciler service,
   and post-trade reconciliation under `lux_trader/reconciliation/`.
-- Kept compatibility wrappers for older import paths such as
-  `lux_trader.execution_intent` and `lux_trader.live_execution_gate`.
 - Moved SQLite DDL into `lux_trader/persistence/schema.py`.
 - Moved execution query helpers into `lux_trader/persistence/execution_queries.py`.
 - Moved reconciliation query helpers into
@@ -84,7 +82,7 @@ Completed on 2026-06-25.
 - Kept `SQLiteStore` as the single public persistence facade.
 - Kept SQLite table definitions and persisted JSON payload shapes unchanged.
 
-## Remaining
+## Final Stages
 
 ### 5. Live runtime split
 
@@ -98,19 +96,34 @@ Completed on 2026-06-25.
 - Added `lux_trader/runtime/live/modes.py`.
 - Added `lux_trader/runtime/live/engine.py`.
 - Kept `live-paper`, `live-dry-run`, and `live-execute` on a shared runtime engine.
-- Kept `lux_trader/live_runner.py` as a compatibility re-export module.
 
 ### 6. CLI split
 
+Completed on 2026-06-25.
+
 - Split parser, dispatch, and command implementations out of `cli.py`.
-- Keep public entry point `python -m lux_trader` unchanged.
+- Added `lux_trader/cli/parser.py`.
+- Added `lux_trader/cli/dispatch.py`.
+- Added command modules under `lux_trader/cli/commands/`:
+  - `replay.py`
+  - `live.py`
+  - `broker.py`
+  - `execution.py`
+- Kept public entry point `python -m lux_trader` unchanged.
+- Kept `lux_trader.cli` package re-exports for `main`, `build_parser`, and existing
+  command helper imports.
 
 ### 7. Test and documentation cleanup
 
-- Group tests by unit/integration/smoke when the module layout is stable.
-- Keep smoke tests gated by env vars.
-- Remove compatibility wrappers only after internal imports and docs no longer depend
-  on old paths.
+Completed on 2026-06-25.
+
+- Grouped tests under `tests/unit/`, `tests/integration/`, and `tests/smoke/`.
+- Preserved the `live_marketdata`, `readonly_broker`, and `dry_run_smoke` markers.
+- Added the architecture graph, dependency direction, module responsibilities, and
+  test layout to README.
+- Removed unused top-level execution, reconciliation, and live-runtime compatibility
+  re-export modules.
+- Updated internal and test imports to reference the owning packages directly.
 
 ## Validation
 

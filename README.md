@@ -78,6 +78,60 @@ Paths inside project configs are resolved from the Project Lux repository root, 
 from the `configs/` directory. Values such as `.env`, `data\...`, and
 `data\taifex_cache` therefore continue to point to root-level deployment resources.
 
+### Architecture
+
+```mermaid
+flowchart TD
+    CLI["cli/<br/>parser, dispatch, commands"] --> Runtime["runtime/live/<br/>bootstrap, warmup, contracts, modes, engine"]
+    CLI --> Replay["runner.py<br/>replay orchestration"]
+    Runtime --> Core["core/<br/>strategy and trading domain"]
+    Runtime --> Market["market_data/<br/>provider-neutral data services"]
+    Runtime --> Execution["execution/<br/>intent, policy, coordinator"]
+    Runtime --> Reconciliation["reconciliation/<br/>broker snapshots and checks"]
+    Runtime --> Integrations["integrations/<br/>Fubon, Binance, BitoPro, TAIFEX"]
+    Runtime --> Store["store.py<br/>SQLite facade"]
+    Replay --> Core
+    Replay --> Market
+    Replay --> Store
+    Market --> Core
+    Execution --> Core
+    Reconciliation --> Core
+    Integrations --> Core
+    Integrations --> Market
+    Integrations --> Execution
+    Store --> Persistence["persistence/<br/>schema and query stores"]
+```
+
+Dependency direction is one-way:
+
+```text
+core
+  <- market_data / execution / reconciliation
+  <- integrations / persistence
+  <- runtime
+  <- cli / terminal UI
+```
+
+Lower layers must not import orchestration or external API layers. In particular,
+`core/` never imports CLI, runtime, SQLite, ccxt, or Fubon SDK modules. Live modes
+share one runtime engine and vary only through their mode handler and execution
+adapter.
+
+### Module Responsibilities
+
+| Module | Responsibility |
+| --- | --- |
+| `core/` | Strategy state machine, indicators, sizing, fees, calendars, contract policy, shared models |
+| `market_data/` | Replay input, quote/bar types, minute aggregation, warmup assembly |
+| `integrations/` | External Fubon, Binance, BitoPro, and TAIFEX adapters |
+| `execution/` | Execution plans, outcomes, price policy, dry-run simulation, real coordination, safety gate |
+| `reconciliation/` | Read-only broker snapshots, expected exposure, reconciliation, post-trade checks |
+| `persistence/` | SQLite DDL and execution/reconciliation query implementations |
+| `store.py` | Single public SQLite facade used by runtime and replay |
+| `runtime/live/` | Shared startup, warmup, contract lifecycle, mode handlers, polling/finalization engine |
+| `cli/` | Argument parsing, command dispatch, and command implementations |
+| `terminal_ui.py` | Compact live terminal reporting only |
+
 Pure strategy and trading-domain code is grouped under `lux_trader/core/`. Core may
 depend on configuration value objects and general Python/data libraries, but it must
 not import CLI code, SQLite stores, live runtime orchestration, or external broker
@@ -131,6 +185,51 @@ Live runtime orchestration is grouped under `lux_trader/runtime/live/`:
 - `contracts.py`: active contract selection, switch handling, and force-exit checks.
 - `modes.py`: paper, dry-run, and live-execute mode handlers.
 - `engine.py`: shared polling and minute-finalize loop used by all live modes.
+
+CLI code is grouped under `lux_trader/cli/`:
+
+- `parser.py`: argument parser and subcommand definitions.
+- `dispatch.py`: command dispatch table and `main()`.
+- `commands/replay.py`: replay, summary, and doctor commands.
+- `commands/live.py`: live market data, warmup, QFF warmup check, and live-paper.
+- `commands/broker.py`: read-only broker and reconciliation commands.
+- `commands/execution.py`: dry-run, execution smoke, and live-execute commands.
+
+The public `lux_trader.cli` package re-exports `main` and `build_parser`, so
+`python -m lux_trader` and existing command names/arguments remain unchanged.
+
+Legacy top-level re-export modules were removed. Import execution and live runtime
+types from their owning packages, for example `lux_trader.execution.intent` and
+`lux_trader.runtime.live`.
+
+## Test Layout
+
+```text
+tests/
+- unit/         pure domain, parser, adapter-fake, and policy tests
+- integration/  SQLite, CLI, replay, shared live runtime, and coordinator tests
+- smoke/        real Fubon/Binance/BitoPro/TAIFEX tests guarded by env markers
+```
+
+Existing pytest markers remain unchanged:
+
+- `live_marketdata`
+- `readonly_broker`
+- `dry_run_smoke`
+
+Default regression:
+
+```powershell
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest -q
+```
+
+Targeted layers:
+
+```powershell
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/unit -q
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/integration -q
+```
+
 ## Commands
 
 ```powershell
@@ -193,7 +292,7 @@ Run deterministic warmup tests without external APIs:
 
 ```powershell
 & 'D:\Users\miniconda3\condabin\conda.bat' env list
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/test_live_market_data.py -q
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/integration/test_live_market_data.py -q
 ```
 
 Run real market-data smoke tests only when `.env` and the Fubon certificate are present
@@ -205,7 +304,7 @@ in the project root. Local TOML files live under `configs/`; the smoke config
 $env:LUX_LIVE_MARKETDATA='1'
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config configs/config.live.smoke.local.toml
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader qff-warmup-check --config configs/config.live.smoke.local.toml --output-csv=
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/test_live_smoke.py -q -m live_marketdata
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/smoke/test_live_smoke.py -q -m live_marketdata
 Remove-Item Env:\LUX_LIVE_MARKETDATA
 ```
 
@@ -216,7 +315,7 @@ contract, reads Fubon 1m candles, downloads TAIFEX previous-30-trading-day CSV Z
 the Fubon + TAIFEX QFF leg before touching Binance/BitoPro. Default passing criteria
 are 500 QFF session `warmup_bars` and zero `bars`, `orders`, `fills`, or `trades`.
 
-The full startup smoke in `tests/test_live_smoke.py` uses
+The full startup smoke in `tests/smoke/test_live_smoke.py` uses
 `data\live_paper_startup_smoke.sqlite3`: it starts `live-paper` from an empty store,
 expects `warmup_auto start/done_<warmup_bars>`, polls real quotes long enough to finalize or
 skip a minute with a recorded warning, then runs a second `--resume` style pass and
@@ -242,7 +341,7 @@ real read-only smoke tests explicitly:
 $env:LUX_READONLY_BROKER='1'
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader broker-doctor --config configs/live.example.toml
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config configs/live.example.toml --readonly
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/test_readonly_brokers_smoke.py -q -m readonly_broker
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/smoke/test_readonly_brokers_smoke.py -q -m readonly_broker
 Remove-Item Env:\LUX_READONLY_BROKER
 ```
 
@@ -279,7 +378,7 @@ $env:LUX_READONLY_BROKER='1'
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config configs/config.live.smoke.local.toml
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader dry-run-doctor --config configs/config.live.smoke.local.toml
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config configs/config.live.smoke.local.toml --readonly
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/test_dry_run_smoke.py -q -m "live_marketdata and readonly_broker and dry_run_smoke"
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/smoke/test_dry_run_smoke.py -q -m "live_marketdata and readonly_broker and dry_run_smoke"
 Remove-Item Env:\LUX_LIVE_MARKETDATA
 Remove-Item Env:\LUX_READONLY_BROKER
 ```
@@ -313,6 +412,7 @@ running the minimal live-order acceptance path.
 
 `live-paper` and `live-dry-run` still refuse `allow_live_order=true` and cannot send
 real orders. `live-execute` is the only live-order entrypoint, and it requires all
-explicit config/env gates plus read-only broker reconciliation. Fubon TMF execution
-smoke and full `live-execute` live-order acceptance must be run manually before
-treating the system as ready for unattended real execution.
+explicit config/env gates plus read-only broker reconciliation. Binance TSM and
+Fubon TMF single-adapter entry/exit smoke tests have passed. Full two-leg
+`live-execute` live-order acceptance is still pending and must pass before treating
+the system as ready for unattended real execution.

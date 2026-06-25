@@ -1,92 +1,193 @@
-﻿# Project Lux Phase Plan and Test Report
+# Project Lux Phase Plan and Test Report
 
-?湔?交?嚗?026-06-25
+更新日期：2026-06-25
 
-## 1. 撠?蝮質汗
+## 1. 專案總覽
 
-Project Lux ??QFF/TSM ??鈭斗?蝟餌絞??撠???嗆??敹?撘???`lux_trader/`嚗葫閰虫???`tests/`??
-撠???荔?銝餉?鈭斗??摩撌脣???`D:\Users\Documents\Proof of Concept` ???單?撽??oC ?舐洵銝???亥??箇??箸?靘?嚗??思漱???pread/z-score 閮??脣?湧?瑼颯雿?sizing?祥?具FF 鈭斗??挾?身嚗誑??replay/backtest ??reference summary?roject Lux ?遙???舫??啁???伐????PoC 撽???銵?渡???函蔡?皜祈岫??Ｗ儔??郊??live market data ?頂蝯望瑽?
-?迨 Phase 1 ?敹??嗆?皞?roject Lux replay 蝯?閬? PoC reference 撠????鈭斗?甈⊥??雿nL ?祥?具?敺遙雿??亥????湛??賣?閰脫?蝣箄???銝阡??啣? PoC ???reference dataset 撽???
-2026-06-24 撌脤??啣?朣??PoC嚗?
-- Reference CSV ?寧 `qff_tsm_spread_zscore_1m_taipei_qff_session_w500.csv`??- Indicator ?芯蝙??QFF trading-session bars嚗FF non-trading session 銝?rolling window??- QFF 蝻箄????active session ??forward-fill??- 蝑??箏???`zscore_window=500`?entry_z=2.0`?exit_z=1.0`??- `exit_z=1.0` 隤??箄???moving average 撠銝?`abs(z)>1`嚗hort-spread position ??`z < -1` exit嚗ong-spread position ??`z > 1` exit??- ??PoC reference summary嚗rows=29909`?trade_count=66`?net_pnl_twd=265481.318343568`?total_fee_twd=68321.48561792255`?final_equity_twd=2265481.318343568`??
-?桀?蝟餌絞撌脣? Phase 1 ??PoC CSV replay ?游???Phase 4 ??`live-dry-run`?hase 4 隞銝?閮曹遙雿?撖虫??殷?雿歇?賜?祕 market data?ead-only reconciliation?uto warmup ??simulated execution adapter 頝?entry/open/exit/PnL ???湧?瞍?蝔?
-## 2. Phase 1 ??Phase 5 ?格?
+Project Lux 是 QFF/TSM 配對交易系統的最小可運行架構。核心程式位於 `lux_trader/`，測試位於 `tests/`。
 
-| Phase | ?格? | 銝餉??批捆 | 銝???|
+專案背景是：主要交易邏輯已先在 `D:\Users\Documents\Proof of Concept` 做過想法驗證。PoC 是第一版策略行為的基準來源，包含交易標的、spread/z-score 計算、進出場門檻、部位 sizing、費用、QFF 交易時段假設，以及 replay/backtest 的 reference summary。Project Lux 的任務不是重新發明策略，而是把 PoC 驗證過的行為整理成可部署、可測試、可恢復、可逐步接 live market data 的系統架構。
+
+因此 Phase 1 的核心驗收標準是「Project Lux replay 結果要和 PoC reference 對齊」，包含交易次數、方向、部位、PnL 與費用。之後任何策略規則變更，都應該明確記錄，並重新和 PoC 或新的 reference dataset 驗證。
+
+2026-06-24 已重新對齊新版 PoC：
+
+- Reference CSV 改為 `qff_tsm_spread_zscore_1m_taipei_qff_session_w500.csv`。
+- Indicator 只使用 QFF trading-session bars；QFF non-trading session 不進 rolling window。
+- QFF 缺資料只在 active session 內 forward-fill。
+- 策略參數固定為 `zscore_window=500`、`entry_z=2.0`、`exit_z=1.0`。
+- `exit_z=1.0` 語意為跑到 moving average 對面且 `abs(z)>1`：short-spread position 在 `z < -1` exit，long-spread position 在 `z > 1` exit。
+- 新 PoC reference summary：`rows=29909`、`trade_count=66`、`net_pnl_twd=265481.318343568`、`total_fee_twd=68321.48561792255`、`final_equity_twd=2265481.318343568`。
+
+目前系統已從 Phase 1 的 PoC CSV replay 擴展到 Phase 5 的 minimal live
+execution integration。`live-paper`、`live-dry-run` 與 `live-execute` 共用同一套
+live runtime；Phase 4 已能用真實 market data、read-only reconciliation、auto
+warmup 與 simulated execution adapter 跑 entry/open/exit/PnL 的完整預演流程。
+Phase 5 已完成 Binance/Fubon execution adapters、雙腿 coordinator、emergency
+close policy、post-trade reconciliation 與 `live-execute` wiring。Binance TSM 與
+Fubon TMF 的單腿真實下單 smoke 已分別通過，但完整 QFF + Binance 雙腿
+`live-execute` 真實驗收尚未執行，因此目前仍不可視為可無人值守實單。
+
+## 2. Phase 1 到 Phase 5 目標
+
+| Phase | 目標 | 主要內容 | 下單狀態 |
 | --- | --- | --- | --- |
-| Phase 1 | PoC CSV replay MVP | 霈??PoC CSV??蝞?rolling z-score?? PairStrategy?aperBroker?QLite store?esume?ummary | 銝 API嚗?銝 |
-| Phase 2 | Live market data + PaperBroker | ??Fubon marketdata?AIFEX downloader?inance/BitoPro ccxt嚗遣蝡?live warmup?xpiry buffer QFF ?貊???1m bar polling | ?芸? paper order |
-| Phase 3 | Read-only broker reconciliation | Fubon/Binance read-only broker嚗?乓?其??憪??靽??????? broker/store 撠董 | 銝 |
-| Phase 4 | Dry-run execution | 蝑?Ｙ? execution plan嚗? simulated adapter ?Ｙ? `DRYRUN-*` orders/fills嚗?啁??亦??rade?nL ??equity | 銝??殷?璅⊥?漱 |
-| Phase 5 | Minimal live execution | 撠?Phase 4 validated execution intent ?亙?祕 Fubon/Binance execution adapter嚗??亙???safety gate?ost-trade reconciliation ?仃? `PAUSED` | 憭? gate ??敺??迂?撠祕??|
+| Phase 1 | PoC CSV replay MVP | 讀取 PoC CSV、重算 rolling z-score、跑 PairStrategy、PaperBroker、SQLite store、resume、summary | 不接 API，不下單 |
+| Phase 2 | Live market data + PaperBroker | 接 Fubon marketdata、TAIFEX downloader、Binance/BitoPro ccxt，建立 live warmup、expiry buffer QFF 選約與 1m bar polling | 只做 paper order |
+| Phase 3 | Read-only broker reconciliation | Fubon/Binance read-only broker，登入、查部位、查委託、查保證金，啟動時做 broker/store 對帳 | 不送單 |
+| Phase 4 | Dry-run execution | 策略產生 execution plan，透過 simulated adapter 產生 `DRYRUN-*` orders/fills，更新策略狀態、trade、PnL 與 equity | 不送真單，模擬成交 |
+| Phase 5 | Minimal live execution | 將 Phase 4 validated execution intent 接到真實 Fubon/Binance execution adapter，加入多重 safety gate、post-trade reconciliation 與失敗即 `PAUSED` | 多重 gate 通過後才允許最小實單 |
 
-Phase 5 ?舐洵銝??閮梁?撖阡??畾蛛?雿?閮凋?敹??????config ?憓???safety gate ?券???roker/store 撠董???? execution plan ?芸銵?????閮梢?撠祕?柴?
-## 3. Phase 2 live market data ?批捆
+Phase 5 是第一個允許真實送單的階段，但預設仍必須關閉。只有 config 與環境變數 safety gate 全部通過、broker/store 對帳成功、且 execution plan 未執行過時，才允許送出最小實單。
 
-Phase 2 ?璅蝣箄? live market data pipeline ?臭誑?舀? paper trading嚗?
-- Fubon marketdata ?舐?乩蒂?? QFF candidates??- QFF active contract 雿輻 expiry buffer policy嚗?箸??拙??頝?敺漱??喳? 5 ??璆剜??QFF??- 憒???QFF ????eligible active contract 撌脣???蝑蝜潛?雿輻??蝝?敺?exit signal嚗?唳?敺漱?????璆剜 13:35 隞?箏嚗孛??force exit??- TAIFEX 摰??30 ?漱??疏瘥??漱 CSV ZIP ?臭?頛蒂????QFF 1m close??- Fubon QFF intraday candles ??TAIFEX fallback ?臬?雿菜? QFF warmup source??- Binance `TSM/USDT:USDT` ?舫? `ccxt binanceusdm` ?? ticker/OHLCV??- BitoPro `USDT/TWD` ?舫? `ccxt bitopro` ?? ticker/OHLCV??- `live-paper` ??Phase 2 甇?虜蝟餌絞?亙嚗????炎??SQLite seed bars嚗?頞單??芸??瑁? warmup??- `warmup-live` ?身?Ｙ? 500 ??QFF session seed bars嚗?????debug / 撽 / ???遣撌亙??- `live-paper` 瘥? polling quote嚗??芸 1 ??摰?敺銵??亙?瑯?- ?冽?蝔?雿輻 `PaperBroker`嚗??澆隞颱? Fubon/Binance 銝 API??
-## 4. Phase 2 皜祈岫閮
+## 3. Phase 2 live market data 內容
 
-### 4.1 ?Ｙ? deterministic tests
+Phase 2 的目標是確認 live market data pipeline 可以支撐 paper trading：
 
-?桃?嚗?霅??撌梁??摩嚗?靘陷憭 API??
-?賭誘嚗?
+- Fubon marketdata 可登入並取得 QFF candidates。
+- QFF active contract 使用 expiry buffer policy：選出最早到期且距最後交易日至少 5 個營業日的 QFF。
+- 如果舊 QFF 持倉期間 eligible active contract 已切換，策略繼續使用舊契約等待 exit signal；若到最後交易日前一個營業日 13:35 仍未出場，觸發 force exit。
+- TAIFEX 官方前 30 個交易日期貨每筆成交 CSV ZIP 可下載並聚合成 QFF 1m close。
+- Fubon QFF intraday candles 與 TAIFEX fallback 可合併成 QFF warmup source。
+- Binance `TSM/USDT:USDT` 可透過 `ccxt binanceusdm` 抓取 ticker/OHLCV。
+- BitoPro `USDT/TWD` 可透過 `ccxt bitopro` 抓取 ticker/OHLCV。
+- `live-paper` 是 Phase 2 正常系統入口；啟動時會檢查 SQLite seed bars，不足時自動執行 warmup。
+- `warmup-live` 預設產生 500 根 QFF session seed bars，保留作為 debug / 驗收 / 手動重建工具。
+- `live-paper` 每秒 polling quote，但只在 1 分鐘完成後執行策略判斷。
+- 全流程仍使用 `PaperBroker`，不呼叫任何 Fubon/Binance 下單 API。
+
+## 4. Phase 2 測試計畫
+
+### 4.1 離線 deterministic tests
+
+目的：驗證我們自己的邏輯，不依賴外部 API。
+
+命令：
+
 ```powershell
 & 'D:\Users\miniconda3\condabin\conda.bat' env list
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/test_live_market_data.py -q
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/integration/test_live_market_data.py -q
 ```
 
-閬??批捆嚗?
-- QFF symbol parser?ront-month fallback selector?xpiry buffer active selector??- Expiry buffer contract policy嚗? ??璆剜?瑼颯ligible active symbol ???-1 13:35 force-exit deadline??- Fubon symbol `QFFG6` 撠? TAIFEX contract month `202607`??- TAIFEX HTML CSV ZIP link parser??- TAIFEX tick CSV ????1m QFF close??- Fubon/TAIFEX ??????雿菜?嚗ubon 閬? TAIFEX??- QFF 蝻箏???forward-fill??- TSM ??USDT/TWD 蝻箏???fail fast??- `WarmupRunner` safety gate嚗allow_live_order=true` ??敺１隞颱? provider??- `QffWarmupCheckRunner` ?臬?冽葫 QFF leg??
-### 4.2 QFF-only 撖阡????皜祈岫
+覆蓋內容：
 
-?桃?嚗?券?霅?Fubon + TAIFEX ??QFF warmup leg嚗?蝣?Binance/BitoPro嚗?頝??乓?
-?賭誘嚗?
+- QFF symbol parser、front-month fallback selector、expiry buffer active selector。
+- Expiry buffer contract policy：5 個營業日門檻、eligible active symbol 切換、T-1 13:35 force-exit deadline。
+- Fubon symbol `QFFG6` 對應 TAIFEX contract month `202607`。
+- TAIFEX HTML CSV ZIP link parser。
+- TAIFEX tick CSV 聚合成 1m QFF close。
+- Fubon/TAIFEX 同分鐘資料合併時，Fubon 覆蓋 TAIFEX。
+- QFF 缺分鐘 forward-fill。
+- TSM 或 USDT/TWD 缺分鐘 fail fast。
+- `WarmupRunner` safety gate：`allow_live_order=true` 時不得碰任何 provider。
+- `QffWarmupCheckRunner` 可單獨測 QFF leg。
+
+### 4.2 QFF-only 實際連線測試
+
+目的：單獨驗證 Fubon + TAIFEX 的 QFF warmup leg，不碰 Binance/BitoPro，不跑策略。
+
+命令：
+
 ```powershell
 $env:LUX_LIVE_MARKETDATA='1'
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader qff-warmup-check --config configs/config.live.smoke.local.toml --output-csv=
 Remove-Item Env:\LUX_LIVE_MARKETDATA
 ```
 
-??璇辣嚗?
-- Fubon marketdata login ????- QFF candidates ??閫??嚗蒂?詨蝚血? expiry buffer ??active symbol??- Fubon QFF 1m candles ?征??- TAIFEX 摰 CSV ZIP 銝?????- TAIFEX QFF ticks ?航??? 1m close??- ?蔥敺?rows = `config.live.warmup_minutes`嚗??閮剔 500 ??QFF session bars??- `qff_close_filled_nulls = 0`??- 頛詨 `source_rows`?source_used_counts`?verlap mismatch summary??
-### 4.3 摰 live market-data smoke
+通過條件：
 
-?桃?嚗?霅?Phase 2 live warmup 雿輻?祕 Fubon?AIFEX?inance?itoPro 鞈?皞?
-?賭誘嚗?
+- Fubon marketdata login 成功。
+- QFF candidates 成功解析，並選出符合 expiry buffer 的 active symbol。
+- Fubon QFF 1m candles 非空。
+- TAIFEX 官方 CSV ZIP 下載成功。
+- TAIFEX QFF ticks 可聚合成 1m close。
+- 合併後 rows = `config.live.warmup_minutes`，目前預設為 500 根 QFF session bars。
+- `qff_close_filled_nulls = 0`。
+- 輸出 `source_rows`、`source_used_counts`、overlap mismatch summary。
+
+### 4.3 完整 live market-data smoke
+
+目的：驗證 Phase 2 live warmup 使用真實 Fubon、TAIFEX、Binance、BitoPro 資料源。
+
+命令：
+
 ```powershell
 $env:LUX_LIVE_MARKETDATA='1'
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config configs/config.live.smoke.local.toml
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/test_live_smoke.py -q -m live_marketdata
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/smoke/test_live_smoke.py -q -m live_marketdata
 Remove-Item Env:\LUX_LIVE_MARKETDATA
 ```
 
-??璇辣嚗?
-- `live-doctor` ?臬?敺?QFF active symbol?inance quote?itoPro quote??- `tests/test_live_smoke.py` 撖阡?????- `warmup_bars = config.live.warmup_minutes`嚗??閮剔 500??- `bars = 0`?orders = 0`?fills = 0`?trades = 0`??- 摰 `live-paper` startup smoke ?蝙??`data/live_paper_startup_smoke.sqlite3`嚗?蝛?store ????霅?`warmup_auto`??撖?quote polling?AR ??skipped-minute event嚗誑??resume 銝?撱?warmup??
-### 4.4 ?典?獢?regression tests
+通過條件：
 
-?桃?嚗Ⅱ隤?Phase 2 銝憯?Phase 1 replay ???亦?????
-?賭誘嚗?
+- `live-doctor` 可取得 QFF active symbol、Binance quote、BitoPro quote。
+- `tests/smoke/test_live_smoke.py` 實際通過。
+- `warmup_bars = config.live.warmup_minutes`，目前預設為 500。
+- `bars = 0`、`orders = 0`、`fills = 0`、`trades = 0`。
+- 完整 `live-paper` startup smoke 會使用 `data/live_paper_startup_smoke.sqlite3`，從空 store 啟動、驗證 `warmup_auto`、真實 quote polling、BAR 或 skipped-minute event，以及 resume 不重建 warmup。
+
+### 4.4 全專案 regression tests
+
+目的：確認 Phase 2 不破壞 Phase 1 replay 與策略狀態機。
+
+命令：
+
 ```powershell
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest
 ```
 
-??璇辣嚗?
-- Phase 1 replay integration tests ????- Strategy/store/calendar/sizing/indicator tests ????- ?芾身摰?`LUX_LIVE_MARKETDATA=1` ??live smoke tests ??skip??
-## 5. ?桀?撌脣??璅?
-### Phase 1 撌脣???
-- 撱箇? `lux_trader/` package ??CLI??- 撱箇??詨? models?trategy state?aperBroker?QLiteStore??- ?舀 PoC CSV replay??- ?舀 rolling 500 session-bar z-score嚗ddof=0`??- ?舀 QFF trading calendar??- ?舀 position sizing?ees?rade summary??- ?舀 SQLite resume??- 撱箇? Phase 1 unit/integration tests??
-### Phase 2 撌脣???
-- ?啣? `configs/live.example.toml`??- ?啣? `live-doctor`?warmup-live`?live-paper`??- `live-paper` ?身?芸??? startup warmup嚗--skip-warmup` ?航?瘙??歇??seed bars嚗??fail fast??- ?啣? `qff-warmup-check`嚗?桃皜?Fubon + TAIFEX QFF warmup??- ?啣? Fubon QFF marketdata adapter??- ?啣? ccxt ticker/OHLCV provider??- ?啣? TAIFEX official CSV ZIP downloader??- ?啣? QFF warmup source report??- ?啣? ExpiryBufferContractPolicy嚗?  - eligible active QFF = ??拙??頝?敺漱??喳? 5 ??璆剜??蝝?  - FLAT / ENTRY_PENDING ????唳 active symbol ????敺?撱?500 ??session-bar warmup??  - OPEN / EXIT_PENDING ????唳 active symbol ??蝬剜???蝝??exit signal??  - ?敺??券?箄?憟??敺漱?????璆剜 13:35 force exit??- SQLite `warmup_bars`?bars`?orders`?fills`?trades` 撌脰?閮?`qff_symbol`?qff_expiry`?contract_policy_state`??- `strategy_state` 撌脰?閮?`trading_qff_symbol`?eligible_active_qff_symbol`?pending_symbol_switch`?last_warmup_symbol`??- ?啣? Fubon + TAIFEX + Binance + BitoPro live smoke tests??- ?啣?摰 `live-paper` startup smoke嚗???撖?API auto warmup?arket ticks?inute finalize / skip event ??resume??- Project root 撌脣??`.env` ??`B121371533.pfx`嚗蒂??`.gitignore` 靽風??- `data/taifex_cache/`?data/qff_warmup_check_*.csv`?ubon runtime `log/` 撌脣蕭?乓?
-## 6. ?桀?撌脣??葫閰衣???
-?桀?蝝??撽?蝯?憒?嚗?
+通過條件：
+
+- Phase 1 replay integration tests 通過。
+- Strategy/store/calendar/sizing/indicator tests 通過。
+- 未設定 `LUX_LIVE_MARKETDATA=1` 時，live smoke tests 應 skip。
+
+## 5. 目前已完成目標
+
+### Phase 1 已完成
+
+- 建立 `lux_trader/` package 與 CLI。
+- 建立核心 models、strategy state、PaperBroker、SQLiteStore。
+- 支援 PoC CSV replay。
+- 支援 rolling 500 session-bar z-score，`ddof=0`。
+- 支援 QFF trading calendar。
+- 支援 position sizing、fees、trade summary。
+- 支援 SQLite resume。
+- 建立 Phase 1 unit/integration tests。
+
+### Phase 2 已完成
+
+- 新增 `configs/live.example.toml`。
+- 新增 `live-doctor`、`warmup-live`、`live-paper`。
+- `live-paper` 預設自動處理 startup warmup；`--skip-warmup` 可要求必須已有 seed bars，否則 fail fast。
+- 新增 `qff-warmup-check`，可單獨測 Fubon + TAIFEX QFF warmup。
+- 新增 Fubon QFF marketdata adapter。
+- 新增 ccxt ticker/OHLCV provider。
+- 新增 TAIFEX official CSV ZIP downloader。
+- 新增 QFF warmup source report。
+- 新增 ExpiryBufferContractPolicy：
+  - eligible active QFF = 最早到期且距最後交易日至少 5 個營業日的契約。
+  - FLAT / ENTRY_PENDING 狀態遇到新 active symbol 時，切換後重建 500 根 session-bar warmup。
+  - OPEN / EXIT_PENDING 狀態遇到新 active symbol 時，維持舊契約直到 exit signal。
+  - 最後安全閥為舊契約最後交易日前一個營業日 13:35 force exit。
+- SQLite `warmup_bars`、`bars`、`orders`、`fills`、`trades` 已補記 `qff_symbol`、`qff_expiry`、`contract_policy_state`。
+- `strategy_state` 已補記 `trading_qff_symbol`、`eligible_active_qff_symbol`、`pending_symbol_switch`、`last_warmup_symbol`。
+- 新增 Fubon + TAIFEX + Binance + BitoPro live smoke tests。
+- 新增完整 `live-paper` startup smoke，覆蓋真實 API auto warmup、market ticks、minute finalize / skip event 與 resume。
+- Project root 已可放 `.env` 與 `B121371533.pfx`，並由 `.gitignore` 保護。
+- `data/taifex_cache/`、`data/qff_warmup_check_*.csv`、Fubon runtime `log/` 已忽略。
+
+## 6. 目前已完成測試紀錄
+
+目前紀錄的驗證結果如下：
+
 ```text
-pytest tests/test_contract_policy.py tests/test_live_market_data.py -q
+pytest tests/unit/test_contract_policy.py tests/integration/test_live_market_data.py -q
 27 passed
 ```
 
 ```text
-LUX_LIVE_MARKETDATA=1 pytest tests/test_live_smoke.py -q -m live_marketdata
+LUX_LIVE_MARKETDATA=1 pytest tests/smoke/test_live_smoke.py -q -m live_marketdata
 3 passed
 ```
 
@@ -95,7 +196,7 @@ pytest
 37 passed, 3 skipped
 ```
 
-QFF-only 撖阡????皜祈岫蝝??
+QFF-only 實際連線測試紀錄：
 
 ```text
 qff-warmup-check passed
@@ -108,20 +209,21 @@ source_used_counts={"forward_fill": 869, "fubon": 294, "taifex": 277}
 qff_close_filled_nulls=0
 ```
 
-摰 `warmup-live` CLI 皜祈岫蝝??
+完整 `warmup-live` CLI 測試紀錄：
 
 ```text
 Warmup complete: bars_written=1440, qff_symbol=QFFG6
 ```
 
-SQLite 撽?嚗?
+SQLite 驗證：
+
 ```text
 counts={'warmup_bars': 1440, 'bars': 0, 'orders': 0, 'fills': 0, 'trades': 0}
 metadata_or_value_nulls=0
 symbols=[('QFFG6', '2026-07-15', 'active', 1440)]
 ```
 
-摰 `live-paper` startup CLI 皜祈岫蝝??
+完整 `live-paper` startup CLI 測試紀錄：
 
 ```text
 live-doctor passed
@@ -139,7 +241,8 @@ WARN stale_tsm skipped_minute
 Live-paper stopped: iterations=70, bars_processed=0, skipped_minutes=1, qff_symbol=QFFG6
 ```
 
-SQLite 撽?嚗?
+SQLite 驗證：
+
 ```text
 counts={'warmup_bars': 1440, 'bars': 3, 'orders': 0, 'fills': 0, 'trades': 0, 'market_ticks': 600, 'live_runs': 2}
 sources=[('binanceusdm', 200), ('bitopro', 200), ('fubon_qff', 200)]
@@ -148,113 +251,171 @@ metadata_or_value_nulls=0
 duplicate_bars=0
 ```
 
-## 7. 撠摰???蝥極雿?
-### Phase 2 敺?鋆撥
+## 7. 尚未完成與後續工作
 
-- Session-aware warmup 撌脣???敺??芷?鋆摰??warmup quality controls??- 閮剖? QFF forward-fill 瘥? warning/fail ?瑼颯?- ??游??渡? warmup quality summary??- ?亙??嫣漱?/?銵????誨蝚砌???weekday + configured holiday list??- 鋆憭?expiry buffer resume ??皜祈岫嚗?憒??楊???亙?????- ?Ⅱ?渡? indicator state ??摮??遣?輻???
-### Phase 3 ??撌乩?
+### Phase 2 後續補強
 
-- Commit 1嚗歇摰? read-only broker domain skeleton嚗???snapshot/reconciliation ??ake broker ??mismatch ?斗?桀?皜祈岫??- Commit 2嚗歇摰? SQLite reconciliation tables ??`broker-doctor` / `reconcile-brokers` CLI skeleton嚗ake/stub 鞈?瘚頝?- Commit 3嚗歇摰? Fubon read-only adapter嚗 `margin_equity`?single_position`?oday orders嚗?撖?smoke ? `LUX_READONLY_BROKER=1`??- Commit 4嚗歇摰? Binance read-only adapter嚗? `.env` 霈 `BINANCE_API_KEY` / `BINANCE_SECRET`嚗 balance?ositions?pen orders??- Commit 5嚗???Fubon + Binance + Store reconciliation acceptance嚗洵銝??mismatch ??warning + record嚗??餅? `live-paper`??
-Commit 1-2 skeleton ?誘嚗?
+- Session-aware warmup 已完成；後續只需補更完整的 warmup quality controls。
+- 設定 QFF forward-fill 比例 warning/fail 門檻。
+- 加入更完整的 warmup quality summary。
+- 接官方交易日/假日行事曆，取代第一版 weekday + configured holiday list。
+- 補更多 expiry buffer resume 情境測試，例如持倉跨切約日後重啟。
+- 明確整理 indicator state 的保存/重建政策。
+
+### Phase 3 預計工作
+
+- Commit 1：已完成 read-only broker domain skeleton，包含 snapshot/reconciliation 型別、fake broker 與 mismatch 判斷單元測試。
+- Commit 2：已完成 SQLite reconciliation tables 與 `broker-doctor` / `reconcile-brokers` CLI skeleton，fake/stub 資料流可跑通。
+- Commit 3：已完成 Fubon read-only adapter，查 `margin_equity`、`single_position`、today orders；真實 smoke 需 `LUX_READONLY_BROKER=1`。
+- Commit 4：已完成 Binance read-only adapter，從 `.env` 讀 `BINANCE_API_KEY` / `BINANCE_SECRET`，查 balance、positions、open orders。
+- Commit 5：完成 Fubon + Binance + Store reconciliation acceptance；第一版 mismatch 只 warning + record，不阻擋 `live-paper`。
+
+Commit 1-2 skeleton 指令：
+
 ```powershell
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader broker-doctor --config configs/live.example.toml
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config configs/live.example.toml --fake
 ```
 
-Commit 3-4 read-only smoke 蝝??
+Commit 3-4 read-only smoke 紀錄：
 
 ```text
 broker-doctor: FUBON_QFF positions=0 open_orders=0 margins=5
 broker-doctor: BINANCE_TSM positions=0 open_orders=0 margins=1
 reconcile-brokers --fubon-readonly --fake-binance: status=matched, issues=0
 reconcile-brokers --readonly: status=matched, issues=0
-pytest tests/test_readonly_brokers_smoke.py -q -m readonly_broker: 2 passed
+pytest tests/smoke/test_readonly_brokers_smoke.py -q -m readonly_broker: 2 passed
 ```
 
-### Phase 4 撌乩?蝝??
-Phase 4 ?格??臬遣蝡?dry-run execution嚗??亦?餈?撖虫??桃?? execution plan嚗?銝隞颱? Fubon/Binance ?祕憪????啣祕雿歇敺??intent-only 閮剛????箏???simulated execution lifecycle嚗live-dry-run` ? `SimulatedExecutionAdapter` ?Ｙ? simulated `DRYRUN-*` orders/fills嚗蒂???靘?`live-execute` ?梁??state applier ?湔 `OPEN` / `FLAT`?rade?nL ??equity??
-- Commit 1嚗歇摰? execution intent domain嚗???`PairExecutionPlan`?ExecutionLeg`?ExecutionCheck`?ExecutionPlanStatus`?ntry/exit ? side mapping?OrderRequest -> ExecutionLeg/Plan` 頧?嚗誑??dry-run validator??- Commit 2嚗歇摰? SQLite recorder ??CLI skeleton嚗憓?execution intent tables嚗蒂??fake mode 頝?intent ?Ｙ???霅摨怨? summary??- Commit 3嚗歇摰? strategy order builder refactor嚗??桀? `PairStrategy` ?湔?澆 `broker.place_order()` ?楝敺??箇? order request builder嚗aperBroker 銵蝬剜?銝???- Commit 4嚗歇摰? `live-dry-run` ?祕 market data 瘚?嚗???Phase 2 auto warmup?uote polling?id/ask tradable spread?alendar ??contract policy嚗???砍閮? intent 銝阡?`PAUSED`嚗??啁??砍歇?勗???simulated execution lifecycle ?誨??- Commit 5嚗歇摰? dry-run failure simulation嚗??遙銝?踹仃?辣?脯?瘨artial fill嚗遙雿?摰?蝯??賜雁??recommended `PAUSED`嚗??芸?鋆??- Commit 6嚗歇摰??祕 read-only + dry-run smoke嚗?頝?Phase 3 broker reconciliation嚗?頝?dry-run execution嚗??圈??嗡???瘙?`orders=0` / `fills=0`嚗閬?瘝??祕 broker order API嚗? simulated orders 雿輻 `DRYRUN-*`??
-Commit 1 execution intent domain 蝝??
+### Phase 4 工作紀錄
+
+Phase 4 目標是建立 dry-run execution：策略產生接近真實下單的雙腿 execution plan，但不送出任何 Fubon/Binance 真實委託。最新實作已從早期 intent-only 設計升級為完整 simulated execution lifecycle：`live-dry-run` 會用 `SimulatedExecutionAdapter` 產生 simulated `DRYRUN-*` orders/fills，並透過和未來 `live-execute` 共用的 state applier 更新 `OPEN` / `FLAT`、trade、PnL 與 equity。
+
+- Commit 1：已完成 execution intent domain，包含 `PairExecutionPlan`、`ExecutionLeg`、`ExecutionCheck`、`ExecutionPlanStatus`、entry/exit 雙腿 side mapping、`OrderRequest -> ExecutionLeg/Plan` 轉換，以及 dry-run validator。
+- Commit 2：已完成 SQLite recorder 與 CLI skeleton，新增 execution intent tables，並用 fake mode 跑通 intent 產生、驗證、落庫與 summary。
+- Commit 3：已完成 strategy order builder refactor，把目前 `PairStrategy` 直接呼叫 `broker.place_order()` 的路徑拆出純 order request builder；PaperBroker 行為維持不變。
+- Commit 4：已完成 `live-dry-run` 真實 market data 流程，重用 Phase 2 auto warmup、quote polling、bid/ask tradable spread、calendar 與 contract policy；早期版本只記錄 intent 並進 `PAUSED`，最新版本已由完整 simulated execution lifecycle 取代。
+- Commit 5：已完成 dry-run failure simulation，覆蓋任一腿失敗、延遲、取消、partial fill；任何不完整雙腿結果都維持 recommended `PAUSED`，不自動補單。
+- Commit 6：已完成真實 read-only + dry-run smoke，先跑 Phase 3 broker reconciliation，再跑 dry-run execution；最新驗收不再要求 `orders=0` / `fills=0`，而是要求沒有真實 broker order API，且 simulated orders 使用 `DRYRUN-*`。
+
+Commit 1 execution intent domain 紀錄：
 
 ```text
 commit: f30d72d feat: add execution intent domain
-pytest tests/test_execution_intent.py -q: 11 passed
+pytest tests/unit/test_execution_intent.py -q: 11 passed
 pytest -q: 93 passed, 6 skipped
 ```
 
-Commit 1 validator 閬?嚗?
-- ??? intent ?? validation??- entry/exit?SHORT_TSM_LONG_QFF` / `LONG_TSM_SHORT_QFF` side mapping 甇?Ⅱ??- missing leg?rong side?ero quantity?FF ??詨?詻rong QFF symbol ??rejected??- `allow_live_order=true` ??rejected嚗hase 4 隞?敺??函?撖阡??
-Commit 2 SQLite recorder + CLI skeleton 蝝??
+Commit 1 validator 覆蓋：
+
+- 有效雙腿 intent 通過 validation。
+- entry/exit、`SHORT_TSM_LONG_QFF` / `LONG_TSM_SHORT_QFF` side mapping 正確。
+- missing leg、wrong side、zero quantity、QFF 非整數口數、wrong QFF symbol 會 rejected。
+- `allow_live_order=true` 會 rejected，Phase 4 仍不得啟用真實送單。
+
+Commit 2 SQLite recorder + CLI skeleton 紀錄：
 
 ```text
-?啣? tables: execution_plans, execution_legs, execution_checks
-?啣? CLI: dry-run-doctor, live-dry-run --fake, execution-summary
-pytest tests/test_execution_intent.py tests/test_execution_recorder_cli.py -q: 18 passed
+新增 tables: execution_plans, execution_legs, execution_checks
+新增 CLI: dry-run-doctor, live-dry-run --fake, execution-summary
+pytest tests/unit/test_execution_intent.py tests/integration/test_execution_recorder_cli.py -q: 18 passed
 pytest -q: 100 passed, 6 skipped
 ```
 
-Commit 2 撽嚗?
-- fake `live-dry-run` ?舐??valid execution intent嚗alidation ??敺誑 `recorded` ??神??SQLite??- rejected fake case ?神??execution checks 銝虫誑 nonzero exit code 蝯???- dry-run recorder 銝神??`orders`?fills`?trades`??- `allow_live_order=true` ?◤ `live-dry-run` ????
-Commit 3 strategy order builder refactor 蝝??
+Commit 2 驗收：
+
+- fake `live-dry-run` 可產生 valid execution intent，validation 通過後以 `recorded` 狀態寫入 SQLite。
+- rejected fake case 會寫入 execution checks 並以 nonzero exit code 結束。
+- dry-run recorder 不寫入 `orders`、`fills`、`trades`。
+- `allow_live_order=true` 會被 `live-dry-run` 拒絕。
+
+Commit 3 strategy order builder refactor 紀錄：
 
 ```text
 commit: f2c9512 feat: refactor strategy order builders
-pytest tests/test_strategy_store.py tests/test_replay_integration.py -q: 7 passed
+pytest tests/integration/test_strategy_store.py tests/integration/test_replay_integration.py -q: 7 passed
 pytest -q: 102 passed, 6 skipped
 ```
 
-Commit 3 撽嚗?
-- `PairStrategy` ?臬??build entry/exit ? `OrderRequest`嚗?敹??喳??broker??- TSM symbol 敺?hardcode ?? strategy 撱箸??嚗?閮凋???`TSM/USDT:USDT`??- replay / PaperBroker path 隞蝙?典?銝蝯?builder 敺?submit嚗??皜祉???霈?
-Commit 4 live-dry-run real market data 蝝??
+Commit 3 驗收：
+
+- `PairStrategy` 可單獨 build entry/exit 雙腿 `OrderRequest`，不必立即呼叫 broker。
+- TSM symbol 從 hardcode 拆成 strategy 建構參數，預設仍是 `TSM/USDT:USDT`。
+- replay / PaperBroker path 仍使用同一組 builder 後 submit，既有回測結果不變。
+
+Commit 4 live-dry-run real market data 紀錄：
 
 ```text
-?啣? LiveDryRunRunner
-?啣? CLI real mode: live-dry-run --config ... --reset-store --max-iterations ...
-pytest tests/test_live_market_data.py -q: 41 passed
+新增 LiveDryRunRunner
+新增 CLI real mode: live-dry-run --config ... --reset-store --max-iterations ...
+pytest tests/integration/test_live_market_data.py -q: 41 passed
 pytest -q: 103 passed, 6 skipped
 ```
 
-Commit 4 撽嚗?
-- `live-dry-run` 銝? `--fake` ??韏啁?撖?market data runner嚗窒??startup auto warmup?uote polling?inute finalize ??bid/ask tradable spread decision??- `ENTRY_PENDING` / `EXIT_PENDING` 銝??澆 PaperBroker fill嚗?Ｙ? `PairExecutionPlan` 銝血神??execution tables??- 甇?commit ???? intent ?Ｙ?敺?`PAUSED` 銝?撖?`orders` / `fills` / `trades`嚗?蝥?Phase 5 ?蔭隤踵撌脣?甇方楝敺??simulated execution lifecycle??- ???live 銵??finalized minute 蝣箄? entry/exit signal 敺??典?銝??bar 蝡?瑁? simulated execution嚗???dry-run entry ?神 simulated `DRYRUN-*` orders/fills 銝阡?`OPEN`嚗???dry-run exit/force-exit ?神 trade/PnL 銝血? `FLAT`??
-Commit 5 failure simulation 蝝??
+Commit 4 驗收：
+
+- `live-dry-run` 不加 `--fake` 時會走真實 market data runner，沿用 startup auto warmup、quote polling、minute finalize 與 bid/ask tradable spread decision。
+- `ENTRY_PENDING` / `EXIT_PENDING` 不再呼叫 PaperBroker fill，而是產生 `PairExecutionPlan` 並寫入 execution tables。
+- 此 commit 的早期語意是 intent 產生後進 `PAUSED` 且不寫 `orders` / `fills` / `trades`；後續 Phase 5 前置調整已將此路徑改為 simulated execution lifecycle。
+- 最新 live 行為是 finalized minute 確認 entry/exit signal 後，在同一根 bar 立即執行 simulated execution；成功 dry-run entry 會寫 simulated `DRYRUN-*` orders/fills 並進 `OPEN`，成功 dry-run exit/force-exit 會寫 trade/PnL 並回 `FLAT`。
+
+Commit 5 failure simulation 紀錄：
 
 ```text
-?啣? ExecutionSimulationScenario: leg_failure, delay, cancel, partial_fill
-?啣? table: execution_simulations
-?啣? CLI: simulate-execution --scenario ... [--fake-plan]
-pytest tests/test_execution_recorder_cli.py tests/test_execution_intent.py -q: 22 passed
+新增 ExecutionSimulationScenario: leg_failure, delay, cancel, partial_fill
+新增 table: execution_simulations
+新增 CLI: simulate-execution --scenario ... [--fake-plan]
+pytest tests/integration/test_execution_recorder_cli.py tests/unit/test_execution_intent.py -q: 22 passed
 pytest -q: 107 passed, 6 skipped
 ```
 
-Commit 5 撽嚗?
-- simulator ?舫?撠?recorded `PairExecutionPlan` 璅⊥隞颱??踹仃?辣?脯?瘨? partial fill??- simulation ?芸神??`execution_simulations` / `events`嚗?撖怠 `orders`?fills`?trades`??- `simulate-execution --fake-plan` ?臬遣蝡?deterministic plan 敺?交芋?研?- 銝蝙??`--fake-plan` ??CLI ????store ???execution plan ?脰?璅⊥??- ???failure simulation payload ?賢葆 `recommended_state=paused`嚗?蝥?execution gate ?舀?甇日????柴?
-Commit 6 real read-only + dry-run smoke 蝝??
+Commit 5 驗收：
+
+- simulator 可針對 recorded `PairExecutionPlan` 模擬任一腿失敗、延遲、取消與 partial fill。
+- simulation 只寫入 `execution_simulations` / `events`，不寫入 `orders`、`fills`、`trades`。
+- `simulate-execution --fake-plan` 可建立 deterministic plan 後直接模擬。
+- 不使用 `--fake-plan` 時，CLI 會讀取 store 最新 execution plan 進行模擬。
+- 所有 failure simulation payload 都帶 `recommended_state=paused`，後續 execution gate 可據此阻擋自動補單。
+
+Commit 6 real read-only + dry-run smoke 紀錄：
 
 ```text
-?啣? test: tests/test_dry_run_smoke.py
-pytest tests/test_dry_run_smoke.py -q: 1 skipped without env gates
+新增 test: tests/smoke/test_dry_run_smoke.py
+pytest tests/smoke/test_dry_run_smoke.py -q: 1 skipped without env gates
 pytest -q: 107 passed, 7 skipped
-LUX_LIVE_MARKETDATA=1 + LUX_READONLY_BROKER=1 pytest tests/test_dry_run_smoke.py -q -m "live_marketdata and readonly_broker and dry_run_smoke": 1 passed
+LUX_LIVE_MARKETDATA=1 + LUX_READONLY_BROKER=1 pytest tests/smoke/test_dry_run_smoke.py -q -m "live_marketdata and readonly_broker and dry_run_smoke": 1 passed
 ```
 
-Commit 6 撽嚗?
-- smoke ?閬??身摰?`LUX_LIVE_MARKETDATA=1` ??`LUX_READONLY_BROKER=1`嚗?閮剜葫閰衣憓??１?祕 API??- 皜祈岫? Fubon / Binance read-only broker ??reconciliation嚗???`matched` ?匱蝥?- 皜祈岫撖怠 `ENTRY_PENDING` seed state嚗??祕 market data 頝券?蝚砌???finalized minute 敺??dry-run entry execution嚗?靘陷撣?末?箇 entry signal??- `LiveDryRunRunner` 撖阡?摰? auto warmup?arket ticks?inute finalize?xecution plan record ??simulated execution outcome??- ???SQLite 撽??`broker_reconciliation_runs=1`?execution_plans>=1`?execution_outcomes>=1`?execution_legs>=2`嚗???entry ?? simulated `orders>=2`?fills>=2`嚗? order id 雿輻 `DRYRUN-*`嚗瘝? exit嚗trades=0` ?舀迤撣貊???
-live-dry-run ?券皜祈岫鋆撥嚗?
-```text
-?啣? deterministic tests:
-- live-dry-run resume 敺??? warmup / bar / execution plan
-- EXIT_PENDING seed state ?Ｙ? exit execution plan 銝行芋?祆?鈭?- expiry buffer force-exit ?Ｙ? rollover exit execution plan 銝行芋?祆?鈭?
-?游? real smoke:
-- 雿輻 data/live_dry_run_full_smoke.sqlite3
-- full smoke 摰?敺?銝 store ?? resume 70 iterations
-- 撽? warmup_bars 蝬剜? `config.live.warmup_minutes`?ive_runs=2?ars timestamp ?⊿?銴xecution plan ?⊿?銴?```
+Commit 6 驗收：
 
-PowerShell 鈭?撘???撘瘀?
+- smoke 需要同時設定 `LUX_LIVE_MARKETDATA=1` 與 `LUX_READONLY_BROKER=1`，預設測試環境不會碰真實 API。
+- 測試先用 Fubon / Binance read-only broker 做 reconciliation，必須 `matched` 才繼續。
+- 測試寫入 `ENTRY_PENDING` seed state，讓真實 market data 跨過第一根 finalized minute 後產生 dry-run entry execution，不依賴市場剛好出現 entry signal。
+- `LiveDryRunRunner` 實際完成 auto warmup、market ticks、minute finalize、execution plan record 與 simulated execution outcome。
+- 最新 SQLite 驗收為 `broker_reconciliation_runs=1`、`execution_plans>=1`、`execution_outcomes>=1`、`execution_legs>=2`，成功 entry 會有 simulated `orders>=2`、`fills>=2`，且 order id 使用 `DRYRUN-*`；若沒有 exit，`trades=0` 是正常結果。
+
+live-dry-run 全面測試補強：
 
 ```text
-?啣? scripts/lux.ps1嚗摰蝙??Quant ?啣?銝阡? conda run --no-capture-output ?? lux_trader嚗??live terminal UI 鋡?conda run capture??```
+新增 deterministic tests:
+- live-dry-run resume 後不重複 warmup / bar / execution plan
+- EXIT_PENDING seed state 產生 exit execution plan 並模擬成交
+- expiry buffer force-exit 產生 rollover exit execution plan 並模擬成交
 
-?券皜祈岫?誘嚗?
+擴充 real smoke:
+- 使用 data/live_dry_run_full_smoke.sqlite3
+- full smoke 完成後同一 store 再跑 resume 70 iterations
+- 驗證 warmup_bars 維持 `config.live.warmup_minutes`、live_runs=2、bars timestamp 無重複、execution plan 無重複
+```
+
+PowerShell 互動式啟動補強：
+
+```text
+新增 scripts/lux.ps1，固定使用 Quant 環境並透過 conda run --no-capture-output 啟動 lux_trader，避免 live terminal UI 被 conda run capture。
+```
+
+全面測試指令：
+
 ```powershell
 Set-Location 'D:\Users\Work place\Project Lux'
 & 'D:\Users\miniconda3\condabin\conda.bat' env list
@@ -265,28 +426,31 @@ $env:LUX_READONLY_BROKER='1'
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config configs/config.live.smoke.local.toml
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader dry-run-doctor --config configs/config.live.smoke.local.toml
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config configs/config.live.smoke.local.toml --readonly
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/test_dry_run_smoke.py -q -m "live_marketdata and readonly_broker and dry_run_smoke"
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/smoke/test_dry_run_smoke.py -q -m "live_marketdata and readonly_broker and dry_run_smoke"
 Remove-Item Env:\LUX_LIVE_MARKETDATA
 Remove-Item Env:\LUX_READONLY_BROKER
 ```
 
-?剜???soak ???誘嚗?
+短時間 soak 手動指令：
+
 ```powershell
 $env:LUX_LIVE_MARKETDATA='1'
 .\scripts\lux.ps1 live-dry-run --config configs/config.live.smoke.local.toml --reset-store --max-iterations 900 --no-color
 Remove-Item Env:\LUX_LIVE_MARKETDATA
 ```
 
-Trading calendar closed_dates 鋆撥嚗?
+Trading calendar closed_dates 補強：
+
 ```text
-?啣? config: [trading_calendar] closed_dates = 2026 TAIFEX futures market non-trading weekdays
-?祆? smoke config ?郊憛怠 2026 TAIFEX closed_dates 摰皜
-?啣? live_session_status(timestamp, closed_dates)
-live-paper/live-dry-run ??non-trading session 銝?fetch quote?? finalize BAR??頝???Terminal UI 憿舐內: LIVE non-trading session next=MM/DD HH:MM in=HH:MM:SS
-live-doctor 憿舐內 live_session?ext_trading_start?ff_book_timestamp?ff_book_age_sec?ff_book_stale
+新增 config: [trading_calendar] closed_dates = 2026 TAIFEX futures market non-trading weekdays
+本機 smoke config 同步填入 2026 TAIFEX closed_dates 完整清單
+新增 live_session_status(timestamp, closed_dates)
+live-paper/live-dry-run 在 non-trading session 不 fetch quote、不 finalize BAR、不跑策略
+Terminal UI 顯示: LIVE non-trading session next=MM/DD HH:MM in=HH:MM:SS
+live-doctor 顯示 live_session、next_trading_start、qff_book_timestamp、qff_book_age_sec、qff_book_stale
 ```
 
-撽蝝??
+驗收紀錄：
 
 ```text
 pytest -q: 119 passed, 7 skipped
@@ -296,10 +460,12 @@ live-dry-run --reset-store --max-iterations 30: bars_processed=0, plans_recorded
 SQLite: warmup_bars=1440, market_ticks=0, bars=0, execution_plans=0, live_runs=1
 ```
 
-### Phase 5 ?蔭隤踵嚗???live-dry-run lifecycle
+### Phase 5 前置調整：完整 live-dry-run lifecycle
 
-撌脣???`live-dry-run` ????simulated execution lifecycle???dry-run 銝??胯ecord intent 敺?`PAUSED`???支?銝?撖?Fubon/Binance 憪?隞亙?嚗???execution ?粥摰鈭斗?蝟餌絞??嚗ntry simulated fill 敺?`OPEN`?xit simulated fill 敺? `FLAT`嚗蒂撖怠 simulated orders/fills?rade?nL ??equity??
-?詨???嚗?撱箇??拙?蝟餌絞?遣蝡?璇??execution pipeline嚗?
+已完成 `live-dry-run` 的完整 simulated execution lifecycle。現在 dry-run 不再是「record intent 後進 `PAUSED`」；除了不送真實 Fubon/Binance 委託以外，成功 execution 會走完整交易系統預演：entry simulated fill 後進 `OPEN`、exit simulated fill 後回 `FLAT`，並寫入 simulated orders/fills、trade、PnL 與 equity。
+
+核心原則：不建立兩套系統。建立一條共用 execution pipeline：
+
 ```text
 strategy signal
  -> execution plan builder
@@ -310,49 +476,94 @@ strategy signal
  -> state updater / trade recorder
 ```
 
-撌桀?芸 adapter嚗?
+差別只在 adapter：
+
 ```text
 live-dry-run -> SimulatedExecutionAdapter
 live-execute -> FubonExecutionAdapter + BinanceExecutionAdapter
 ```
 
-摰??批捆嚗?
-- ?啣? `ExecutionCoordinator`?ExecutionAdapter` protocol?ExecutionOutcome` / `ExecutionOutcomeStatus`嚗絞銝 plan recording?dapter execution?utcome recording ??failure-to-PAUSED policy??- ?啣? `SimulatedExecutionAdapter`嚗??`PairExecutionPlan` 敺??simulated `OrderResult` / `Fill`嚗洵銝??券??漱嚗?潔蝙??plan leg price嚗???slippage / depth / partial fill??- ?啣? SQLite `execution_outcomes`嚗?瘥活 dry-run execution outcome ??execution plan ?嚗? `execution-summary` ??敺?audit 雿輻??- 敺?`PairStrategy` ?賢 `apply_entry_execution(...)` ??`apply_exit_execution(...)`嚗live-paper` ? PaperBroker 銵銝?嚗live-dry-run` ?靘?`live-execute` ?臬?典?銝憟?state / trade / PnL ?湔?摩??- `ENTRY_PENDING` ?? simulated fill 敺?state 霈?`OPEN`嚗EXIT_PENDING` ??rollover force-exit ?? simulated fill 敺?state ??`FLAT` 銝血神??trade?nL?quity??- live mode ??replay/backtest 隤??嚗eplay 隞???PoC ??銝???漱??嚗live-paper` / `live-dry-run` ??finalized bar ?Ｙ? signal 敺? bar 蝡?瑁?嚗?潸票餈?撖虫漱?頂蝯晞?- rejected?ailed?artial?nknown execution outcome 隞???recommended `PAUSED`嚗??芸?鋆???芸??岫??- ?祕 market data smoke 銝?閬? `orders/fills/trades=0`嚗撽瘝??祕 broker order API?imulated order id 雿輻 `DRYRUN-*`嚗? successful entry ?? state ??`OPEN`??
-撽蝝??
+完成內容：
+
+- 新增 `ExecutionCoordinator`、`ExecutionAdapter` protocol、`ExecutionOutcome` / `ExecutionOutcomeStatus`，統一 plan recording、adapter execution、outcome recording 與 failure-to-PAUSED policy。
+- 新增 `SimulatedExecutionAdapter`，接收 `PairExecutionPlan` 後產生 simulated `OrderResult` / `Fill`；第一版採全量成交，價格使用 plan leg price，不做 slippage / depth / partial fill。
+- 新增 SQLite `execution_outcomes`，將每次 dry-run execution outcome 和 execution plan 關聯，供 `execution-summary` 與事後 audit 使用。
+- 從 `PairStrategy` 抽出 `apply_entry_execution(...)` 與 `apply_exit_execution(...)`；`live-paper` 原本 PaperBroker 行為不變，`live-dry-run` 和未來 `live-execute` 可共用同一套 state / trade / PnL 更新邏輯。
+- `ENTRY_PENDING` 成功 simulated fill 後 state 變 `OPEN`；`EXIT_PENDING` 或 rollover force-exit 成功 simulated fill 後 state 回 `FLAT` 並寫入 trade、PnL、equity。
+- live mode 與 replay/backtest 語意分離：replay 仍保留 PoC 的下一分鐘成交原則；`live-paper` / `live-dry-run` 在 finalized bar 產生 signal 後同 bar 立即執行，用於貼近真實交易系統。
+- rejected、failed、partial、unknown execution outcome 仍會進 recommended `PAUSED`，不自動補單、不自動重試。
+- 真實 market data smoke 不再要求 `orders/fills/trades=0`；改驗收沒有真實 broker order API、simulated order id 使用 `DRYRUN-*`，且 successful entry 會讓 state 進 `OPEN`。
+
+驗收紀錄：
 
 ```text
-pytest tests/test_live_market_data.py tests/test_strategy_store.py tests/test_replay_integration.py -q: 52 passed
+pytest tests/integration/test_live_market_data.py tests/integration/test_strategy_store.py tests/integration/test_replay_integration.py -q: 52 passed
 pytest -q: 120 passed, 7 skipped
 ```
 
-?桀? `PAUSED` ???歇隤踵?綽?execution rejected?dapter failed?artial fill?nknown order status?econciliation mismatch???嗡?銝摰蝜潛??撣貊??迤撣?dry-run entry/exit 銝???`PAUSED`??
-### Phase 5 ??撌乩?
+目前 `PAUSED` 的語意已調整為：execution rejected、adapter failed、partial fill、unknown order status、reconciliation mismatch、或其他不能安全繼續的異常狀態。正常 dry-run entry/exit 不應進 `PAUSED`。
 
-Phase 5 ?格??舀??蔭隤踵摰?敺??梁 execution pipeline ?交??祕???蝵株矽?游歇蝬???shared runtime?ExecutionCoordinator`?ExecutionAdapter` protocol?ExecutionOutcome`?execution_outcomes`?trategy state applier嚗誑??`live-dry-run` same-bar simulated lifecycle??甇?Phase 5 銝?撱箇??虫?憟?execution 蝟餌絞嚗撠釣??real adapter?ive order gate??撖行?鈭文??梯? post-trade reconciliation??
-蝚砌???芸? `live-execute` loop嚗??亙 finalized minute ?Ｙ? entry/exit plan 敺??? safety gate ??祕?憪??洵銝??order policy ?∪??孵?????臬?撽??撠祕?桅??堆?銝蕭瘙?雿單?鈭文??
-Phase 5 revised commit plan嚗?
-- Commit 1嚗歇摰? Live execution gate??銝剜炎??`allow_live_order=true`?[live_execution] enabled=true`?PROJECT_LUX_ALLOW_LIVE_ORDER=1`?FUBON_ALLOW_LIVE_ORDER=1`?BINANCE_ALLOW_LIVE_ORDER=1`?ead-only reconciliation matched????unexpected position/open order?lan freshness ????? plan ?芸銵???- Commit 2嚗歇摰? Execution price / order policy?ive plan ????signal ?嗡???tradable bid/ask?xpected execution price?rder type ??plan age嚗洵銝? market order policy嚗udit 靽? trigger bid/ask?xpected price?ctual fill price??- Commit 3嚗ubon QFF execution adapter? `FutOptOrder` + `sdk.futopt.place_order(...)` ??QFF market order嚗敺憪?/?漱?嚗????柴?亦??? failed/unknown outcome 銝血遣霅?`PAUSED`??- Commit 4嚗inance TSM execution adapter?? `.env` 霈 `BINANCE_API_KEY` / `BINANCE_SECRET`嚗 ccxt USDM private API ??`TSM/USDT:USDT` market order嚗敺 order status?ills?osition嚗?澆???read-only broker ??execution adapter 甈?隤???- Commit 5嚗eal execution coordinator policy?憓?live 撠? coordinator嚗??輸?摨洵銝?摰 `QFF first, Binance second`?FF 憭望?銝?漱????Binance嚗 QFF ??雿?Binance 憭望???隞颱???partial/unknown ??銝像銵?exposure嚗??唾???`exposure_breach` / `single_leg_exposure` ??`imbalanced_pair_exposure`嚗?閰血?撌脫?鈭方??emergency close嚗?敺?敺雁??`PAUSED` 蝑犖撌亦Ⅱ隤??抵??full fill ???strategy state ??`OPEN` ??`FLAT`??- Commit 6嚗歇摰? Post-trade reconciliation??甈?real execution 敺??餉? read-only reconciliation嚗tore state?roker position?pen orders?ecorded fills 敹?銝?湛?隞颱? mismatch ??`PAUSED`??- Commit 7嚗歇摰? `live-execute` integration?窒??`live-paper` / `live-dry-run` ?梁??auto warmup?uote polling?inute finalize?id/ask tradable spread decision?alendar ??contract policy嚗??adapter ?? real execution adapters??- Commit 8嚗eal smoke / minimal live acceptance??閮?pytest ?芾? simulated/fake execution嚗?撖阡 smoke 敹??Ⅱ閮剖? `LUX_LIVE_MARKETDATA=1`?LUX_READONLY_BROKER=1`?PROJECT_LUX_ALLOW_LIVE_ORDER=1`?FUBON_ALLOW_LIVE_ORDER=1`?BINANCE_ALLOW_LIVE_ORDER=1`嚗蒂雿輻璆萄? sizing ????smoke config嚗??嗅?迂銝蝯?entry/exit??
-Phase 5 extension point 蝝??
+### Phase 5 預計工作
 
-- Commit A嚗歇摰? `LiveRuntime` + `LiveModeHandler`嚗? `live-paper`?live-dry-run`?靘?`live-execute` ?梁??璇?live market data loop??- Commit B嚗歇摰? `live-dry-run` ?寧 shared runtime嚗ry-run 撠惇?摩?葉??`DryRunLiveModeHandler`??- Commit C嚗歇摰? `ExecutionStore` ??CLI helpers cleanup嚗xecution tables ????fake/read-only helper 撌脣?憭批? `SQLiteStore` / `cli.py` ???- Commit D嚗歇摰? Phase 5 extension point嚗憓?`[live_execution]` config?live-order-doctor`?live-execute` CLI ??`LiveExecuteModeHandler`嚗ommit 7 敺?`live-execute` 撌脫銝?shared live runtime ??real execution coordinator嚗? Fubon ?祕 TMF smoke 撠摰?嚗?銝?閬甇???臬祕?柴?
-Phase 5 Commit 5 real execution coordinator policy 蝝??
+Phase 5 目標是把前置調整完成後的共用 execution pipeline 接成真實送單。前置調整已經完成 shared runtime、`ExecutionCoordinator`、`ExecutionAdapter` protocol、`ExecutionOutcome`、`execution_outcomes`、strategy state applier，以及 `live-dry-run` same-bar simulated lifecycle。因此 Phase 5 不再建立另一套 execution 系統，只專注於 real adapter、live order gate、真實成交回報與 post-trade reconciliation。
 
-?啣? module: `lux_trader/real_execution.py`
+第一版採自動 `live-execute` loop：策略在 finalized minute 產生 entry/exit plan 後，通過 safety gate 才送出真實雙腿委託。第一版 order policy 採市價優先，重點是先驗證最小實單閉環，不追求最佳成交價。
 
-- `RealExecutionCoordinator` ??record live execution plan?? `qff_first=true` ??Fubon leg嚗???Binance leg??- ? full fill ????`filled`嚗蒂?迂 strategy ?梁 applier ?湔 `OPEN` / `FLAT`?rade?nL??- QFF ?漱雿?Binance 憭望??FF partial?inance partial 蝑?撟唾﹛??????exposure breach event嚗遣蝡?reverse emergency close plan ?岫?◢?芥?- Emergency close ??隞??芸??Ｗ儔鈭斗?嚗仃???芰????`critical_manual_intervention_required`嚗?蝯?recommended state ?賣 `PAUSED`??- Fubon adapter ??撖?TMF smoke 隞?pending嚗ommit 5 ?芷? fake adapter deterministic tests嚗??瑁??祕? smoke??
-Phase 5 Commit 6 post-trade reconciliation 蝝??
+Phase 5 revised commit plan：
 
-?啣? module: `lux_trader/post_trade_reconciliation.py`
+- Commit 1：已完成 Live execution gate。集中檢查 `allow_live_order=true`、`[live_execution] enabled=true`、`PROJECT_LUX_ALLOW_LIVE_ORDER=1`、`FUBON_ALLOW_LIVE_ORDER=1`、`BINANCE_ALLOW_LIVE_ORDER=1`、read-only reconciliation matched、沒有 unexpected position/open order、plan freshness 合格、且同一 plan 未執行過。
+- Commit 2：已完成 Execution price / order policy。live plan 會記錄 signal 當下的 tradable bid/ask、expected execution price、order type 與 plan age；第一版採 market order policy，audit 保留 trigger bid/ask、expected price、actual fill price。
+- Commit 3：已完成 Fubon futures execution adapter。接 `FutOptOrder` + `sdk.futopt.place_order(...)` 送 market order；正式支援 `TMFG6 -> FITM + expiry_date=202607` 與 QFF contract identity matching、成交回報 parser、order records 查詢及 `fubon-manual-close`。TMF 1 lot 真實 BUY/Close smoke 已通過。
+- Commit 4：已完成 Binance TSM execution adapter。從 `.env` 讀 `BINANCE_API_KEY` / `BINANCE_SECRET`，用 ccxt USDM private API 送 `TSM/USDT:USDT` market order；支援 margin mode/leverage preflight，相同設定不重複寫入。`0.02 TSM` 真實 entry/exit smoke 已通過，最終 position=0、open_orders=0。
+- Commit 5：Real execution coordinator policy。新增 live 專用雙腿 coordinator；雙腿順序第一版固定為 `QFF first, Binance second`。QFF 失敗且零成交時不送 Binance；若 QFF 成功但 Binance 失敗、或任一腿 partial/unknown 造成不平衡 exposure，立即記錄 `exposure_breach` / `single_leg_exposure` 或 `imbalanced_pair_exposure`，嘗試對已成交腿送 emergency close，最後一律維持 `PAUSED` 等人工確認；兩腿都 full fill 才更新 strategy state 為 `OPEN` 或 `FLAT`。
+- Commit 6：已完成 Post-trade reconciliation。每次 real execution 後立刻跑 read-only reconciliation；store state、broker position、open orders、recorded fills 必須一致，任一 mismatch 進 `PAUSED`。
+- Commit 7：已完成 `live-execute` integration。沿用 `live-paper` / `live-dry-run` 共用的 auto warmup、quote polling、minute finalize、bid/ask tradable spread decision、calendar 與 contract policy；只把 adapter 換成 real execution adapters。
+- Commit 8：部分完成 real smoke / minimal live acceptance。Binance TSM 與 Fubon TMF adapters 已分別完成最小真實 entry/exit smoke；完整 QFF + Binance 雙腿 `live-execute` smoke 尚未執行。完整測試仍必須明確設定 `LUX_LIVE_MARKETDATA=1`、`LUX_READONLY_BROKER=1`、`PROJECT_LUX_ALLOW_LIVE_ORDER=1`、`FUBON_ALLOW_LIVE_ORDER=1`、`BINANCE_ALLOW_LIVE_ORDER=1`，並使用極小 sizing 或專用 smoke config，限制只允許一組 entry/exit。
 
-- `LiveExecuteModeHandler` ?冽?甈?real execution outcome 撖怠 `orders` / `fills` / `trades` 敺?蝡??read-only Fubon/Binance brokers 頝?post-trade reconciliation??- Post-trade reconciliation ?蔥?拚?瑼Ｘ嚗?  - read-only broker snapshot 敹???strategy runtime exposure 銝?湛?銝?敺? unexpected open orders??  - SQLite `fills` 銵函敞蝛??signed net exposure 敹???strategy runtime exposure 銝?湛??踹??芣??state 雿?閮?撖行?鈭扎?- 隞颱? `warning` / `error` ?賣?撖怠 `broker_reconciliation_runs` / `broker_reconciliation_issues`嚗???`post_trade_reconciliation_mismatch` event嚗蒂??strategy state 閮剔 `PAUSED`??- `PAUSED` 銝?隞?” exposure 銝摰飛?塚???state 隞???`position_direction` / `tsm_units` / `qff_contracts`嚗econciler ?匱蝥閰?exposure 雿 expected broker state??- Matched case ????`post_trade_reconciliation_matched` event嚗ismatch case ? terminal UI 頛詨 `WARN post_trade_reconciliation ...`??- ?桀??? fake read-only broker deterministic tests嚗?撖?Fubon TMF smoke ????`live-execute` 撖血 smoke 隞?雿??Ⅱ隤??銵?
-Phase 5 Commit 7 live-execute integration 蝝??
+Phase 5 extension point 紀錄：
 
-- `LiveExecuteRunner` ?湔雿輻 shared `LiveRuntime`嚗? `live-paper` / `live-dry-run` ?梁 auto warmup?uote polling?inute finalize?on-trading calendar?id/ask tradable spread decision?ontract switch ??force-exit policy??- `LiveExecuteModeHandler` ?芣??execution layer嚗ignal ?Ｙ?敺遣蝡?live market pair plan嚗漱蝯?`RealExecutionCoordinator` ??real Fubon/Binance execution adapters??- `live-execute` startup gate 銝?閬???摮 execution plan嚗lan freshness / not-executed checks 靽??典蝑 gate 隤?銝哨???coordinator ??execution ?嗡? record outcome??- `live-order-doctor` ?曉? startup gate嚗onfig/env gate?FF-first policy ??latest read-only reconciliation嚗???瘝???plan ??fail??- ?啣? fake provider integration test嚗?蝛?store ?? `live-execute`嚗Ⅱ隤?auto warmup?arket ticks?AR finalize?ive execution plan?rders/fills?ost-trade reconciliation ??`OPEN` state ?冽?蝔頝?- ?祕 Fubon TMF smoke ????`live-execute` live-order acceptance 撠?瑁?嚗?銝?閬?舐鈭箏澆?撖血??
-Phase 5 Commit 1 live execution gate 蝝??
+- Commit A：已完成 `LiveRuntime` + `LiveModeHandler`，讓 `live-paper`、`live-dry-run`、未來 `live-execute` 共用同一條 live market data loop。
+- Commit B：已完成 `live-dry-run` 改用 shared runtime，dry-run 專屬邏輯集中在 `DryRunLiveModeHandler`。
+- Commit C：已完成 `ExecutionStore` 與 CLI helpers cleanup，execution tables 操作和 fake/read-only helper 已從大型 `SQLiteStore` / `cli.py` 拆出。
+- Commit D：已完成 Phase 5 extension point，新增 `[live_execution]` config、`live-order-doctor`、`live-execute` CLI 與 `LiveExecuteModeHandler`；Commit 7 後 `live-execute` 已接上 shared live runtime 與 real execution coordinator。Fubon TMF 單腿真實 smoke 已完成，但完整雙腿 smoke 尚未完成，仍不得視為正式可實單。
+
+Phase 5 Commit 5 real execution coordinator policy 紀錄：
+
+新增 module: `lux_trader/execution/real_coordinator.py`
+
+- `RealExecutionCoordinator` 會 record live execution plan、依 `qff_first=true` 先送 Fubon leg，再送 Binance leg。
+- 雙腿 full fill 才回傳 `filled`，並允許 strategy 共用 applier 更新 `OPEN` / `FLAT`、trade、PnL。
+- QFF 成交但 Binance 失敗、QFF partial、Binance partial 等不平衡情境會記錄 exposure breach event，建立 reverse emergency close plan 嘗試降風險。
+- Emergency close 成功仍不自動恢復交易；失敗或未知會記錄 `critical_manual_intervention_required`，最終 recommended state 都是 `PAUSED`。
+- Fubon adapter 的 TMF 真實 smoke 已於 2026-06-25 通過；Commit 5 coordinator policy 仍只通過 fake adapter deterministic tests，尚未用完整 QFF + Binance 雙腿真實委託驗證 emergency-close 路徑。
+
+Phase 5 Commit 6 post-trade reconciliation 紀錄：
+
+新增 module: `lux_trader/reconciliation/post_trade.py`
+
+- `LiveExecuteModeHandler` 在每次 real execution outcome 寫入 `orders` / `fills` / `trades` 後，立刻用 read-only Fubon/Binance brokers 跑 post-trade reconciliation。
+- Post-trade reconciliation 合併兩類檢查：
+  - read-only broker snapshot 必須和 strategy runtime exposure 一致，且不得有 unexpected open orders。
+  - SQLite `fills` 表累積出的 signed net exposure 必須和 strategy runtime exposure 一致，避免只更新 state 但漏記真實成交。
+- 任一 `warning` / `error` 都會寫入 `broker_reconciliation_runs` / `broker_reconciliation_issues`，記錄 `post_trade_reconciliation_mismatch` event，並把 strategy state 設為 `PAUSED`。
+- `PAUSED` 不再代表 exposure 一定歸零；若 state 仍保留 `position_direction` / `tsm_units` / `qff_contracts`，reconciler 會繼續用該 exposure 作為 expected broker state。
+- Matched case 會記錄 `post_trade_reconciliation_matched` event；mismatch case 會在 terminal UI 輸出 `WARN post_trade_reconciliation ...`。
+- 目前通過 fake read-only broker deterministic tests；Fubon/Binance read-only 查詢與 Fubon TMF 單腿 smoke 已實測，完整 `live-execute` 實單 smoke 仍需手動確認後再執行。
+
+Phase 5 Commit 7 live-execute integration 紀錄：
+
+- `LiveExecuteRunner` 直接使用 shared `LiveRuntime`，和 `live-paper` / `live-dry-run` 共用 auto warmup、quote polling、minute finalize、non-trading calendar、bid/ask tradable spread decision、contract switch 與 force-exit policy。
+- `LiveExecuteModeHandler` 只替換 execution layer：signal 產生後建立 live market pair plan，交給 `RealExecutionCoordinator` 與 real Fubon/Binance execution adapters。
+- `live-execute` startup gate 不再要求預先存在 execution plan；plan freshness / not-executed checks 保留在單筆送單 gate 語意中，由 coordinator 在 execution 當下 record outcome。
+- `live-order-doctor` 現在回報 startup gate：config/env gate、QFF-first policy 與 latest read-only reconciliation，不再因沒有舊 plan 而 fail。
+- 新增 fake provider integration test，從空 store 啟動 `live-execute`，確認 auto warmup、market ticks、BAR finalize、live execution plan、orders/fills、post-trade reconciliation 與 `OPEN` state 全流程可跑通。
+- 真實 Fubon TMF smoke 已通過；完整 `live-execute` live-order acceptance 尚未執行，仍不得視為可無人值守實單。
+
+Phase 5 Commit 1 live execution gate 紀錄：
 
 ```text
-?啣? module: lux_trader/live_execution_gate.py
-?啣? gate checks:
+新增 module: lux_trader/execution/gate.py
+新增 gate checks:
 - safety_allow_live_order
 - live_execution_enabled
 - execution_order_qff_first
@@ -367,17 +578,17 @@ Phase 5 Commit 1 live execution gate 蝝??
 - execution_plan_fresh
 - execution_plan_not_executed
 
-live-order-doctor: 雿輻??憟?gate report嚗???PASS/FAIL
-live-execute: gate ?芷???fail fast嚗ate ?券?敺??脣 shared live runtime嚗?敺?finalized BAR ?Ｙ? real execution plan
-?賊? regression: `tests/test_live_execution_gate.py`?tests/test_execution_recorder_cli.py`?tests/test_live_market_data.py` 撌脤?
+live-order-doctor: 使用同一套 gate report，列出 PASS/FAIL
+live-execute: gate 未開時 fail fast；gate 全開後會進入 shared live runtime，等待 finalized BAR 產生 real execution plan
+相關 regression: `tests/unit/test_live_execution_gate.py`、`tests/integration/test_execution_recorder_cli.py`、`tests/integration/test_live_market_data.py` 已通過
 ```
 
-Phase 5 Commit 2 execution price / order policy 蝝??
+Phase 5 Commit 2 execution price / order policy 紀錄：
 
 ```text
-?啣? module: lux_trader/execution_price_policy.py
-?啣? price policy: live_touch_market
-?啣? execution plan / leg audit 甈?:
+新增 module: lux_trader/execution/price_policy.py
+新增 price policy: live_touch_market
+新增 execution plan / leg audit 欄位:
 - order_type = market
 - price_policy
 - plan_age_seconds
@@ -389,83 +600,153 @@ Phase 5 Commit 2 execution price / order policy 蝝??
 - price_source
 
 live-dry-run execution plan:
-- BUY leg expected_price 雿輻 ask
-- SELL leg expected_price 雿輻 bid
-- Binance TSM leg 雿輻 TSM/USDT book ??USDT/TWD book ?? TWD fair price
-- Fubon QFF leg 雿輻 QFF top-of-book
-- dry-run fills.price 雿輻 expected_price嚗???simulated actual fill price
-- ? bar/trade accounting ?急?蝬剜? bar-based嚗?蝥閬??典???fill-based PnL ?蝡矽??
-pytest tests/test_execution_price_policy.py tests/test_execution_intent.py tests/test_execution_recorder_cli.py tests/test_live_market_data.py -q: 77 passed
+- BUY leg expected_price 使用 ask
+- SELL leg expected_price 使用 bid
+- Binance TSM leg 使用 TSM/USDT book 與 USDT/TWD book 合成 TWD fair price
+- Fubon QFF leg 使用 QFF top-of-book
+- dry-run fills.price 使用 expected_price，作為 simulated actual fill price
+- 原本 bar/trade accounting 暫時維持 bar-based，後續若要完全切到 fill-based PnL 再獨立調整
+
+pytest tests/unit/test_execution_price_policy.py tests/unit/test_execution_intent.py tests/integration/test_execution_recorder_cli.py tests/integration/test_live_market_data.py -q: 77 passed
 ```
 
-Phase 5 撽??嚗?
-- 蝻箔遙銝 config/env safety gate ??蝯??- broker reconciliation mismatch ??蝯??- live execution plan 敹?靽? trigger bid/ask?xpected price?ctual fill price ??plan age??- QFF first ???inance second ????execution audit tables ??strategy state ?湔甇?Ⅱ??- QFF 憭望???Binance adapter 銝?鋡怠?怒?- Binance 憭望??artial fill?nknown order status ??敺?`PAUSED`嚗??芸?鋆???芸??岫??- real execution 敺?post-trade reconciliation 敹? matched嚗??`PAUSED`??- resume 敺?敺?銴撌脣銵???execution plan??- `live-paper`?live-dry-run` 靽?嚗??乩???paper trading ?祕?桀???撌亙??
-## 8. Safety ??
+Phase 5 驗收重點：
 
-- Phase 2 ??Phase 4 ?賭?敺?撖血?閮?- Phase 5 ?身隞?敺?撖血?閮??芣? explicit config + env gate ?券?????迂?撠祕?柴?- 隞亙祕?瘚?頝撽?箸?
-- 隞颱? live test 敹??Ⅱ閮剖? `LUX_LIVE_MARKETDATA=1`??- `allow_live_order=true` ??Phase 1 ??Phase 4 敹?鋡急?蝯?Phase 5 ?芾??`live-execute` safety gate ?亙???- `live-execute` ?芾??Phase 5 explicit config/env gate ?券?敺????祕 smoke 撠摰???銝??∩犖?澆?????- 隞颱??踹仃?artial fill?nknown status?ost-trade reconciliation mismatch嚗敹???`PAUSED`嚗?敺???格??岫??- `.env`?.pfx`?ocal smoke config?QLite?AIFEX cache?untime logs ?賭?敺?git??
-## 9. Architecture Refactor
+- 缺任一 config/env safety gate 時拒絕送單。
+- broker reconciliation mismatch 時拒絕送單。
+- live execution plan 必須保存 trigger bid/ask、expected price、actual fill price 與 plan age。
+- QFF first 成功、Binance second 成功時，execution audit tables 與 strategy state 更新正確。
+- QFF 失敗時 Binance adapter 不得被呼叫。
+- Binance 失敗、partial fill、unknown order status 時一律進 `PAUSED`，不自動補單、不自動重試。
+- real execution 後 post-trade reconciliation 必須 matched，否則進 `PAUSED`。
+- resume 後不得重複送出已執行過的 execution plan。
+- `live-paper`、`live-dry-run` 保留，分別作為 paper trading 與實單前預演工具。
 
-2026-06-25 architecture refactor progress:
+## 8. Safety 原則
 
-- Commit 1: Config relocation completed.
-  - Created `configs/`.
-  - Moved tracked example configs to `configs/replay.example.toml` and
-    `configs/live.example.toml`.
-  - Moved ignored local configs under `configs/`.
-  - Project-local TOML relative paths still resolve from the Project Lux root, so
-    `.env`, `data/`, TAIFEX cache, and SQLite paths keep the same deployment meaning.
+- Phase 2 到 Phase 4 都不得送真實委託。
+- Phase 5 預設仍不得送真實委託；只有 explicit config + env gate 全部通過時才允許最小實單。
+- 以實際全流程跑通為驗收基準
+- 任何 live test 必須明確設定 `LUX_LIVE_MARKETDATA=1`。
+- `allow_live_order=true` 在 Phase 1 到 Phase 4 必須被拒絕；Phase 5 只能由 `live-execute` safety gate 接受。
+- `live-execute` 只能在 Phase 5 explicit config/env gate 全開後啟動；完整 QFF + Binance 雙腿真實 smoke 尚未完成前，不得無人值守運行。
+- 任一腿失敗、partial fill、unknown status、post-trade reconciliation mismatch，都必須進 `PAUSED`，不得自動補單或重試。
+- `.env`、`.pfx`、local smoke config、SQLite、TAIFEX cache、runtime logs 都不得進 git。
 
-- Commit 2: Core domain extraction completed.
-  - Moved models, strategy, indicator, calendar, sizing, fees, tradable spread, and
-    contract policy into `lux_trader/core/`.
-  - Added shared Taipei time and contract parsing helpers.
-  - Added architecture tests to keep core independent from CLI, runtime, SQLite, and
-    external API adapters.
+## 9. 2026-06-25 架構重構進度
 
-- Commit 3: Market data and integrations completed.
-  - Split provider-neutral market data code into `lux_trader/market_data/`.
-  - Moved Fubon, Binance, BitoPro, and TAIFEX implementations into
-    `lux_trader/integrations/`.
-  - Consolidated Fubon auth, response parsing, and contract identity handling.
+架構重構已完成以下七個階段，交易邏輯、SQLite schema、persisted JSON 與 CLI
+command semantics 維持不變：
 
-- Commit 4: Execution, reconciliation, and persistence completed.
-  - Moved execution intent, outcome, price policy, simulation, recorder, real
-    coordinator, and live execution gate into `lux_trader/execution/`.
-  - Split reconciliation into `models.py`, `brokers.py`, `reconciler.py`, and
-    `post_trade.py` under `lux_trader/reconciliation/`.
-  - Moved SQLite DDL into `lux_trader/persistence/schema.py`.
-  - Moved execution SQL helpers into `lux_trader/persistence/execution_queries.py`.
-  - Moved reconciliation SQL helpers into
-    `lux_trader/persistence/reconciliation_queries.py`.
-  - Kept `SQLiteStore` as the single public facade.
-  - Kept SQLite schema and persisted JSON payload formats unchanged.
-  - Kept compatibility wrappers for previous import paths while internal code moves
-    toward the new package layout.
+1. Config relocation
+   - tracked example configs 移到 `configs/replay.example.toml` 與
+     `configs/live.example.toml`。
+   - ignored `*.local.toml` 統一放在 `configs/`。
+   - config 內相對路徑仍以專案根目錄解析。
+2. Core domain extraction
+   - strategy、indicator、calendar、sizing、fees、models、spread 與 contract
+     policy 移到 `lux_trader/core/`。
+3. Market data and integrations
+   - provider-neutral data services 移到 `lux_trader/market_data/`。
+   - Fubon、Binance、BitoPro、TAIFEX adapters 移到
+     `lux_trader/integrations/`。
+4. Execution, reconciliation and persistence
+   - execution domain 移到 `lux_trader/execution/`。
+   - reconciliation domain 移到 `lux_trader/reconciliation/`。
+   - SQLite DDL 與 execution/reconciliation queries 移到
+     `lux_trader/persistence/`，保留單一 `SQLiteStore` facade。
+5. Live runtime split
+   - `bootstrap.py`、`warmup.py`、`contracts.py`、`modes.py`、`engine.py`
+     分離，三種 live mode 繼續共用同一 runtime。
+6. CLI split
+   - parser、dispatch、replay/live/broker/execution commands 分離到
+     `lux_trader/cli/`，`python -m lux_trader` 與 command arguments 不變。
+7. Tests and documentation
+   - 測試分成 `tests/unit/`、`tests/integration/`、`tests/smoke/`。
+   - 保留 `live_marketdata`、`readonly_broker`、`dry_run_smoke` markers。
+   - 移除已無引用的 top-level compatibility re-export modules。
+   - README 已加入架構圖、依賴方向、模組責任與測試分類。
 
-- Commit 5: Live runtime split completed.
-  - Added `lux_trader/runtime/live/bootstrap.py` for provider initialization,
-    startup preflight, quote fetch caching, and runtime context preparation.
-  - Added `lux_trader/runtime/live/warmup.py` for `warmup-live`, QFF warmup check,
-    and auto-warmup indicator seeding.
-  - Added `lux_trader/runtime/live/contracts.py` for active contract resolution,
-    QFF books subscription lifecycle, contract switch state, and force-exit checks.
-  - Added `lux_trader/runtime/live/modes.py` for paper, dry-run, and live-execute
-    mode handlers plus execution helpers.
-  - Added `lux_trader/runtime/live/engine.py` for the shared polling and minute
-    finalize loop.
-  - Kept `lux_trader/live_runner.py` as a compatibility re-export module.
-  - `live-paper`, `live-dry-run`, and `live-execute` continue to use the same live
-    runtime engine.
+依賴方向固定為：
 
-Remaining architecture refactor work:
-
-- Commit 6: split CLI parser, dispatch, and command implementations out of `cli.py`.
-- Commit 7: clean up test grouping and documentation after runtime/CLI split.
-
-Validation target remains:
-
-```powershell
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest -q
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader --help
+```text
+core
+  <- market_data / execution / reconciliation
+  <- integrations / persistence
+  <- runtime
+  <- cli / terminal UI
 ```
+
+## 10. 最新驗收結果
+
+### Deterministic regression
+
+```text
+pytest -q: 230 passed, 7 skipped
+architecture tests: 7 passed
+python -m lux_trader --help: passed
+```
+
+### 真實 live-dry-run entry / exit / resume
+
+使用真實 Fubon QFF、Binance TSM、BitoPro USDT/TWD market data，以及 Fubon /
+Binance read-only reconciliation；execution 使用 simulated adapter，不送真單。
+
+```text
+pytest tests/smoke/test_dry_run_smoke.py:
+1 passed in 384.77s
+
+broker_reconciliation_runs=1
+warmup_bars=500
+market_ticks=810
+  fubon_qff=270
+  binanceusdm=270
+  bitopro=270
+live_runs=3
+bars=5
+execution_plans=2
+execution_outcomes=2
+execution_legs=4
+simulated orders=4
+simulated fills=4
+trades=1
+latest plan=exit/recorded
+final strategy state=FLAT
+```
+
+### Binance TSM execution smoke
+
+```text
+symbol=TSM/USDT:USDT
+quantity=0.02
+margin_mode=cross
+leverage=5
+entry=filled
+exit=filled
+final position=0
+open_orders=0
+```
+
+### Fubon TMF execution smoke
+
+2026-06-25 使用 `TMFG6` 測試，broker 回報 identity 為
+`FITM + expiry_date=202607`：
+
+```text
+BUY 1 lot: order=a0AHn, status=50, filled=1, price=45792
+SELL Close 1 lot: order=a0AHw, status=50, filled=1, price=45787
+final position=0
+open_orders=0
+order records query=passed
+```
+
+下單後曾出現一次 PowerShell/CLI traceback，但兩筆委託均已成交且最終部位歸零；
+之後獨立重跑 position、open orders、order records read-only 查詢皆成功且 exit
+code 為 0，因此目前先判定 Fubon adapter 基本 entry/close/query 流程通過。
+
+### 尚未完成
+
+- 完整 QFF + Binance 雙腿 `live-execute` 最小實單 acceptance。
+- 真實 partial fill、reject、timeout、斷線與 emergency close 情境。
+- emergency close 後的人工確認與恢復流程。
+- 長時間 unattended `live-execute` soak；完成前不得無人值守實單。
