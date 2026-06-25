@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from lux_trader.brokers import PaperBroker
-from lux_trader.indicator import IndicatorEngine
-from lux_trader.models import (
+from lux_trader.core.indicator import IndicatorEngine
+from lux_trader.core.models import (
     BrokerName,
     Direction,
     IndicatorSnapshot,
@@ -14,7 +14,7 @@ from lux_trader.models import (
     StrategyState,
 )
 from lux_trader.store import SQLiteStore
-from lux_trader.strategy import PairStrategy, StrategyRuntimeState
+from lux_trader.core.strategy import PairStrategy, StrategyRuntimeState
 
 
 def make_bar(index: int, timestamp: str, entry_allowed: bool = True, close_allowed: bool = True) -> MarketBar:

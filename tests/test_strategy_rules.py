@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from lux_trader.models import Direction
-from lux_trader.strategy import should_exit
+from lux_trader.core.models import Direction
+from lux_trader.core.strategy import should_exit
 
 
 def test_exit_z_one_requires_crossing_to_opposite_side() -> None:

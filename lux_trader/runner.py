@@ -4,10 +4,10 @@ from dataclasses import dataclass
 
 from .brokers import PaperBroker
 from .config import AppConfig
-from .indicator import IndicatorEngine, validate_expected_zscore
+from .core.indicator import IndicatorEngine, validate_expected_zscore
 from .market_data import CsvReplayMarketData
 from .store import SQLiteStore
-from .strategy import PairStrategy, StrategyRuntimeState
+from .core.strategy import PairStrategy, StrategyRuntimeState
 
 
 @dataclass(frozen=True)

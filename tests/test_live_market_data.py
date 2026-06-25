@@ -17,19 +17,23 @@ from lux_trader.execution import (
     order_request_from_execution_leg,
 )
 from lux_trader.execution_intent import PairExecutionPlan
-from lux_trader.indicator import IndicatorEngine
-from lux_trader.live_market_data import (
-    CcxtTickerMarketData,
+from lux_trader.core.indicator import IndicatorEngine
+from lux_trader.integrations.ccxt_market_data import CcxtTickerMarketData
+from lux_trader.integrations.fubon.market_data import (
+    FubonQffMarketData,
+    parse_fubon_books_quote,
+)
+from lux_trader.integrations.taifex.downloader import (
+    TaifexQffTradeDownloader,
+    parse_taifex_download_entries,
+)
+from lux_trader.market_data import (
     LiveMinuteBarBuilder,
     LiveQuote,
     LiveQuoteSet,
-    FubonQffMarketData,
-    TaifexQffTradeDownloader,
     WarmupBuilder,
     build_qff_warmup_source_report,
-    parse_fubon_books_quote,
     parse_timestamp,
-    parse_taifex_download_entries,
     qff_symbol_to_taifex_contract_month,
     select_qff_front_month,
 )
@@ -48,7 +52,7 @@ from lux_trader.live_runner import (
     should_force_exit_for_contract_policy,
     should_switch_contract_before_processing,
 )
-from lux_trader.models import (
+from lux_trader.core.models import (
     BrokerName,
     Direction,
     Fill,
@@ -60,10 +64,10 @@ from lux_trader.models import (
     StrategyState,
 )
 from lux_trader.reconciliation import BrokerAccountSnapshot, BrokerPositionSnapshot
-from lux_trader.strategy import StrategyRuntimeState
+from lux_trader.core.strategy import StrategyRuntimeState
 from lux_trader.store import SQLiteStore
 from lux_trader.terminal_ui import LiveTerminalReporter
-from lux_trader.tradable_spread import TradableSpreadSnapshot
+from lux_trader.core.tradable_spread import TradableSpreadSnapshot
 
 from conftest import make_app_config
 
@@ -376,6 +380,15 @@ def test_load_config_defaults_live_freshness_and_clock_preflight(tmp_path) -> No
     assert config.live.sync_windows_time_on_startup is True
     assert config.live.clock_skew_fail_seconds == pytest.approx(60.0)
     assert config.live.windows_time_sync_timeout_seconds == pytest.approx(15.0)
+
+
+def test_project_config_relative_paths_resolve_from_project_root() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    config = load_config(project_root / "configs" / "live.example.toml")
+
+    assert config.store_path == project_root / "data" / "project_lux_live.sqlite3"
+    assert config.live.fubon_env_path == project_root / ".env"
+    assert config.live.taifex_cache_dir == project_root / "data" / "taifex_cache"
 
 
 def test_load_config_reads_live_freshness_and_clock_preflight(tmp_path) -> None:

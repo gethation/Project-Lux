@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import lux_trader.cli as cli_module
-from lux_trader.binance_execution import BinanceTsmExecutionAdapter
+from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
 from lux_trader.cli import build_parser, command_binance_exec_smoke
 from lux_trader.execution import ExecutionOutcome, ExecutionOutcomeStatus
 from lux_trader.execution_intent import (
@@ -15,7 +15,7 @@ from lux_trader.execution_intent import (
     ExecutionPlanType,
     PairExecutionPlan,
 )
-from lux_trader.models import (
+from lux_trader.core.models import (
     BrokerName,
     Direction,
     Fill,

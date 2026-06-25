@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from lux_trader.config import ContractPolicyConfig
-from lux_trader.contract_policy import (
+from lux_trader.core.contract_policy import (
     ExpiryBufferContractPolicy,
     business_days_between,
 )

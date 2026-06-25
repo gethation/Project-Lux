@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 
-from lux_trader.models import (
+from lux_trader.core.models import (
     BrokerName,
     Direction,
     Fill,
@@ -21,7 +21,7 @@ from lux_trader.reconciliation import (
     ReconciliationStatus,
 )
 from lux_trader.store import SQLiteStore
-from lux_trader.strategy import StrategyRuntimeState
+from lux_trader.core.strategy import StrategyRuntimeState
 
 
 SYMBOL_TSM = "TSM/USDT:USDT"

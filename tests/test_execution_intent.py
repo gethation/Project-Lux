@@ -13,7 +13,7 @@ from lux_trader.execution_intent import (
     pair_execution_plan_from_order_requests,
     validate_pair_execution_plan,
 )
-from lux_trader.models import BrokerName, Direction, OrderRequest, OrderSide
+from lux_trader.core.models import BrokerName, Direction, OrderRequest, OrderSide
 
 
 def ts() -> datetime:

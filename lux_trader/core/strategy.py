@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from .brokers.base import Broker
-from .config import FeeConfig, StrategyConfig
+from ..config import FeeConfig, StrategyConfig
+from .broker import Broker
 from .fees import fill_costs
 from .models import (
     BrokerName,

@@ -13,7 +13,7 @@ from lux_trader.reconciliation import (
     ReconciliationReport,
     ReconciliationStatus,
 )
-from lux_trader.models import BrokerName, OrderSide
+from lux_trader.core.models import BrokerName, OrderSide
 from lux_trader.cli_helpers import build_fake_execution_plan
 
 

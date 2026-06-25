@@ -1,4 +1,4 @@
-# Project Lux
+﻿# Project Lux
 
 MVP pairs-trading architecture for replaying the QFF/TSM proof of concept through a
 single-process loop, a paper broker, and a SQLite state store.
@@ -54,7 +54,7 @@ For interactive live commands in PowerShell, prefer the project wrapper. It uses
 the `Quant` environment and streams output with `conda run --no-capture-output`:
 
 ```powershell
-.\scripts\lux.ps1 live-dry-run --config config.live.smoke.local.toml --reset-store
+.\scripts\lux.ps1 live-dry-run --config configs/config.live.smoke.local.toml --reset-store
 ```
 
 Install test tooling:
@@ -63,21 +63,89 @@ Install test tooling:
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pip install -r requirements-dev.txt
 ```
 
+## Repository Layout
+
+Runtime configuration is kept under `configs/`:
+
+```text
+configs/
+- replay.example.toml
+- live.example.toml
+- *.local.toml
+```
+
+Paths inside project configs are resolved from the Project Lux repository root, not
+from the `configs/` directory. Values such as `.env`, `data\...`, and
+`data\taifex_cache` therefore continue to point to root-level deployment resources.
+
+Pure strategy and trading-domain code is grouped under `lux_trader/core/`. Core may
+depend on configuration value objects and general Python/data libraries, but it must
+not import CLI code, SQLite stores, live runtime orchestration, or external broker
+and market-data adapters. Integration and runtime modules depend on core, not the
+other way around.
+
+Provider-independent market-data services are grouped under
+`lux_trader/market_data/`:
+
+- `types.py`: quote/provider protocols and shared result models.
+- `minute_bar.py`: second-level quote aggregation into finalized minute bars.
+- `warmup.py`: QFF/TSM/USDT-TWD warmup assembly and source-quality reporting.
+- `replay.py`: PoC CSV replay input.
+
+External systems are grouped under `lux_trader/integrations/`:
+
+- `fubon/`: shared authentication, response parsing, contract identity, market data,
+  read-only accounting, and futures execution.
+- `binance/`: TSM market data, read-only account access, and execution.
+- `bitopro/`: USDT/TWD market data.
+- `taifex/`: official historical data downloader.
+
+Fubon SDK response normalization has one implementation in
+`integrations/fubon/parsing.py`; execution and read-only adapters must not duplicate
+that parser.
+
+Execution domain code is grouped under `lux_trader/execution/`:
+
+- `intent.py`: pair execution plans, legs, validation, and JSON restoration.
+- `outcome.py`: execution outcome model, adapter protocol, and simulated adapter.
+- `price_policy.py`: live top-of-book market-price policy.
+- `simulation.py`: dry-run failure simulation cases.
+- `real_coordinator.py`: two-leg real execution coordinator and emergency-close policy.
+- `gate.py`: live execution safety gate.
+
+Read-only broker reconciliation is grouped under `lux_trader/reconciliation/`:
+
+- `models.py`: broker snapshots, expected exposure, issues, and reports.
+- `brokers.py`: read-only broker protocol and fake broker.
+- `reconciler.py`: expected-vs-actual broker reconciliation service.
+- `post_trade.py`: post-real-execution consistency checks.
+
+SQLite internals are grouped under `lux_trader/persistence/`. The public entry point
+remains `SQLiteStore`; DDL lives in `schema.py`, execution queries live in
+`execution_queries.py`, and reconciliation queries live in `reconciliation_queries.py`.
+
+Live runtime orchestration is grouped under `lux_trader/runtime/live/`:
+
+- `bootstrap.py`: provider initialization and startup preflight.
+- `warmup.py`: auto warmup and QFF warmup check.
+- `contracts.py`: active contract selection, switch handling, and force-exit checks.
+- `modes.py`: paper, dry-run, and live-execute mode handlers.
+- `engine.py`: shared polling and minute-finalize loop used by all live modes.
 ## Commands
 
 ```powershell
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader doctor --config config.example.toml
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader replay --config config.example.toml --reset-store
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader summary --config config.example.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader doctor --config configs/replay.example.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader replay --config configs/replay.example.toml --reset-store
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader summary --config configs/replay.example.toml
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest
 ```
 
 Phase 2 live market data with paper orders:
 
 ```powershell
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config config.live.example.toml
-.\scripts\lux.ps1 live-paper --config config.live.example.toml --reset-store
-.\scripts\lux.ps1 live-paper --config config.live.example.toml --resume
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config configs/live.example.toml
+.\scripts\lux.ps1 live-paper --config configs/live.example.toml --reset-store
+.\scripts\lux.ps1 live-paper --config configs/live.example.toml --resume
 ```
 
 `live-paper` is the normal Phase 2 system entrypoint. On startup it checks whether the
@@ -88,7 +156,7 @@ you explicitly want startup to fail unless existing seed bars are already presen
 seed bars without starting the live loop:
 
 ```powershell
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader warmup-live --config config.live.example.toml --reset-store
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader warmup-live --config configs/live.example.toml --reset-store
 ```
 
 After startup, `live-paper` polls QFF, Binance TSM, and USDT/TWD quotes once per
@@ -129,13 +197,14 @@ Run deterministic warmup tests without external APIs:
 ```
 
 Run real market-data smoke tests only when `.env` and the Fubon certificate are present
-in the project root. `config.live.smoke.local.toml` is intentionally ignored by git and
-writes to `data\warmup_smoke.sqlite3`.
+in the project root. Local TOML files live under `configs/`; the smoke config
+`configs/config.live.smoke.local.toml` is intentionally ignored by git and writes to
+`data\warmup_smoke.sqlite3`.
 
 ```powershell
 $env:LUX_LIVE_MARKETDATA='1'
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config config.live.smoke.local.toml
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader qff-warmup-check --config config.live.smoke.local.toml --output-csv=
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config configs/config.live.smoke.local.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader qff-warmup-check --config configs/config.live.smoke.local.toml --output-csv=
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/test_live_smoke.py -q -m live_marketdata
 Remove-Item Env:\LUX_LIVE_MARKETDATA
 ```
@@ -159,8 +228,8 @@ Phase 3 starts with a read-only broker reconciliation skeleton that does not tou
 Fubon or Binance private APIs. Use fake brokers to validate the local data flow:
 
 ```powershell
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader broker-doctor --config config.live.example.toml
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config config.live.example.toml --fake
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader broker-doctor --config configs/live.example.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config configs/live.example.toml --fake
 ```
 
 `reconcile-brokers --fake` writes a reconciliation report to SQLite. Mismatches are
@@ -171,8 +240,8 @@ real read-only smoke tests explicitly:
 
 ```powershell
 $env:LUX_READONLY_BROKER='1'
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader broker-doctor --config config.live.example.toml
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config config.live.example.toml --readonly
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader broker-doctor --config configs/live.example.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config configs/live.example.toml --readonly
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/test_readonly_brokers_smoke.py -q -m readonly_broker
 Remove-Item Env:\LUX_READONLY_BROKER
 ```
@@ -185,9 +254,9 @@ full fills, writes simulated `DRYRUN-*` orders/fills, and updates strategy state
 like a real execution outcome would. No Fubon or Binance order API is called.
 
 ```powershell
-.\scripts\lux.ps1 dry-run-doctor --config config.live.example.toml
-.\scripts\lux.ps1 live-dry-run --config config.live.example.toml --reset-store
-.\scripts\lux.ps1 execution-summary --config config.live.example.toml
+.\scripts\lux.ps1 dry-run-doctor --config configs/live.example.toml
+.\scripts\lux.ps1 live-dry-run --config configs/live.example.toml --reset-store
+.\scripts\lux.ps1 execution-summary --config configs/live.example.toml
 ```
 
 Full dry-run validation has two layers. The default deterministic suite must pass
@@ -197,7 +266,7 @@ without touching external APIs:
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest -q
 ```
 
-The real API smoke requires the ignored `config.live.smoke.local.toml`, Fubon
+The real API smoke requires the ignored `configs/config.live.smoke.local.toml`, Fubon
 credentials, Binance read-only keys, and explicit gates. It writes to
 `data\live_dry_run_full_smoke.sqlite3`. Accepted dry-run entry plans should create
 simulated `DRYRUN-*` orders/fills and move the strategy to `OPEN`; simulated exit
@@ -207,9 +276,9 @@ rejected, failed, partial, or unknown execution outcomes.
 ```powershell
 $env:LUX_LIVE_MARKETDATA='1'
 $env:LUX_READONLY_BROKER='1'
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config config.live.smoke.local.toml
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader dry-run-doctor --config config.live.smoke.local.toml
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config config.live.smoke.local.toml --readonly
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-doctor --config configs/config.live.smoke.local.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader dry-run-doctor --config configs/config.live.smoke.local.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader reconcile-brokers --config configs/config.live.smoke.local.toml --readonly
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest tests/test_dry_run_smoke.py -q -m "live_marketdata and readonly_broker and dry_run_smoke"
 Remove-Item Env:\LUX_LIVE_MARKETDATA
 Remove-Item Env:\LUX_READONLY_BROKER
@@ -219,7 +288,7 @@ For a manual 10-15 minute soak, use the same smoke config:
 
 ```powershell
 $env:LUX_LIVE_MARKETDATA='1'
-.\scripts\lux.ps1 live-dry-run --config config.live.smoke.local.toml --reset-store --max-iterations 900 --no-color
+.\scripts\lux.ps1 live-dry-run --config configs/config.live.smoke.local.toml --reset-store --max-iterations 900 --no-color
 Remove-Item Env:\LUX_LIVE_MARKETDATA
 ```
 
@@ -230,8 +299,8 @@ only swaps the execution layer to the real Fubon/Binance adapters and runs
 post-trade read-only reconciliation after each real execution.
 
 ```powershell
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-order-doctor --config config.live.example.toml
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-execute --config config.live.example.toml --quiet-ui
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-order-doctor --config configs/live.example.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader live-execute --config configs/live.example.toml --quiet-ui
 ```
 
 `live-execute` is still gated by `safety.allow_live_order=true`,

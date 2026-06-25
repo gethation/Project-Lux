@@ -10,18 +10,20 @@ from pathlib import Path
 import pytest
 
 from lux_trader.config import AppConfig, load_config
-from lux_trader.indicator import IndicatorEngine
-from lux_trader.live_market_data import TAIPEI_TZ, floor_minute
+from lux_trader.core.indicator import IndicatorEngine
+from lux_trader.core.time import TAIPEI_TZ
+from lux_trader.market_data import floor_minute
 from lux_trader.live_runner import LiveDryRunRunner
-from lux_trader.models import Direction, StrategyState
-from lux_trader.readonly_brokers import BinanceReadOnlyBroker, FubonReadOnlyBroker
+from lux_trader.core.models import Direction, StrategyState
+from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
+from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.reconciliation import BrokerReconciler, ReconciliationStatus
 from lux_trader.store import SQLiteStore
-from lux_trader.strategy import StrategyRuntimeState
+from lux_trader.core.strategy import StrategyRuntimeState
 from lux_trader.terminal_ui import LiveTerminalReporter
 
 
-SMOKE_CONFIG = Path("config.live.smoke.local.toml")
+SMOKE_CONFIG = Path("configs/config.live.smoke.local.toml")
 
 pytestmark = [
     pytest.mark.live_marketdata,

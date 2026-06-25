@@ -6,14 +6,14 @@ from datetime import datetime
 import pytest
 
 from lux_trader.cli import build_parser
-from lux_trader.indicator import IndicatorEngine
-from lux_trader.live_market_data import LiveQuote, LiveQuoteSet
-from lux_trader.models import MarketBar, StrategyAction, StrategyState
+from lux_trader.core.indicator import IndicatorEngine
+from lux_trader.market_data import LiveQuote, LiveQuoteSet
+from lux_trader.core.models import MarketBar, StrategyAction, StrategyState
 from lux_trader.terminal_ui import (
     LiveTerminalReporter,
     format_countdown,
 )
-from lux_trader.tradable_spread import TradableSpreadSnapshot, estimate_tradable_spreads
+from lux_trader.core.tradable_spread import TradableSpreadSnapshot, estimate_tradable_spreads
 
 
 def ts(value: str) -> datetime:
@@ -371,7 +371,7 @@ def test_tradable_spread_treats_qff_diagnostic_quote_as_stale_qff() -> None:
 def test_live_paper_cli_flags_default_on_and_can_disable_ui_or_color() -> None:
     parser = build_parser()
 
-    defaults = parser.parse_args(["live-paper", "--config", "config.live.example.toml"])
+    defaults = parser.parse_args(["live-paper", "--config", "configs/live.example.toml"])
     assert not defaults.quiet_ui
     assert not defaults.no_color
     assert not defaults.skip_warmup
@@ -380,7 +380,7 @@ def test_live_paper_cli_flags_default_on_and_can_disable_ui_or_color() -> None:
         [
             "live-paper",
             "--config",
-            "config.live.example.toml",
+            "configs/live.example.toml",
             "--quiet-ui",
             "--no-color",
             "--skip-warmup",

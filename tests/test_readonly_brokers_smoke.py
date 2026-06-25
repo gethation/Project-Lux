@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from lux_trader.config import load_config
-from lux_trader.readonly_brokers import BinanceReadOnlyBroker, FubonReadOnlyBroker
+from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
+from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 
 
 pytestmark = pytest.mark.readonly_broker
@@ -15,7 +16,7 @@ pytestmark = pytest.mark.readonly_broker
 def smoke_config():
     if os.getenv("LUX_READONLY_BROKER", "").strip() != "1":
         pytest.skip("Set LUX_READONLY_BROKER=1 to run read-only broker smoke tests")
-    config_path = Path("config.live.example.toml")
+    config_path = Path("configs/live.example.toml")
     if not config_path.exists():
         pytest.skip(f"Config does not exist: {config_path}")
     config = load_config(config_path)

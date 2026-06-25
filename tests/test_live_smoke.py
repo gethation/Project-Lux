@@ -10,12 +10,11 @@ from pathlib import Path
 import pytest
 
 from lux_trader.config import AppConfig, load_config
-from lux_trader.live_market_data import (
-    CcxtTickerMarketData,
-    FubonQffMarketData,
-    TAIPEI_TZ,
-    floor_minute,
-)
+from lux_trader.core.time import TAIPEI_TZ
+from lux_trader.integrations.binance.market_data import BinanceMarketData
+from lux_trader.integrations.bitopro.market_data import BitoProMarketData
+from lux_trader.integrations.fubon.market_data import FubonQffMarketData
+from lux_trader.market_data import floor_minute
 from lux_trader.live_runner import (
     LivePaperRunner,
     QffWarmupCheckRunner,
@@ -25,7 +24,7 @@ from lux_trader.live_runner import (
 from lux_trader.terminal_ui import LiveTerminalReporter
 
 
-SMOKE_CONFIG = Path("config.live.smoke.local.toml")
+SMOKE_CONFIG = Path("configs/config.live.smoke.local.toml")
 
 pytestmark = pytest.mark.live_marketdata
 
@@ -84,10 +83,10 @@ def test_live_marketdata_providers_fetch_quotes_and_qff_candles() -> None:
     finally:
         qff.close()
 
-    binance_quote = CcxtTickerMarketData("binanceusdm").fetch_quote(
+    binance_quote = BinanceMarketData().fetch_quote(
         config.live.binance_symbol
     )
-    bitopro_quote = CcxtTickerMarketData("bitopro").fetch_quote(
+    bitopro_quote = BitoProMarketData().fetch_quote(
         config.live.bitopro_symbol
     )
     assert binance_quote.price > 0

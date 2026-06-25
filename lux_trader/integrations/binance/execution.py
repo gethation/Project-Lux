@@ -7,19 +7,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any, Callable
 
-from .execution import (
-    ExecutionOutcome,
-    ExecutionOutcomeStatus,
-    order_request_from_execution_leg,
-)
-from .execution_intent import (
-    ExecutionLeg,
-    ExecutionOrderType,
-    ExecutionPlanType,
-    PairExecutionPlan,
-)
-from .live_market_data import load_dotenv, parse_optional_float, require_env
-from .models import (
+from ...core.models import (
     BrokerName,
     Fill,
     OrderResult,
@@ -27,6 +15,20 @@ from .models import (
     OrderStatus,
     StrategyState,
 )
+from ...execution import (
+    ExecutionOutcome,
+    ExecutionOutcomeStatus,
+    order_request_from_execution_leg,
+)
+from ...execution_intent import (
+    ExecutionLeg,
+    ExecutionOrderType,
+    ExecutionPlanType,
+    PairExecutionPlan,
+)
+from ...market_data.parsing import parse_optional_float
+from ..env import load_dotenv, require_env
+from ..serialization import safe_jsonable
 
 
 BINANCE_EXECUTION_SMOKE_ENV_GATES = (
@@ -542,16 +544,3 @@ def binance_smoke_env_gates_open() -> dict[str, bool]:
         for name in BINANCE_EXECUTION_SMOKE_ENV_GATES
     }
 
-
-def safe_jsonable(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, dict):
-        return {str(key): safe_jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [safe_jsonable(item) for item in value]
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if hasattr(value, "value"):
-        return safe_jsonable(getattr(value, "value"))
-    return repr(value)

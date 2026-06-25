@@ -11,12 +11,12 @@ from pathlib import Path
 import numpy
 import pandas
 
-from .binance_execution import (
+from .integrations.binance.execution import (
     BINANCE_EXECUTION_SMOKE_ENV_GATES,
     BinanceTsmExecutionAdapter,
     binance_smoke_env_gates_open,
 )
-from .calendar import live_session_status
+from .core.calendar import live_session_status
 from .config import load_config
 from .cli_helpers import (
     build_fake_execution_plan,
@@ -26,27 +26,30 @@ from .cli_helpers import (
     readonly_broker_enabled,
     reconciliation_qff_symbol,
 )
-from .execution_intent import (
+from .execution.intent import (
     ExecutionLeg,
     ExecutionPlanType,
     PairExecutionPlan,
     pair_execution_plan_from_jsonable,
 )
-from .execution_recorder import DryRunExecutionRecorder
-from .execution_simulator import DryRunExecutionSimulator, ExecutionSimulationScenario
-from .fubon_execution import (
+from .execution.recorder import DryRunExecutionRecorder
+from .execution.simulation import DryRunExecutionSimulator, ExecutionSimulationScenario
+from .integrations.fubon.execution import (
     FUBON_EXECUTION_SMOKE_ENV_GATES,
     FUBON_MANUAL_CLOSE_ENV_GATES,
     FubonFutureExecutionAdapter,
     fubon_manual_close_env_gates_open,
     fubon_smoke_env_gates_open,
 )
-from .live_execution_gate import (
+from .execution.gate import (
     assert_live_execution_gate_open,
     evaluate_live_execution_gate,
 )
-from .live_market_data import CcxtTickerMarketData, FubonQffMarketData, ensure_taipei
-from .live_runner import (
+from .core.time import ensure_taipei
+from .integrations.binance.market_data import BinanceMarketData
+from .integrations.bitopro.market_data import BitoProMarketData
+from .integrations.fubon.market_data import FubonQffMarketData
+from .runtime.live import (
     LiveDryRunRunner,
     LiveExecuteRunner,
     LivePaperRunner,
@@ -59,8 +62,8 @@ from .reconciliation import (
     ReadOnlyBroker,
     ReconciliationStatus,
 )
-from .readonly_brokers import FubonReadOnlyBroker
-from .models import BrokerName, Direction, OrderSide
+from .integrations.fubon.readonly import FubonReadOnlyBroker
+from .core.models import BrokerName, Direction, OrderSide
 from .runner import SystemRunner
 from .store import SQLiteStore
 from .terminal_ui import LiveTerminalReporter, NullLiveReporter
@@ -1360,7 +1363,7 @@ def command_live_doctor(args: argparse.Namespace) -> int:
                     "WARN qff_book_unavailable "
                     f"{type(exc).__name__}: {exc}"
                 )
-            binance_quote = CcxtTickerMarketData("binanceusdm").fetch_quote(
+            binance_quote = BinanceMarketData().fetch_quote(
                 config.live.binance_symbol
             )
             checks.append(
@@ -1369,7 +1372,7 @@ def command_live_doctor(args: argparse.Namespace) -> int:
                 f"ask={binance_quote.ask} bid_size={binance_quote.bid_size} "
                 f"ask_size={binance_quote.ask_size}"
             )
-            bitopro_quote = CcxtTickerMarketData("bitopro").fetch_quote(
+            bitopro_quote = BitoProMarketData().fetch_quote(
                 config.live.bitopro_symbol
             )
             checks.append(

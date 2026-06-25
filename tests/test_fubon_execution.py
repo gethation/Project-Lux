@@ -19,15 +19,17 @@ from lux_trader.execution_intent import (
     ExecutionPlanType,
     PairExecutionPlan,
 )
-from lux_trader.fubon_execution import (
+from lux_trader.integrations.fubon.contracts import (
     FubonContractIdentity,
-    FubonFutureExecutionAdapter,
     contract_month_from_symbol,
-    fubon_raw_row,
     fubon_symbol_matches,
+)
+from lux_trader.integrations.fubon.execution import (
+    FubonFutureExecutionAdapter,
     map_fubon_order_status,
 )
-from lux_trader.models import (
+from lux_trader.integrations.fubon.parsing import fubon_raw_row
+from lux_trader.core.models import (
     BrokerName,
     Direction,
     Fill,

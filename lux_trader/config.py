@@ -6,6 +6,9 @@ from pathlib import Path
 from datetime import date
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
 @dataclass(frozen=True)
 class StrategyConfig:
     entry_z: float
@@ -114,8 +117,9 @@ class AppConfig:
 
 
 def load_config(path: Path) -> AppConfig:
+    path = path.expanduser().resolve()
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    root = path.parent
+    root = config_path_root(path)
 
     paths = raw.get("paths", {})
     strategy = raw.get("strategy", {})
@@ -245,6 +249,14 @@ def load_config(path: Path) -> AppConfig:
 
 def parse_holidays(values: object) -> tuple[date, ...]:
     return parse_date_list(values, label="contract_policy.holidays")
+
+
+def config_path_root(path: Path) -> Path:
+    try:
+        path.relative_to(PROJECT_ROOT)
+    except ValueError:
+        return path.parent
+    return PROJECT_ROOT
 
 
 def parse_date_list(values: object, *, label: str) -> tuple[date, ...]:

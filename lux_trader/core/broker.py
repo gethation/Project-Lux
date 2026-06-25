@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from lux_trader.models import Fill, OrderRequest, OrderResult
+from .models import Fill, OrderRequest, OrderResult
 
 
 class Broker(ABC):

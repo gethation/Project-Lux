@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .config import FeeConfig
+from ..config import FeeConfig
 from .sizing import round_half_up_nonnegative
 
 

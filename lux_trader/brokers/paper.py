@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from itertools import count
 
-from lux_trader.brokers.base import Broker
-from lux_trader.models import Fill, OrderRequest, OrderResult, OrderStatus
+from lux_trader.core.broker import Broker
+from lux_trader.core.models import Fill, OrderRequest, OrderResult, OrderStatus
 
 
 class PaperBroker(Broker):

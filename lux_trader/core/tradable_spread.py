@@ -1,11 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from math import sqrt
-from typing import Any
+from typing import Any, Protocol
 
 from .indicator import IndicatorEngine
-from .live_market_data import LiveQuote, LiveQuoteSet, ensure_taipei
+from .time import ensure_taipei
+
+
+class QuoteLike(Protocol):
+    timestamp: datetime
+    price: float
+    bid: float | None
+    ask: float | None
+    raw: Any
+
+
+class QuoteSetLike(Protocol):
+    qff: QuoteLike
+    tsm: QuoteLike
+    usdttwd: QuoteLike
 
 
 @dataclass(frozen=True)
@@ -20,7 +35,7 @@ class TradableSpreadSnapshot:
 
 
 def estimate_tradable_spreads(
-    quote_set: LiveQuoteSet,
+    quote_set: QuoteSetLike,
     observed_at: Any,
     indicator: IndicatorEngine,
     *,
@@ -65,7 +80,7 @@ def estimate_tradable_spreads(
 
 
 def estimate_mid_spread(
-    quote_set: LiveQuoteSet,
+    quote_set: QuoteSetLike,
     observed_at: Any,
     *,
     stale_seconds: float,
@@ -88,7 +103,7 @@ def estimate_mid_spread(
 
 
 def estimate_directional_spread(
-    quote_set: LiveQuoteSet,
+    quote_set: QuoteSetLike,
     observed_at: Any,
     *,
     stale_seconds: float,
@@ -132,16 +147,16 @@ def estimate_zscore(indicator: IndicatorEngine, spread: float | None) -> float |
     return (spread - mean) / std
 
 
-def quote_is_fresh(quote: LiveQuote, observed_at: Any, stale_seconds: float) -> bool:
+def quote_is_fresh(quote: QuoteLike, observed_at: Any, stale_seconds: float) -> bool:
     age = abs((ensure_taipei(observed_at) - ensure_taipei(quote.timestamp)).total_seconds())
     return age <= stale_seconds
 
 
-def qff_book_quote_missing(quote: LiveQuote) -> bool:
+def qff_book_quote_missing(quote: QuoteLike) -> bool:
     return isinstance(quote.raw, dict) and quote.raw.get("book_missing") is True
 
 
-def book_price(quote: LiveQuote, side: str) -> float | None:
+def book_price(quote: QuoteLike, side: str) -> float | None:
     if side == "bid":
         return quote.bid
     if side == "ask":

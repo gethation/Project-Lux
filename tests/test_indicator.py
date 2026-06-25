@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from lux_trader.indicator import IndicatorEngine
-from lux_trader.models import MarketBar
+from lux_trader.core.indicator import IndicatorEngine
+from lux_trader.core.models import MarketBar
 
 
 def make_bar(index: int, spread: float) -> MarketBar:

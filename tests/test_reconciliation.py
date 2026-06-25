@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 
-from lux_trader.models import BrokerName, Direction, OrderSide, StrategyState
+from lux_trader.core.models import BrokerName, Direction, OrderSide, StrategyState
 from lux_trader.reconciliation import (
     BrokerOrderSnapshot,
     BrokerPositionSnapshot,
@@ -12,7 +12,7 @@ from lux_trader.reconciliation import (
     FakeReadOnlyBroker,
     ReconciliationStatus,
 )
-from lux_trader.strategy import StrategyRuntimeState
+from lux_trader.core.strategy import StrategyRuntimeState
 
 
 def ts(value: str = "2026-06-18T09:00:00+08:00") -> datetime:

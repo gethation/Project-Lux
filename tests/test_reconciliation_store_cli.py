@@ -10,7 +10,7 @@ from lux_trader.cli import (
     command_fubon_account_funds,
     command_reconcile_brokers,
 )
-from lux_trader.models import BrokerName
+from lux_trader.core.models import BrokerName
 from lux_trader.reconciliation import (
     BrokerAccountSnapshot,
     BrokerMarginSnapshot,

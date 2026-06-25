@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from .config import StrategyConfig, FeeConfig
+from ..config import FeeConfig, StrategyConfig
 from .models import Direction, PositionSizing
 
 
