@@ -172,7 +172,34 @@ class RealExecutionCoordinator:
             legs=(leg,),
             checks=(),
         )
-        return self.adapters[leg.broker].execute(leg_plan)
+        return self._safe_adapter_execute(leg.broker, leg_plan)
+
+    def _safe_adapter_execute(
+        self,
+        broker: BrokerName,
+        plan: PairExecutionPlan,
+    ) -> ExecutionOutcome:
+        # A raising adapter (network/SDK error) must never crash the live loop.
+        # Convert it to a zero-fill FAILED outcome so the existing stop /
+        # exposure-breach / emergency-close logic pauses safely. The true broker
+        # state behind an exception is unknown, so we claim no fills and rely on
+        # post-trade / startup reconciliation as the backstop. Mirrors the dry-run
+        # ExecutionCoordinator.execute() guard in execution/outcome.py.
+        try:
+            return self.adapters[broker].execute(plan)
+        except Exception as exc:
+            return ExecutionOutcome(
+                plan_id=plan.plan_id,
+                timestamp=self.clock(),
+                status=ExecutionOutcomeStatus.FAILED,
+                message=f"adapter raised {type(exc).__name__}: {exc}",
+                recommended_state=StrategyState.PAUSED,
+                payload={
+                    "adapter": broker.value,
+                    "adapter_error": type(exc).__name__,
+                    "adapter_error_message": str(exc),
+                },
+            )
 
     def _handle_exposure_breach(
         self,
@@ -231,7 +258,7 @@ class RealExecutionCoordinator:
                     "quantity": quantity,
                 },
             )
-            outcome = self.adapters[leg.broker].execute(emergency_plan)
+            outcome = self._safe_adapter_execute(leg.broker, emergency_plan)
             emergency_outcomes.append(outcome)
             if outcome.filled:
                 self._record_event(

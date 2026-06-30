@@ -85,6 +85,8 @@ class FakeExecutionAdapter:
     def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
         self.plans.append(plan)
         spec = self.outcomes.pop(0)
+        if spec.get("raise"):
+            raise RuntimeError(spec.get("message", "adapter boom"))
         leg = plan.legs[0]
         status = spec["status"]
         fill_quantity = spec.get("fill_quantity")
@@ -413,6 +415,100 @@ def test_qff_first_false_rejects_without_calling_adapters() -> None:
     assert len(qff_adapter.plans) == 0
     assert len(binance_adapter.plans) == 0
     assert store.plans[0].status.value == "rejected"
+
+
+def test_qff_adapter_exception_stops_without_binance_and_pauses() -> None:
+    store = FakeStore()
+    qff_adapter = FakeExecutionAdapter(
+        BrokerName.FUBON_QFF,
+        [{"raise": True, "message": "fubon sdk boom"}],
+    )
+    binance_adapter = FakeExecutionAdapter(
+        BrokerName.BINANCE_TSM,
+        [{"status": ExecutionOutcomeStatus.FILLED}],
+    )
+    runner = RealExecutionCoordinator(
+        store=store,
+        fubon_adapter=qff_adapter,
+        binance_adapter=binance_adapter,
+        qff_first=True,
+        clock=ts,
+    )
+
+    # A raising QFF adapter must be contained (no propagating exception) and pause.
+    _, outcome = runner.execute(pair_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.FAILED
+    assert outcome.recommended_state == StrategyState.PAUSED
+    assert len(qff_adapter.plans) == 1
+    assert len(binance_adapter.plans) == 0  # second leg must not be sent
+    assert store.events == []  # zero known QFF fill => no auto emergency close
+    primary = (outcome.payload or {})["primary_outcomes"]
+    assert "adapter raised" in primary[BrokerName.FUBON_QFF.value]["message"]
+
+
+def test_binance_adapter_exception_after_qff_fill_emergency_closes_qff() -> None:
+    store = FakeStore()
+    qff_adapter = FakeExecutionAdapter(
+        BrokerName.FUBON_QFF,
+        [
+            {"status": ExecutionOutcomeStatus.FILLED},
+            {"status": ExecutionOutcomeStatus.FILLED},  # emergency close
+        ],
+    )
+    binance_adapter = FakeExecutionAdapter(
+        BrokerName.BINANCE_TSM,
+        [{"raise": True, "message": "binance sdk boom"}],
+    )
+    runner = RealExecutionCoordinator(
+        store=store,
+        fubon_adapter=qff_adapter,
+        binance_adapter=binance_adapter,
+        qff_first=True,
+        clock=ts,
+    )
+
+    _, outcome = runner.execute(pair_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.FAILED
+    assert outcome.recommended_state == StrategyState.PAUSED
+    assert "single_leg_exposure" in event_types(store)
+    assert "emergency_close_filled" in event_types(store)
+    assert (outcome.payload or {})["critical"] is False
+    assert len(qff_adapter.plans) == 2  # primary + emergency close
+    assert qff_adapter.plans[1].legs[0].side == OrderSide.SELL
+    assert len(binance_adapter.plans) == 1  # raised once, not retried
+
+
+def test_emergency_close_adapter_exception_is_critical_without_crash() -> None:
+    store = FakeStore()
+    qff_adapter = FakeExecutionAdapter(
+        BrokerName.FUBON_QFF,
+        [
+            {"status": ExecutionOutcomeStatus.FILLED},
+            {"raise": True, "message": "emergency close boom"},
+        ],
+    )
+    binance_adapter = FakeExecutionAdapter(
+        BrokerName.BINANCE_TSM,
+        [{"status": ExecutionOutcomeStatus.FAILED}],
+    )
+    runner = RealExecutionCoordinator(
+        store=store,
+        fubon_adapter=qff_adapter,
+        binance_adapter=binance_adapter,
+        qff_first=True,
+        clock=ts,
+    )
+
+    # Even the emergency close adapter raising must not crash; it must escalate.
+    _, outcome = runner.execute(pair_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.FAILED
+    assert outcome.recommended_state == StrategyState.PAUSED
+    assert "emergency_close_failed" in event_types(store)
+    assert "critical_manual_intervention_required" in event_types(store)
+    assert (outcome.payload or {})["critical"] is True
 
 
 def live_bar() -> MarketBar:
