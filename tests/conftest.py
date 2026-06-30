@@ -17,16 +17,18 @@ from lux_trader.config import (
 )
 
 
-POC_CSV = Path(
-    r"D:\Users\Documents\Proof of Concept\data\processed\qff_tsm_spread_zscore_1m_taipei_qff_session_w500.csv"
-)
-POC_QFF_OHLCV = Path(r"D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv")
-POC_TSM_OHLCV = Path(
-    r"D:\Users\Documents\Proof of Concept\data\processed\binance_tsmusdtp_1m_taipei.csv"
-)
-POC_USDTTWD_OHLCV = Path(
-    r"D:\Users\Documents\Proof of Concept\data\processed\bitopro_usdttwd_1m_taipei.csv"
-)
+# Frozen snapshot of the PoC reference replay inputs, committed under
+# tests/fixtures/replay/. The replay acceptance test must be deterministic and
+# self-contained: the live PoC working directory rebuilds qff1_1m.csv from
+# TAIFEX tick history, which only retains ~30 trading days, so the original
+# reference dataset (and its 265,481 net PnL) ages out and cannot be rebuilt.
+# These fixtures decouple the test from that mutable upstream. The OHLCV files
+# are trimmed to the [timestamp, open] columns the replay actually reads.
+_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "replay"
+POC_CSV = _FIXTURE_DIR / "spread_zscore_w500.csv"
+POC_QFF_OHLCV = _FIXTURE_DIR / "qff1_1m_open.csv"
+POC_TSM_OHLCV = _FIXTURE_DIR / "binance_tsm_open.csv"
+POC_USDTTWD_OHLCV = _FIXTURE_DIR / "bitopro_usdttwd_open.csv"
 
 
 @pytest.fixture

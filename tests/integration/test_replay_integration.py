@@ -30,9 +30,17 @@ def test_full_poc_replay_matches_reference_summary(tmp_path) -> None:
     assert summary["parameters"]["zscore_window"] == 500
     assert summary["parameters"]["exit_z"] == 1.0
     assert summary["trade_count"] == 66
-    assert summary["total_pnl_twd"] == pytest.approx(265_481.3183435681)
-    assert summary["net_pnl_twd"] == pytest.approx(265_481.318343568)
-    assert summary["total_fee_twd"] == pytest.approx(68_321.48561792255)
+    # Baseline pinned to the frozen tests/fixtures/replay snapshot (see conftest).
+    # The original PoC reference was net PnL 265,481.32, computed when qff1_1m.csv
+    # still reached back to 2026-05-08. On 2026-06-29 the PoC rebuilt qff1_1m.csv
+    # from TAIFEX's rolling ~30-trading-day tick window, which had advanced to
+    # 2026-05-15, permanently dropping the 05-08..05-15 QFF opens. The trade set is
+    # unchanged (66 trades, same directions/exits); 4 entries in that gap now fall
+    # back to qff_close_filled for their entry open, shifting gross PnL by ~-3,977.
+    # Replay sizing/fill logic is byte-for-byte identical to the PoC backtest.
+    assert summary["total_pnl_twd"] == pytest.approx(261_507.82918245485)
+    assert summary["net_pnl_twd"] == pytest.approx(261_507.82918245482)
+    assert summary["total_fee_twd"] == pytest.approx(68_317.49687897251)
     assert summary["qff_forward_filled_session_minutes"] == 6328
     assert summary["weekend_session_close_only_minutes"] == 4872
 
