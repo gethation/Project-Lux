@@ -106,6 +106,22 @@ class LiveModeHandler:
     ) -> None:
         return None
 
+    def on_resume(
+        self,
+        store: SQLiteStore,
+        *,
+        strategy: PairStrategy,
+        indicator: Any,
+        row_index: int,
+        qff_symbol: str,
+        qff_expiry: str | None,
+        reporter: Any,
+        timestamp: datetime,
+    ) -> None:
+        # Hook for modes that must verify restored state against the broker after
+        # a restart. Default is a no-op; live-execute overrides it.
+        return None
+
     def close(self) -> None:
         return None
 
@@ -491,6 +507,63 @@ class LiveExecuteModeHandler(LiveModeHandler):
             fubon_adapter=self.fubon_adapter,
             qff_first=self.config.live_execution.qff_first,
         )
+
+    def on_resume(
+        self,
+        store: SQLiteStore,
+        *,
+        strategy: PairStrategy,
+        indicator: Any,
+        row_index: int,
+        qff_symbol: str,
+        qff_expiry: str | None,
+        reporter: Any,
+        timestamp: datetime,
+    ) -> None:
+        # After a restart, a restored open position must still exist at the broker.
+        # Run the same read-only reconciliation used post-trade; pause on mismatch
+        # so an unattended loop never manages a phantom position (e.g. one that was
+        # liquidated or manually closed while the process was down).
+        state = strategy.state
+        has_position = (
+            state.position_direction is not None
+            or abs(float(state.tsm_units or 0.0)) > 1e-12
+            or int(state.qff_contracts or 0) != 0
+        )
+        if not has_position:
+            return
+        if self.post_trade_reconciler is None or self.readonly_brokers is None:
+            raise RuntimeError("post-trade reconciliation is not initialized")
+        report = self.post_trade_reconciler.reconcile(
+            store=store,
+            strategy_state=state,
+            brokers=self.readonly_brokers,
+            tsm_symbol=self.config.live.binance_symbol,
+            qff_symbol=state.trading_qff_symbol or qff_symbol,
+            timestamp=timestamp,
+        )
+        run_id = store.record_reconciliation_report(report)
+        matched = report.status == ReconciliationStatus.MATCHED
+        store.record_event(
+            row_index,
+            timestamp,
+            "resume_reconciliation_matched"
+            if matched
+            else "resume_reconciliation_mismatch",
+            f"resume reconciliation status={report.status.value}",
+            {
+                "run_id": run_id,
+                "status": report.status.value,
+                "issue_count": len(report.issues),
+            },
+        )
+        if matched:
+            reporter.event(timestamp, "resume_reconciliation", "matched")
+            return
+        state.state = StrategyState.PAUSED
+        store.save_state(row_index, timestamp, state, indicator)
+        reporter.warn(timestamp, "resume_reconciliation", report.status.value)
+        reporter.event(timestamp, "resume_reconciliation", "paused")
 
     def close(self) -> None:
         for adapter in (self.binance_adapter, self.fubon_adapter):

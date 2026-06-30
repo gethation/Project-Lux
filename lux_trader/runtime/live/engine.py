@@ -211,6 +211,19 @@ class LiveRuntime:
                 qff_symbol=qff_symbol,
                 qff_expiry=qff_expiry,
             )
+            if resume:
+                # After a restart, verify any restored open position against the
+                # broker before trading again; the handler pauses on mismatch.
+                self.handler.on_resume(
+                    store,
+                    strategy=strategy,
+                    indicator=indicator,
+                    row_index=max(next_row_index - 1, 0),
+                    qff_symbol=qff_symbol,
+                    qff_expiry=qff_expiry,
+                    reporter=self.reporter,
+                    timestamp=runtime.started_at,
+                )
 
             live_run_id = store.start_live_run(
                 started_at=runtime.started_at,

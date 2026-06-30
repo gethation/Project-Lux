@@ -1917,6 +1917,167 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
         store.close()
 
 
+def _live_execute_resume_brokers(*, qff_quantity: float, tsm_quantity: float, at: str):
+    return (
+        FixedPositionReadOnlyBroker(
+            broker=BrokerName.FUBON_QFF,
+            symbol="QFF202607",
+            quantity=qff_quantity,
+            fetched_at=ts(at),
+        ),
+        FixedPositionReadOnlyBroker(
+            broker=BrokerName.BINANCE_TSM,
+            symbol="TSM/USDT:USDT",
+            quantity=tsm_quantity,
+            fetched_at=ts(at),
+        ),
+    )
+
+
+def _run_live_execute_entry_to_open(config) -> None:
+    qff, tsm, usd = dry_run_quote_providers(
+        [
+            "2026-06-18T08:45:30+08:00",
+            "2026-06-18T08:45:59+08:00",
+            "2026-06-18T08:46:01+08:00",
+            "2026-06-18T08:46:59+08:00",
+            "2026-06-18T08:47:01+08:00",
+        ]
+    )
+    LiveExecuteRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        fubon_adapter=FakeLiveExecutionAdapter(BrokerName.FUBON_QFF),
+        binance_adapter=FakeLiveExecutionAdapter(BrokerName.BINANCE_TSM),
+        readonly_brokers=_live_execute_resume_brokers(
+            qff_quantity=100.0,
+            tsm_quantity=-(1_000_000.0 / 120.0),
+            at="2026-06-18T08:47:01+08:00",
+        ),
+        clock=dry_run_clock(
+            [
+                "2026-06-18T08:45:00+08:00",
+                "2026-06-18T08:45:30+08:00",
+                "2026-06-18T08:45:59+08:00",
+                "2026-06-18T08:46:01+08:00",
+                "2026-06-18T08:46:59+08:00",
+                "2026-06-18T08:47:01+08:00",
+                "2026-06-18T08:47:02+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(io.StringIO(), color=False),
+    ).run(reset_store=True, max_iterations=5)
+
+
+def _resume_live_execute(config, *, readonly):
+    qff, tsm, usd = dry_run_quote_providers(
+        [
+            "2026-06-18T08:47:30+08:00",
+            "2026-06-18T08:47:59+08:00",
+            "2026-06-18T08:48:01+08:00",
+        ],
+        qff_rows=pd.DataFrame(),
+        tsm_rows=pd.DataFrame(),
+        usd_rows=pd.DataFrame(),
+    )
+    terminal = io.StringIO()
+    LiveExecuteRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        fubon_adapter=FakeLiveExecutionAdapter(BrokerName.FUBON_QFF),
+        binance_adapter=FakeLiveExecutionAdapter(BrokerName.BINANCE_TSM),
+        readonly_brokers=readonly,
+        clock=dry_run_clock(
+            [
+                "2026-06-18T08:47:02+08:00",
+                "2026-06-18T08:47:30+08:00",
+                "2026-06-18T08:47:59+08:00",
+                "2026-06-18T08:48:01+08:00",
+                "2026-06-18T08:48:02+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(terminal, color=False),
+    ).run(resume=True, max_iterations=3)
+    return terminal.getvalue()
+
+
+def _live_execute_resume_config(tmp_path, monkeypatch):
+    config = small_live_config(tmp_path)
+    config = replace(
+        config,
+        safety=replace(config.safety, allow_live_order=True),
+        strategy=replace(config.strategy, entry_z=1.0),
+        live_execution=replace(config.live_execution, enabled=True),
+    )
+    for name in (
+        "PROJECT_LUX_ALLOW_LIVE_ORDER",
+        "FUBON_ALLOW_LIVE_ORDER",
+        "BINANCE_ALLOW_LIVE_ORDER",
+    ):
+        monkeypatch.setenv(name, "1")
+    return config
+
+
+def test_live_execute_resume_keeps_open_when_broker_matches(
+    tmp_path, monkeypatch
+) -> None:
+    config = _live_execute_resume_config(tmp_path, monkeypatch)
+    _run_live_execute_entry_to_open(config)
+
+    output = _resume_live_execute(
+        config,
+        readonly=_live_execute_resume_brokers(
+            qff_quantity=100.0,
+            tsm_quantity=-(1_000_000.0 / 120.0),
+            at="2026-06-18T08:47:30+08:00",
+        ),
+    )
+
+    assert "resume_reconciliation matched" in output
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        state = store.load_resume_state()
+        assert state is not None
+        # A matching broker must NOT trigger a false pause on restart.
+        assert state.strategy.state == StrategyState.OPEN
+    finally:
+        store.close()
+
+
+def test_live_execute_resume_pauses_when_broker_lost_position(
+    tmp_path, monkeypatch
+) -> None:
+    config = _live_execute_resume_config(tmp_path, monkeypatch)
+    _run_live_execute_entry_to_open(config)
+
+    # Broker now reports a flat position (liquidated / closed during downtime).
+    output = _resume_live_execute(
+        config,
+        readonly=_live_execute_resume_brokers(
+            qff_quantity=0.0,
+            tsm_quantity=0.0,
+            at="2026-06-18T08:47:30+08:00",
+        ),
+    )
+
+    assert "resume_reconciliation" in output
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        state = store.load_resume_state()
+        assert state is not None
+        assert state.strategy.state == StrategyState.PAUSED
+    finally:
+        store.close()
+
+
 def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> None:
     config = small_live_config(tmp_path)
     config = replace(config, strategy=replace(config.strategy, entry_z=1.0))
