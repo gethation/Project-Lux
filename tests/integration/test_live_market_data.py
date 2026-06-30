@@ -2256,6 +2256,91 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
         store.close()
 
 
+def test_reconnect_qff_provider_if_supported_relogins_and_stays_safe() -> None:
+    from lux_trader.runtime.live.contracts import reconnect_qff_provider_if_supported
+
+    class _ReconProvider:
+        def __init__(self, exc: Exception | None = None) -> None:
+            self.calls = 0
+            self.exc = exc
+
+        def reconnect(self) -> None:
+            self.calls += 1
+            if self.exc is not None:
+                raise self.exc
+
+    when = ts("2026-06-18T08:45:00+08:00")
+
+    out = io.StringIO()
+    provider = _ReconProvider()
+    reconnect_qff_provider_if_supported(provider, LiveTerminalReporter(out, color=False), when)
+    assert provider.calls == 1
+    assert "reconnect_login" in out.getvalue()
+
+    out_fail = io.StringIO()
+    raising = _ReconProvider(exc=RuntimeError("login boom"))
+    reconnect_qff_provider_if_supported(
+        raising, LiveTerminalReporter(out_fail, color=False), when
+    )
+    assert raising.calls == 1  # attempted
+    assert "reconnect_failed" in out_fail.getvalue()  # caught, not propagated
+
+    # A provider without reconnect support must be a no-op, never an error.
+    reconnect_qff_provider_if_supported(object(), LiveTerminalReporter(io.StringIO(), color=False), when)
+
+
+def test_live_dry_run_survives_contract_resolution_failure(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    config = replace(config, strategy=replace(config.strategy, entry_z=1.0))
+    qff, tsm, usd = dry_run_quote_providers(
+        [
+            "2026-06-18T08:45:30+08:00",
+            "2026-06-18T08:45:59+08:00",
+            "2026-06-18T08:46:01+08:00",
+            "2026-06-18T08:46:59+08:00",
+            "2026-06-18T08:47:01+08:00",
+        ]
+    )
+    # Startup resolves the contract once successfully; every later per-bar
+    # re-resolution raises (mimicking a Fugle token-expired ticker lookup).
+    calls = {"n": 0}
+    real_select = qff.select_front_month_symbol
+
+    def failing_select(product: str) -> str:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("Fubon QFF ticker lookup token expired")
+        return real_select(product)
+
+    qff.select_front_month_symbol = failing_select
+    terminal = io.StringIO()
+
+    # The loop must survive the resolution failures rather than crash.
+    result = LiveDryRunRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        clock=dry_run_clock(
+            [
+                "2026-06-18T08:45:00+08:00",
+                "2026-06-18T08:45:30+08:00",
+                "2026-06-18T08:45:59+08:00",
+                "2026-06-18T08:46:01+08:00",
+                "2026-06-18T08:46:59+08:00",
+                "2026-06-18T08:47:01+08:00",
+                "2026-06-18T08:47:02+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(terminal, color=False),
+    ).run(reset_store=True, max_iterations=5)
+
+    assert calls["n"] > 1  # per-bar resolution was actually attempted and failed
+    assert result.bars_processed >= 1  # bars still processed on the current contract
+    assert "resolve_failed" in terminal.getvalue()
+
+
 def seed_strategy_state(config: AppConfig, state: StrategyRuntimeState) -> None:
     store = SQLiteStore(config.store_path)
     try:

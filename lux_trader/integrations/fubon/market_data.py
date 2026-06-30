@@ -116,6 +116,24 @@ class FubonQffMarketData:
         self.intraday = sdk.marketdata.rest_client.futopt.intraday
         self.websocket = sdk.marketdata.websocket_client.futopt
 
+    def reconnect(self) -> None:
+        # Drop the current (possibly token-expired) marketdata session and log in
+        # again so the Fugle token is fresh. Called when entering a trading session
+        # after an idle non-trading gap: an overnight token expires, and a bare
+        # websocket restart would keep reusing the dead token (HTTP 401 Token expired).
+        self.teardown_books_session()
+        old_sdk = self.sdk
+        self.sdk = None
+        self.intraday = None
+        self.websocket = None
+        self._websocket_handlers_registered = False
+        if old_sdk is not None:
+            try:
+                old_sdk.logout()
+            except Exception:
+                pass
+        self.connect()
+
     def close(self) -> None:
         if self.websocket is not None:
             try:

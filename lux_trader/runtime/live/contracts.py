@@ -142,6 +142,26 @@ def restart_qff_books_if_supported(
     return timestamp
 
 
+def reconnect_qff_provider_if_supported(
+    provider: object,
+    reporter: Any,
+    timestamp: datetime,
+) -> None:
+    # Proactively re-login on entering a trading session so the marketdata token is
+    # fresh for the whole session. The longest continuous session (~11.5h night) is
+    # well within the observed token lifetime, so this avoids the overnight 401
+    # without parsing error strings. No-op for providers without reconnect support.
+    reconnect = getattr(provider, "reconnect", None)
+    if not callable(reconnect):
+        return
+    timestamp = ensure_taipei(timestamp)
+    try:
+        reporter.event(timestamp, "qff_books", "reconnect_login")
+        reconnect()
+    except Exception as exc:
+        reporter.warn(timestamp, "qff_books", f"reconnect_failed:{type(exc).__name__}")
+
+
 def unsubscribe_qff_books_if_supported(provider: object, symbol: str) -> None:
     unsubscribe = getattr(provider, "unsubscribe_books", None)
     if callable(unsubscribe):

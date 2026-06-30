@@ -85,6 +85,7 @@ from lux_trader.runtime.live.contracts import (
     qff_book_age_seconds,
     qff_book_is_fresh_for_signal,
     resolve_qff_contract,
+    reconnect_qff_provider_if_supported,
     restart_qff_books_if_supported,
     should_force_exit_for_contract_policy,
     should_switch_contract_before_processing,
@@ -281,6 +282,13 @@ class LiveRuntime:
                     continue
 
                 if qff_books_torn_down_for_non_trading:
+                    # Re-login first so the session starts on a fresh marketdata
+                    # token, then restart the books on the new session.
+                    reconnect_qff_provider_if_supported(
+                        qff_provider,
+                        self.reporter,
+                        observed_at,
+                    )
                     last_qff_books_restart_at = restart_qff_books_if_supported(
                         qff_provider,
                         qff_symbol,
@@ -538,40 +546,54 @@ class LiveRuntime:
                 "continued": False,
             }
 
-        eligible_contract = resolve_qff_contract(
-            self.config,
-            qff_provider,
-            now=bar.timestamp,
-        )
-        update_eligible_contract_state(strategy.state, eligible_contract)
-        if should_switch_contract_before_processing(strategy.state, eligible_contract):
-            qff_symbol, qff_expiry, indicator, seed_bars, builder = (
-                self._switch_contract_before_processing(
-                    store=store,
-                    bar=bar,
-                    qff_provider=qff_provider,
-                    tsm_provider=tsm_provider,
-                    usdttwd_provider=usdttwd_provider,
-                    qff_symbol=qff_symbol,
-                    strategy=strategy,
-                    eligible_contract=eligible_contract,
-                )
+        try:
+            eligible_contract = resolve_qff_contract(
+                self.config,
+                qff_provider,
+                now=bar.timestamp,
             )
-            store.save_state(bar.row_index, bar.timestamp, strategy.state, indicator)
-            store.commit()
-            stats.iterations += 1
-            self._sleep_if_needed(stats.iterations, max_iterations)
-            return {
-                "qff_symbol": qff_symbol,
-                "qff_expiry": qff_expiry,
-                "indicator": indicator,
-                "seed_bars": seed_bars,
-                "builder": builder,
-                "next_row_index": next_row_index,
-                "continued": True,
-            }
+        except Exception as exc:
+            # A transient market-data failure (e.g. token refresh in flight) must
+            # not crash the loop. Keep the current contract and retry next minute;
+            # the session-entry re-login normally restores the marketdata token.
+            eligible_contract = None
+            self.reporter.warn(
+                bar.timestamp,
+                "qff_contract",
+                f"resolve_failed:{type(exc).__name__}",
+            )
+        if eligible_contract is not None:
+            update_eligible_contract_state(strategy.state, eligible_contract)
+            if should_switch_contract_before_processing(
+                strategy.state, eligible_contract
+            ):
+                qff_symbol, qff_expiry, indicator, seed_bars, builder = (
+                    self._switch_contract_before_processing(
+                        store=store,
+                        bar=bar,
+                        qff_provider=qff_provider,
+                        tsm_provider=tsm_provider,
+                        usdttwd_provider=usdttwd_provider,
+                        qff_symbol=qff_symbol,
+                        strategy=strategy,
+                        eligible_contract=eligible_contract,
+                    )
+                )
+                store.save_state(bar.row_index, bar.timestamp, strategy.state, indicator)
+                store.commit()
+                stats.iterations += 1
+                self._sleep_if_needed(stats.iterations, max_iterations)
+                return {
+                    "qff_symbol": qff_symbol,
+                    "qff_expiry": qff_expiry,
+                    "indicator": indicator,
+                    "seed_bars": seed_bars,
+                    "builder": builder,
+                    "next_row_index": next_row_index,
+                    "continued": True,
+                }
 
-        mark_pending_contract_switch_if_needed(strategy.state, eligible_contract)
+            mark_pending_contract_switch_if_needed(strategy.state, eligible_contract)
         if strategy.state.contract_policy_state != bar.contract_policy_state:
             bar = replace(
                 bar,
