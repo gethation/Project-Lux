@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from .intent import (
     ExecutionPlanStatus,
     PairExecutionPlan,
     validate_pair_execution_plan,
 )
-from ..store import SQLiteStore
+
+if TYPE_CHECKING:
+    # Import only for type checking to break the runtime import cycle
+    # store -> persistence -> execution.intent -> execution.__init__ ->
+    # outcome -> recorder -> store. `from __future__ import annotations`
+    # keeps the SQLiteStore annotation below valid as a string.
+    from ..store import SQLiteStore
 
 
 class DryRunExecutionRecorder:
