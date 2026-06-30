@@ -1351,6 +1351,51 @@ def test_warmup_builder_combines_qff_sources_and_forward_fills(tmp_path) -> None
     assert bars[2].spread == pytest.approx((bars[2].tsm_twd_fair - 103.0) / (bars[2].tsm_twd_fair + 103.0) * 200.0)
 
 
+def test_warmup_builder_refuses_when_forward_fill_ratio_too_high(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    config = replace(
+        config,
+        live=replace(config.live, warmup_forward_fill_max_ratio=0.2),
+    )
+    # Same data as the success case (1 of 3 minutes forward-filled = 0.33 > 0.2).
+    fallback = FakeQffProvider(
+        rows(
+            [
+                ("2026-06-18T08:45:00+08:00", 100.0),
+                ("2026-06-18T08:47:00+08:00", 102.0),
+            ]
+        )
+    )
+    intraday = FakeQffProvider(rows([("2026-06-18T08:47:00+08:00", 103.0)]))
+    tsm = FakeOhlcvProvider(
+        rows(
+            [
+                ("2026-06-18T08:45:00+08:00", 20.0),
+                ("2026-06-18T08:46:00+08:00", 20.5),
+                ("2026-06-18T08:47:00+08:00", 21.0),
+            ]
+        )
+    )
+    usd = FakeOhlcvProvider(
+        rows(
+            [
+                ("2026-06-18T08:45:00+08:00", 30.0),
+                ("2026-06-18T08:46:00+08:00", 30.0),
+                ("2026-06-18T08:47:00+08:00", 30.0),
+            ]
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="forward-fill ratio"):
+        WarmupBuilder(
+            live_config=config.live,
+            qff_intraday_provider=intraday,
+            qff_fallback_provider=fallback,
+            tsm_provider=tsm,
+            usdttwd_provider=usd,
+        ).build(qff_symbol="QFF202607", end=ts("2026-06-18T08:48:42+08:00"))
+
+
 def test_qff_warmup_source_report_tracks_precedence_and_quality() -> None:
     report = build_qff_warmup_source_report(
         [

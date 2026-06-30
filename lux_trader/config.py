@@ -67,6 +67,9 @@ class LiveMarketDataConfig:
     taifex_qff_1m_csv: Path | None
     taifex_use_network: bool
     taifex_cache_dir: Path
+    # Max share of warmup minutes allowed to be QFF forward-filled before the
+    # warmup is treated as too degraded to trade on. 1.0 disables the gate.
+    warmup_forward_fill_max_ratio: float = 0.9
 
 
 @dataclass(frozen=True)
@@ -218,6 +221,9 @@ def load_config(path: Path) -> AppConfig:
             taifex_qff_1m_csv=taifex_qff_1m_csv,
             taifex_use_network=bool(live.get("taifex_use_network", True)),
             taifex_cache_dir=taifex_cache_dir,
+            warmup_forward_fill_max_ratio=float(
+                live.get("warmup_forward_fill_max_ratio", 0.9)
+            ),
         ),
         broker_reconciliation=BrokerReconciliationConfig(
             enabled=bool(broker_reconciliation.get("enabled", False)),

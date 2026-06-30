@@ -142,6 +142,22 @@ class WarmupBuilder:
             ].iloc[0]
             raise RuntimeError(f"QFF warmup cannot forward-fill from {first_missing}")
 
+        # Data-quality gate: too many forward-filled QFF minutes means the feed
+        # was mostly dead during warmup, so the rolling z-score is unreliable.
+        # Refuse to seed the indicator rather than trade on degraded data.
+        total_minutes = len(qff_report.frame)
+        forward_filled = int(qff_report.source_used_counts.get("forward_fill", 0))
+        max_ratio = self.live_config.warmup_forward_fill_max_ratio
+        if total_minutes and max_ratio < 1.0:
+            forward_fill_ratio = forward_filled / total_minutes
+            if forward_fill_ratio > max_ratio:
+                raise RuntimeError(
+                    "QFF warmup forward-fill ratio "
+                    f"{forward_fill_ratio:.3f} exceeds max {max_ratio:.3f} "
+                    f"({forward_filled}/{total_minutes} minutes); refusing to "
+                    "seed the indicator on degraded warmup data"
+                )
+
         qff = pd.Series(
             qff_report.frame["merged_qff_close"].to_numpy(),
             index=pd.DatetimeIndex(qff_report.frame["timestamp"]),
