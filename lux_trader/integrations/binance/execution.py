@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from math import isfinite
 from pathlib import Path
@@ -75,12 +75,22 @@ class BinanceTsmExecutionAdapter:
             return self._rejected(plan, reject_reason or "invalid_binance_leg")
 
         exchange = self._ensure_exchange()
+        original_requested_quantity = float(leg.quantity)
+        try:
+            normalized_quantity = normalize_binance_order_quantity(
+                exchange,
+                self.symbol,
+                original_requested_quantity,
+            )
+        except ValueError as exc:
+            return self._rejected(plan, str(exc))
+        normalized_leg = replace(leg, quantity=normalized_quantity)
         try:
             self._configure_symbol(exchange)
         except Exception as exc:
             return self._failed_from_exception(
                 plan,
-                leg,
+                normalized_leg,
                 exc,
                 stage="configure_symbol",
             )
@@ -92,19 +102,24 @@ class BinanceTsmExecutionAdapter:
             created_order = exchange.create_order(
                 self.symbol,
                 ExecutionOrderType.MARKET.value,
-                leg.side.value,
-                float(leg.quantity),
+                normalized_leg.side.value,
+                normalized_quantity,
                 None,
                 params,
             )
         except Exception as exc:
-            return self._failed_from_exception(plan, leg, exc, stage="create_order")
+            return self._failed_from_exception(
+                plan,
+                normalized_leg,
+                exc,
+                stage="create_order",
+            )
 
         order_id = order_id_from_order(created_order)
         if not order_id:
             return self._unknown(
                 plan,
-                leg,
+                normalized_leg,
                 "Binance create_order returned no order id",
                 created_order=created_order,
                 fetched_order=None,
@@ -116,7 +131,7 @@ class BinanceTsmExecutionAdapter:
         except Exception as exc:
             return self._unknown(
                 plan,
-                leg,
+                normalized_leg,
                 f"Binance fetch_order failed: {type(exc).__name__}: {exc}",
                 created_order=created_order,
                 fetched_order=None,
@@ -126,10 +141,11 @@ class BinanceTsmExecutionAdapter:
 
         return self._outcome_from_order(
             plan,
-            leg,
+            normalized_leg,
             created_order=created_order,
             fetched_order=fetched_order,
             params=params,
+            original_requested_quantity=original_requested_quantity,
         )
 
     def fetch_open_orders(self) -> tuple[dict[str, Any], ...]:
@@ -229,6 +245,7 @@ class BinanceTsmExecutionAdapter:
         created_order: dict[str, Any],
         fetched_order: dict[str, Any],
         params: dict[str, Any],
+        original_requested_quantity: float,
     ) -> ExecutionOutcome:
         order = fetched_order or created_order
         order_id = order_id_from_order(order) or order_id_from_order(created_order) or "UNKNOWN"
@@ -300,6 +317,7 @@ class BinanceTsmExecutionAdapter:
                 "margin_mode": self.margin_mode,
                 "enforce_leverage": self.enforce_leverage,
                 "side": leg.side.value,
+                "original_requested_quantity": original_requested_quantity,
                 "requested_quantity": requested,
                 "amount": amount,
                 "filled": filled,
@@ -456,6 +474,61 @@ def is_positive_number(value: float | int | None) -> bool:
         return False
     numeric = float(value)
     return isfinite(numeric) and numeric > 0.0
+
+
+def normalize_binance_order_quantity(
+    exchange: Any,
+    symbol: str,
+    requested_quantity: float,
+) -> float:
+    if not is_positive_number(requested_quantity):
+        raise ValueError("Binance order quantity must be positive")
+
+    normalized = float(requested_quantity)
+    amount_to_precision = getattr(exchange, "amount_to_precision", None)
+    if callable(amount_to_precision):
+        normalized_value = parse_optional_float(
+            amount_to_precision(symbol, requested_quantity)
+        )
+        if normalized_value is None:
+            raise ValueError("Binance amount precision returned an invalid quantity")
+        normalized = normalized_value
+
+    if not is_positive_number(normalized):
+        raise ValueError(
+            "Binance order quantity becomes zero after exchange precision"
+        )
+
+    minimum = binance_minimum_order_quantity(exchange, symbol)
+    if minimum is not None and normalized + 1e-12 < minimum:
+        raise ValueError(
+            f"Binance order quantity {normalized} is below minimum {minimum}"
+        )
+    return normalized
+
+
+def binance_minimum_order_quantity(exchange: Any, symbol: str) -> float | None:
+    market_payload: Any = None
+    market = getattr(exchange, "market", None)
+    if callable(market):
+        try:
+            market_payload = market(symbol)
+        except Exception:
+            market_payload = None
+    if market_payload is None:
+        markets = getattr(exchange, "markets", None)
+        if isinstance(markets, dict):
+            market_payload = markets.get(symbol)
+    if not isinstance(market_payload, dict):
+        return None
+    limits = market_payload.get("limits")
+    if not isinstance(limits, dict):
+        return None
+    amount = limits.get("amount")
+    if not isinstance(amount, dict):
+        return None
+    minimum = parse_optional_float(amount.get("min"))
+    return minimum if minimum is not None and minimum > 0 else None
 
 
 def fetch_current_margin_mode(exchange: Any, symbol: str) -> str | None:

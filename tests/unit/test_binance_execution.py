@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 
 import lux_trader.cli as cli_module
-from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
+from lux_trader.integrations.binance.execution import (
+    BinanceTsmExecutionAdapter,
+    normalize_binance_order_quantity,
+)
 from lux_trader.cli import build_parser, command_binance_exec_smoke
 from lux_trader.execution import ExecutionOutcome, ExecutionOutcomeStatus
 from lux_trader.execution.intent import (
@@ -41,6 +44,8 @@ class FakeExchange:
         positions: list[dict] | None = None,
         current_margin_mode: str | None = None,
         current_leverage: int | None = None,
+        precision_quantity: str | None = None,
+        minimum_amount: float | None = None,
     ) -> None:
         self.create_order_response = create_order_response
         self.fetch_order_response = fetch_order_response
@@ -50,6 +55,8 @@ class FakeExchange:
         self.positions = positions or []
         self.current_margin_mode = current_margin_mode
         self.current_leverage = current_leverage
+        self.precision_quantity = precision_quantity
+        self.minimum_amount = minimum_amount
         self.create_calls: list[dict] = []
         self.set_margin_mode_calls: list[tuple[str, str]] = []
         self.set_leverage_calls: list[tuple[int, str]] = []
@@ -105,6 +112,15 @@ class FakeExchange:
 
     def fetch_positions(self, symbols: list[str]) -> list[dict]:
         return self.positions
+
+    def amount_to_precision(self, symbol: str, amount: float) -> str:
+        return self.precision_quantity or str(amount)
+
+    def market(self, symbol: str) -> dict:
+        return {
+            "symbol": symbol,
+            "limits": {"amount": {"min": self.minimum_amount}},
+        }
 
     def fetch_margin_mode(self, symbol: str) -> dict:
         return {"symbol": symbol, "marginMode": self.current_margin_mode}
@@ -223,6 +239,69 @@ def test_adapter_exit_order_uses_reduce_only() -> None:
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
     assert fake_exchange.create_calls[0]["params"] == {"reduceOnly": True}
+
+
+def test_adapter_normalizes_quantity_before_order_and_records_actual_request() -> None:
+    fake_exchange = FakeExchange(precision_quantity="0.012", minimum_amount=0.001)
+
+    outcome = BinanceTsmExecutionAdapter(
+        SYMBOL,
+        exchange=fake_exchange,
+        clock=ts,
+    ).execute(
+        execution_plan(legs=(binance_leg(quantity=0.01234),))
+    )
+
+    assert outcome.status == ExecutionOutcomeStatus.FILLED
+    assert fake_exchange.create_calls[0]["amount"] == 0.012
+    assert outcome.orders[0].request.quantity == 0.012
+    assert outcome.fills[0].quantity == 0.012
+    assert outcome.payload is not None
+    assert outcome.payload["original_requested_quantity"] == 0.01234
+    assert outcome.payload["requested_quantity"] == 0.012
+
+
+@pytest.mark.parametrize(
+    ("precision_quantity", "minimum_amount", "message"),
+    [
+        ("0", None, "becomes zero"),
+        ("0.001", 0.01, "below minimum"),
+    ],
+)
+def test_adapter_rejects_invalid_normalized_quantity_without_order(
+    precision_quantity: str,
+    minimum_amount: float | None,
+    message: str,
+) -> None:
+    fake_exchange = FakeExchange(
+        precision_quantity=precision_quantity,
+        minimum_amount=minimum_amount,
+    )
+
+    outcome = BinanceTsmExecutionAdapter(
+        SYMBOL,
+        exchange=fake_exchange,
+        clock=ts,
+    ).execute(execution_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.REJECTED
+    assert message in outcome.message
+    assert fake_exchange.create_calls == []
+
+
+def test_normalize_binance_quantity_uses_market_metadata_fallback() -> None:
+    exchange = type(
+        "Exchange",
+        (),
+        {
+            "markets": {
+                SYMBOL: {"limits": {"amount": {"min": 0.01}}},
+            },
+            "amount_to_precision": lambda self, symbol, amount: "0.02",
+        },
+    )()
+
+    assert normalize_binance_order_quantity(exchange, SYMBOL, 0.023) == 0.02
 
 
 def test_adapter_skips_margin_and_leverage_set_when_current_values_match() -> None:

@@ -25,6 +25,7 @@ from lux_trader.core.models import (
     StrategyState,
 )
 from lux_trader.brokers import PaperBroker
+from lux_trader.core.fees import fill_costs
 from lux_trader.runtime.live.modes import LiveExecuteModeHandler, execute_live_entry
 from lux_trader.reconciliation import (
     BrokerAccountSnapshot,
@@ -486,6 +487,91 @@ def test_live_entry_success_applies_strategy_open_position(tmp_path) -> None:
     assert strategy.state.position_direction == Direction.SHORT_TSM_LONG_QFF
 
 
+def test_live_entry_uses_actual_fills_for_state_and_exit_quantity(tmp_path) -> None:
+    store = FakeStore()
+    strategy = entry_pending_strategy(tmp_path)
+    runner = coordinator(
+        store,
+        qff_outcomes=[
+            {"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 10.0}
+        ],
+        binance_outcomes=[
+            {"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 909.0}
+        ],
+    )
+
+    result, _, outcome = execute_live_entry(
+        strategy,
+        runner,
+        live_bar(),
+        live_snapshot(),
+        "shortSpread",
+        None,
+        120,
+    )
+
+    assert outcome is not None and outcome.filled
+    assert result.action == StrategyAction.ENTRY_FILL
+    assert strategy.state.tsm_units == -909.0
+    assert strategy.state.qff_contracts == 10
+    assert strategy.state.qff_units == 1000.0
+    assert strategy.state.actual_leg_notional_twd == 1_000_000.0
+
+    costs = fill_costs(
+        tsm_units=strategy.state.tsm_units,
+        tsm_price=live_bar().tsm_twd_fair,
+        qff_contracts=strategy.state.qff_contracts,
+        qff_price=live_bar().qff_close_filled,
+        fees=strategy.fees,
+    )
+    exit_requests = strategy.build_exit_order_requests(
+        bar=live_bar(),
+        costs=costs,
+    )
+    tsm_exit = next(
+        request
+        for request in exit_requests
+        if request.broker == BrokerName.BINANCE_TSM
+    )
+    qff_exit = next(
+        request
+        for request in exit_requests
+        if request.broker == BrokerName.FUBON_QFF
+    )
+    assert tsm_exit.side == OrderSide.BUY
+    assert tsm_exit.quantity == 909.0
+    assert qff_exit.side == OrderSide.SELL
+    assert qff_exit.quantity == 10
+
+
+def test_live_entry_pauses_when_filled_outcome_is_missing_a_leg_fill(tmp_path) -> None:
+    store = FakeStore()
+    strategy = entry_pending_strategy(tmp_path)
+    runner = coordinator(
+        store,
+        qff_outcomes=[{"status": ExecutionOutcomeStatus.FILLED}],
+        binance_outcomes=[
+            {"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 0.0}
+        ],
+    )
+
+    result, _, outcome = execute_live_entry(
+        strategy,
+        runner,
+        live_bar(),
+        live_snapshot(),
+        "shortSpread",
+        None,
+        120,
+    )
+
+    assert outcome is not None and outcome.filled
+    assert result.action == StrategyAction.LIVE_EXECUTION
+    assert result.reason == "live_entry_fill_mismatch"
+    assert strategy.state.state == StrategyState.PAUSED
+    assert strategy.state.position_direction is None
+
+
 def test_live_entry_breach_pauses_without_creating_strategy_position(tmp_path) -> None:
     store = FakeStore()
     strategy = entry_pending_strategy(tmp_path)
@@ -527,11 +613,11 @@ def test_live_execute_post_trade_reconciliation_match_keeps_open_state(tmp_path)
         config,
         fubon_adapter=FakeExecutionAdapter(
             BrokerName.FUBON_QFF,
-            [{"status": ExecutionOutcomeStatus.FILLED}],
+            [{"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 10.0}],
         ),
         binance_adapter=FakeExecutionAdapter(
             BrokerName.BINANCE_TSM,
-            [{"status": ExecutionOutcomeStatus.FILLED}],
+            [{"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 909.0}],
         ),
         readonly_brokers=(
             StrategyReadOnlyBroker(BrokerName.FUBON_QFF, strategy),
@@ -559,6 +645,8 @@ def test_live_execute_post_trade_reconciliation_match_keeps_open_state(tmp_path)
         report = store.load_latest_reconciliation_report()
         assert mode_result.result.action == StrategyAction.ENTRY_FILL
         assert strategy.state.state == StrategyState.OPEN
+        assert strategy.state.tsm_units == -909.0
+        assert strategy.state.qff_contracts == 10
         assert report is not None
         assert report.status == ReconciliationStatus.MATCHED
     finally:

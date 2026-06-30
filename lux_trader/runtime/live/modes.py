@@ -22,7 +22,9 @@ from lux_trader.execution import (
     ExecutionCoordinator,
     ExecutionOutcome,
     ExecutionOutcomeStatus,
+    ExecutedPositionError,
     SimulatedExecutionAdapter,
+    position_sizing_from_fills,
 )
 from lux_trader.execution.recorder import DryRunExecutionRecorder
 from lux_trader.execution.price_policy import apply_live_touch_market_price_policy
@@ -995,11 +997,38 @@ def execute_live_entry(
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:
+        try:
+            executed_sizing = position_sizing_from_fills(
+                state.candidate_direction,
+                outcome.fills,
+                tsm_symbol=strategy.tsm_symbol,
+                qff_symbol=bar.qff_symbol or "QFF",
+                qff_contract_multiplier=strategy.fees.qff_contract_multiplier,
+            )
+        except ExecutedPositionError:
+            clear_entry_candidate(state)
+            state.state = StrategyState.PAUSED
+            return (
+                strategy.mark_to_market_result(
+                    action=StrategyAction.LIVE_EXECUTION,
+                    reason="live_entry_fill_mismatch",
+                    bar=bar,
+                ),
+                plan,
+                outcome,
+            )
+        executed_costs = fill_costs(
+            tsm_units=executed_sizing.tsm_units,
+            tsm_price=bar.tsm_twd_fair,
+            qff_contracts=executed_sizing.qff_contracts,
+            qff_price=bar.qff_close_filled,
+            fees=strategy.fees,
+        )
         result = strategy.apply_entry_execution(
             bar=bar,
             snapshot=snapshot,
-            sizing=sizing,
-            costs=costs,
+            sizing=executed_sizing,
+            costs=executed_costs,
             orders=list(outcome.orders),
             fills=list(outcome.fills),
             delay_minutes=delay,
