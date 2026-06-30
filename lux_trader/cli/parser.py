@@ -98,6 +98,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fake broker scenario for the Phase 3 skeleton",
     )
 
+    live_status = subparsers.add_parser(
+        "live-status",
+        help="Print persisted strategy state, position, and latest reconciliation (read-only)",
+    )
+    live_status.add_argument("--config", type=Path, required=True)
+
+    clear_pause = subparsers.add_parser(
+        "clear-pause",
+        help="Clear a PAUSED strategy back to OPEN/FLAT after matched reconciliation",
+    )
+    clear_pause.add_argument("--config", type=Path, required=True)
+    clear_pause.add_argument(
+        "--fake",
+        action="store_true",
+        help="Use deterministic fake read-only brokers",
+    )
+    clear_pause.add_argument(
+        "--readonly",
+        action="store_true",
+        help="Use real Fubon and Binance read-only brokers",
+    )
+    clear_pause.add_argument(
+        "--fubon-readonly",
+        action="store_true",
+        help="Use real Fubon read-only broker",
+    )
+    clear_pause.add_argument(
+        "--fake-binance",
+        action="store_true",
+        help="Use fake Binance broker with real Fubon",
+    )
+    clear_pause.add_argument(
+        "--fake-case",
+        choices=("matched", "mismatch", "error"),
+        default="matched",
+        help="Fake broker scenario when using --fake",
+    )
+
+    binance_manual_close = subparsers.add_parser(
+        "binance-manual-close",
+        help="Emergency close a Binance TSM position with a market order",
+    )
+    binance_manual_close.add_argument("--config", type=Path, required=True)
+    binance_manual_close.add_argument("--symbol", required=True)
+    binance_manual_close.add_argument("--side", choices=("buy", "sell"), required=True)
+    binance_manual_close.add_argument("--quantity", type=float, required=True)
+    binance_manual_close.add_argument("--confirm-symbol", required=True)
+
     dry_run_doctor = subparsers.add_parser(
         "dry-run-doctor",
         help="Check dry-run execution recorder skeleton config",

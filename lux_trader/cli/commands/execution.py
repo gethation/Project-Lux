@@ -14,7 +14,9 @@ import pandas
 
 from lux_trader.integrations.binance.execution import (
     BINANCE_EXECUTION_SMOKE_ENV_GATES,
+    BINANCE_MANUAL_CLOSE_ENV_GATES,
     BinanceTsmExecutionAdapter,
+    binance_manual_close_env_gates_open,
     binance_smoke_env_gates_open,
 )
 from lux_trader.core.calendar import live_session_status
@@ -64,7 +66,7 @@ from lux_trader.reconciliation import (
     ReconciliationStatus,
 )
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
-from lux_trader.core.models import BrokerName, Direction, OrderSide
+from lux_trader.core.models import BrokerName, Direction, OrderSide, StrategyState
 from lux_trader.runner import SystemRunner
 from lux_trader.store import SQLiteStore
 from lux_trader.terminal_ui import LiveTerminalReporter, NullLiveReporter
@@ -145,6 +147,226 @@ def command_fubon_manual_close(args: argparse.Namespace) -> int:
         return 0
     finally:
         adapter.close()
+
+
+def command_live_status(args: argparse.Namespace) -> int:
+    """Read-only operator snapshot: persisted strategy state, position, and
+    latest reconciliation. Sends no orders and touches no external API, so it is
+    the safe first step when checking on an unattended run (e.g. after a PAUSE)."""
+    config = load_config(args.config)
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        resume_state = store.load_resume_state()
+        report = store.load_latest_reconciliation_report()
+    finally:
+        store.close()
+
+    print(f"Live status: store={config.store_path}")
+    if resume_state is None:
+        print("- strategy_state: none (no persisted strategy state yet)")
+    else:
+        state = resume_state.strategy
+        direction = (
+            state.position_direction.value if state.position_direction else "none"
+        )
+        print(f"- strategy_state: {state.state.value}")
+        print(f"- row_index: {resume_state.row_index}")
+        print(
+            "- position: "
+            f"direction={direction}, "
+            f"tsm_units={state.tsm_units}, "
+            f"qff_contracts={state.qff_contracts}, "
+            f"qff_symbol={state.trading_qff_symbol or '-'}"
+        )
+        print(f"- realized_pnl_twd: {state.realized_pnl}")
+        if state.state == StrategyState.PAUSED:
+            print(
+                "- ACTION: strategy is PAUSED; inspect, manual-close any stray leg, "
+                "then run clear-pause once reconciliation matches"
+            )
+    if report is None:
+        print("- reconciliation: none recorded")
+    else:
+        print(
+            "- reconciliation: "
+            f"status={report.status.value}, issues={len(report.issues)}"
+        )
+        for issue in report.issues:
+            print(
+                f"  - {issue.status.value} {issue.issue_type} "
+                f"{issue.broker.value} {issue.symbol or '-'} {issue.message}"
+            )
+    return 0
+
+
+def command_clear_pause(args: argparse.Namespace) -> int:
+    """Guarded recovery: re-run read-only reconciliation and only clear a PAUSED
+    strategy back to OPEN/FLAT when broker and store agree. Sends no orders."""
+    config = load_config(args.config)
+    store = SQLiteStore(config.store_path)
+    brokers: tuple[ReadOnlyBroker, ...] = ()
+    target: StrategyState | None = None
+    try:
+        store.initialize()
+        resume_state = store.load_resume_state()
+        if resume_state is None:
+            raise SystemExit("No persisted strategy state to clear")
+        state = resume_state.strategy
+        if state.state != StrategyState.PAUSED:
+            print(
+                f"Strategy state is {state.state.value}, not paused; nothing to clear"
+            )
+            return 0
+
+        timestamp = datetime.now().astimezone()
+        brokers = build_reconciliation_brokers(args, config, state, timestamp)
+        report = BrokerReconciler(
+            tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
+            qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
+        ).reconcile(
+            strategy_state=state,
+            brokers=brokers,
+            tsm_symbol=config.live.binance_symbol,
+            qff_symbol=reconciliation_qff_symbol(config, state),
+            timestamp=timestamp,
+        )
+        store.record_reconciliation_report(report)
+        if report.status != ReconciliationStatus.MATCHED:
+            store.commit()
+            print(
+                "Refusing clear-pause: reconciliation status="
+                f"{report.status.value}, issues={len(report.issues)}"
+            )
+            for issue in report.issues:
+                print(
+                    f"- {issue.status.value} {issue.issue_type} "
+                    f"{issue.broker.value} {issue.symbol or '-'} {issue.message}"
+                )
+            return 1
+
+        has_position = (
+            state.position_direction is not None
+            or abs(float(state.tsm_units or 0.0)) > 1e-12
+            or int(state.qff_contracts or 0) != 0
+        )
+        target = StrategyState.OPEN if has_position else StrategyState.FLAT
+        state.state = target
+        store.save_state(
+            resume_state.row_index,
+            timestamp,
+            state,
+            resume_state.indicator,
+        )
+        store.record_event(
+            resume_state.row_index,
+            timestamp,
+            "clear_pause",
+            f"manual clear-pause -> {target.value}",
+            {
+                "reconciliation_status": report.status.value,
+                "target_state": target.value,
+            },
+        )
+        store.commit()
+    except Exception:
+        store.rollback()
+        raise
+    finally:
+        close_brokers(brokers)
+        store.close()
+
+    print(f"Cleared PAUSED -> {target.value} after matched reconciliation")
+    return 0
+
+
+def command_binance_manual_close(args: argparse.Namespace) -> int:
+    """Emergency-close a Binance TSM position with a market order. Mirrors
+    fubon-manual-close so either stranded leg from a single-leg PAUSE can be
+    flattened by hand before clear-pause."""
+    config = load_config(args.config)
+    require_binance_manual_close_ready(config, args)
+
+    symbol = str(args.symbol).strip()
+    quantity = float(args.quantity)
+    side = OrderSide.BUY if str(args.side).lower() == "buy" else OrderSide.SELL
+    adapter = cli_attr("BinanceTsmExecutionAdapter", BinanceTsmExecutionAdapter)(
+        symbol,
+        config.live.fubon_env_path,
+        leverage=config.binance_execution.leverage,
+        margin_mode=config.binance_execution.margin_mode,
+        enforce_leverage=config.binance_execution.enforce_leverage,
+    )
+    try:
+        pre_open_orders = adapter.fetch_open_orders()
+        pre_position = adapter.fetch_position_quantity()
+        print(
+            "Binance manual close precheck: "
+            f"symbol={symbol}, position={pre_position}, "
+            f"open_orders={len(pre_open_orders)}"
+        )
+        if pre_open_orders:
+            raise SystemExit(
+                "Refusing Binance manual close with existing open orders: "
+                f"{len(pre_open_orders)}"
+            )
+        if abs(pre_position) <= 1e-12:
+            print(
+                "WARN Binance position query returned zero before manual close; "
+                "continuing because --side/--quantity were explicitly provided"
+            )
+
+        timestamp = cli_attr("datetime", datetime).now().astimezone().replace(
+            microsecond=0
+        )
+        close_plan = build_binance_smoke_plan(
+            symbol=symbol,
+            quantity=quantity,
+            side=side,
+            plan_type=ExecutionPlanType.EXIT,
+            timestamp=timestamp,
+        )
+        outcome = adapter.execute(close_plan)
+        print_binance_smoke_outcome("manual_close", outcome)
+
+        final_open_orders = adapter.fetch_open_orders()
+        final_position = adapter.fetch_position_quantity()
+        print(
+            "Binance manual close after: "
+            f"position={final_position}, open_orders={len(final_open_orders)}"
+        )
+        if not outcome.filled or final_open_orders or abs(final_position) > 1e-12:
+            print("CRITICAL manual intervention required")
+            return 1
+        print(
+            "Binance manual close complete: "
+            f"position={final_position:g}, open_orders={len(final_open_orders)}"
+        )
+        return 0
+    finally:
+        adapter.close()
+
+
+def require_binance_manual_close_ready(
+    config: object,
+    args: argparse.Namespace,
+) -> None:
+    if not config.safety.allow_live_order:
+        raise SystemExit("safety.allow_live_order=true is required")
+    symbol = str(args.symbol).strip()
+    if not symbol:
+        raise SystemExit("--symbol is required")
+    if str(args.confirm_symbol).strip() != symbol:
+        raise SystemExit("--confirm-symbol must match --symbol")
+    if float(args.quantity) <= 0.0:
+        raise SystemExit("--quantity must be positive")
+    gates = binance_manual_close_env_gates_open()
+    closed = [name for name in BINANCE_MANUAL_CLOSE_ENV_GATES if not gates[name]]
+    if closed:
+        raise SystemExit(
+            "Binance manual close gates closed: "
+            + ", ".join(f"{name}=1" for name in closed)
+        )
 
 
 def command_dry_run_doctor(args: argparse.Namespace) -> int:

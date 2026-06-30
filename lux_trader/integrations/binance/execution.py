@@ -616,3 +616,17 @@ def binance_smoke_env_gates_open() -> dict[str, bool]:
         name: os.getenv(name, "").strip() == "1"
         for name in BINANCE_EXECUTION_SMOKE_ENV_GATES
     }
+
+
+BINANCE_MANUAL_CLOSE_ENV_GATES = (
+    "PROJECT_LUX_ALLOW_LIVE_ORDER",
+    "BINANCE_ALLOW_LIVE_ORDER",
+    "LUX_BINANCE_MANUAL_CLOSE",
+)
+
+
+def binance_manual_close_env_gates_open() -> dict[str, bool]:
+    return {
+        name: os.getenv(name, "").strip() == "1"
+        for name in BINANCE_MANUAL_CLOSE_ENV_GATES
+    }

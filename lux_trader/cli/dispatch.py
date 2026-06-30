@@ -3,9 +3,12 @@ from __future__ import annotations
 from .parser import build_parser
 from .commands import (
     command_binance_exec_smoke,
+    command_binance_manual_close,
     command_broker_doctor,
+    command_clear_pause,
     command_doctor,
     command_dry_run_doctor,
+    command_live_status,
     command_execution_summary,
     command_fubon_account_funds,
     command_fubon_exec_smoke,
@@ -33,7 +36,10 @@ COMMAND_HANDLERS = {
     "fubon-account-funds": command_fubon_account_funds,
     "fubon-order-records": command_fubon_order_records,
     "fubon-manual-close": command_fubon_manual_close,
+    "binance-manual-close": command_binance_manual_close,
     "reconcile-brokers": command_reconcile_brokers,
+    "live-status": command_live_status,
+    "clear-pause": command_clear_pause,
     "dry-run-doctor": command_dry_run_doctor,
     "execution-summary": command_execution_summary,
     "live-dry-run": command_live_dry_run,
