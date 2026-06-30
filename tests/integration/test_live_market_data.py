@@ -2078,6 +2078,48 @@ def test_live_execute_resume_pauses_when_broker_lost_position(
         store.close()
 
 
+class _RaisingReadOnlyBroker:
+    def __init__(self, broker: BrokerName) -> None:
+        self.broker = broker
+
+    def fetch_snapshot(self):
+        raise RuntimeError(f"{self.broker.value} read-only API unavailable")
+
+    def close(self) -> None:
+        return None
+
+
+def test_live_execute_resume_pauses_when_broker_unreachable(
+    tmp_path, monkeypatch
+) -> None:
+    config = _live_execute_resume_config(tmp_path, monkeypatch)
+    _run_live_execute_entry_to_open(config)
+
+    # Read-only API is unreachable at restart: reconciliation cannot confirm the
+    # restored position, so resume must pause rather than crash or trade blind.
+    _resume_live_execute(
+        config,
+        readonly=(
+            _RaisingReadOnlyBroker(BrokerName.FUBON_QFF),
+            FixedPositionReadOnlyBroker(
+                broker=BrokerName.BINANCE_TSM,
+                symbol="TSM/USDT:USDT",
+                quantity=-(1_000_000.0 / 120.0),
+                fetched_at=ts("2026-06-18T08:47:30+08:00"),
+            ),
+        ),
+    )
+
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        state = store.load_resume_state()
+        assert state is not None
+        assert state.strategy.state == StrategyState.PAUSED
+    finally:
+        store.close()
+
+
 def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> None:
     config = small_live_config(tmp_path)
     config = replace(config, strategy=replace(config.strategy, entry_z=1.0))
