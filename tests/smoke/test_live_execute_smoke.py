@@ -169,18 +169,35 @@ def strategy_state_json(connection: sqlite3.Connection) -> str:
     return connection.execute("SELECT state_json FROM strategy_state WHERE id = 1").fetchone()[0]
 
 
+def print_m6_stage(message: str) -> None:
+    print(f"[M6] {message}", flush=True)
+
+
 def test_real_live_execute_entry_and_exit_returns_flat() -> None:
     config = load_exec_smoke_config()
+    print_m6_stage(f"config loaded store_path={config.store_path}")
     remove_sqlite_family(config.store_path)
+    print_m6_stage("sqlite store reset")
 
     state = seed_pending_entry_state(config)
+    print_m6_stage(
+        f"pending entry state seeded direction={state.candidate_direction.value}"
+    )
     record_flat_account_reconciliation(config, state)
+    print_m6_stage("pre-entry read-only reconciliation matched")
 
     # --- real two-leg entry ---
     entry_output = io.StringIO()
     entry_result = LiveExecuteRunner(
         config, reporter=LiveTerminalReporter(entry_output, color=False)
     ).run(resume=True, max_iterations=130)
+    print_m6_stage(
+        "entry runner finished "
+        f"iterations={entry_result.iterations} "
+        f"bars_processed={entry_result.bars_processed} "
+        f"plans_recorded={entry_result.plans_recorded} "
+        f"qff_symbol={entry_result.qff_symbol}"
+    )
 
     assert entry_result.plans_recorded >= 1
     entry_text = entry_output.getvalue()
@@ -189,9 +206,12 @@ def test_real_live_execute_entry_and_exit_returns_flat() -> None:
 
     connection = sqlite3.connect(config.store_path)
     try:
-        assert dryrun_order_count(connection) == 0, "live-execute must send real, not DRYRUN, orders"
-        assert connection.execute("SELECT COUNT(*) FROM orders").fetchone()[0] >= 2
-        assert connection.execute("SELECT COUNT(*) FROM fills").fetchone()[0] >= 2
+        dryrun_orders = dryrun_order_count(connection)
+        order_count = connection.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+        fill_count = connection.execute("SELECT COUNT(*) FROM fills").fetchone()[0]
+        assert dryrun_orders == 0, "live-execute must send real, not DRYRUN, orders"
+        assert order_count >= 2
+        assert fill_count >= 2
         latest_outcome = connection.execute(
             "SELECT status FROM execution_outcomes ORDER BY outcome_id DESC LIMIT 1"
         ).fetchone()
@@ -199,13 +219,25 @@ def test_real_live_execute_entry_and_exit_returns_flat() -> None:
         assert '"state": "open"' in strategy_state_json(connection)
     finally:
         connection.close()
+    print_m6_stage(
+        f"entry verified real_orders={order_count} fills={fill_count} "
+        "latest_outcome=filled state=open"
+    )
 
     # --- real two-leg exit ---
     seed_pending_exit_state(config)
+    print_m6_stage("pending exit state seeded")
     exit_output = io.StringIO()
-    LiveExecuteRunner(
+    exit_result = LiveExecuteRunner(
         config, reporter=LiveTerminalReporter(exit_output, color=False)
     ).run(resume=True, max_iterations=70)
+    print_m6_stage(
+        "exit runner finished "
+        f"iterations={exit_result.iterations} "
+        f"bars_processed={exit_result.bars_processed} "
+        f"plans_recorded={exit_result.plans_recorded} "
+        f"qff_symbol={exit_result.qff_symbol}"
+    )
 
     exit_text = exit_output.getvalue()
     assert "live_execution filled" in exit_text
@@ -213,11 +245,15 @@ def test_real_live_execute_entry_and_exit_returns_flat() -> None:
 
     connection = sqlite3.connect(config.store_path)
     try:
-        assert dryrun_order_count(connection) == 0
-        assert connection.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 1
+        dryrun_orders = dryrun_order_count(connection)
+        trade_count = connection.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+        assert dryrun_orders == 0
+        assert trade_count == 1
         assert '"state": "flat"' in strategy_state_json(connection)
     finally:
         connection.close()
+    print_m6_stage(f"exit verified trades={trade_count} state=flat")
 
     # --- final safety: the broker account must be flat again ---
     assert_brokers_flat(config)
+    print_m6_stage("final broker flat check passed")
