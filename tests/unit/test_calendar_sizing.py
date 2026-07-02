@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from lux_trader.core.calendar import TradingCalendar, live_session_status
+from lux_trader.core.calendar import (
+    TradingCalendar,
+    is_weekend_force_exit_bar,
+    live_session_status,
+)
 from lux_trader.core.models import Direction, MarketBar
 from lux_trader.core.sizing import size_position_for_direction
 
@@ -102,6 +106,56 @@ def test_inactive_session_is_not_allowed_without_qff_trades() -> None:
 
     assert not bars[0].close_allowed
     assert not bars[0].entry_allowed
+
+
+def test_weekend_force_exit_fires_in_grace_window_at_friday_session_end() -> None:
+    # 2026-06-19 is a Friday; its night session runs into 2026-06-20 (Sat) 05:00,
+    # after which QFF is frozen until Monday 2026-06-22.
+    assert is_weekend_force_exit_bar(
+        datetime.fromisoformat("2026-06-20T04:57:00+08:00")
+    )
+    # Exactly grace_minutes (5) before the 05:00 end still counts; one minute more
+    # does not.
+    assert is_weekend_force_exit_bar(
+        datetime.fromisoformat("2026-06-20T04:55:00+08:00")
+    )
+    assert not is_weekend_force_exit_bar(
+        datetime.fromisoformat("2026-06-20T04:54:00+08:00")
+    )
+
+
+def test_weekend_force_exit_ignores_start_of_friday_night_and_day_session() -> None:
+    # Early in the Friday night session — far from the end — must not force-exit.
+    assert not is_weekend_force_exit_bar(
+        datetime.fromisoformat("2026-06-19T17:30:00+08:00")
+    )
+    # Friday day session: the night session is still ahead this week.
+    assert not is_weekend_force_exit_bar(
+        datetime.fromisoformat("2026-06-19T13:42:00+08:00")
+    )
+
+
+def test_weekend_force_exit_ignores_ordinary_weeknight_session_end() -> None:
+    # Wednesday night -> Thursday 05:00: the Thursday day session follows in the
+    # same ISO week, so this is not a weekend break.
+    assert not is_weekend_force_exit_bar(
+        datetime.fromisoformat("2026-06-18T04:57:00+08:00")
+    )
+
+
+def test_weekend_force_exit_covers_monday_holiday_long_weekend() -> None:
+    # 2026-06-22 (Mon) closed: the next trading session is Tuesday, still a new ISO
+    # week, so the Friday-night flatten must still fire.
+    assert is_weekend_force_exit_bar(
+        datetime.fromisoformat("2026-06-20T04:57:00+08:00"),
+        (date(2026, 6, 22),),
+    )
+
+
+def test_weekend_force_exit_is_false_outside_trading_hours() -> None:
+    assert not is_weekend_force_exit_bar(
+        datetime.fromisoformat("2026-06-20T12:00:00+08:00")
+    )
 
 
 def test_position_sizing_direction_signs(strategy_config, fee_config) -> None:

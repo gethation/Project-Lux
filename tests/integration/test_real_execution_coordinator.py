@@ -733,7 +733,7 @@ def test_live_execute_post_trade_reconciliation_match_keeps_open_state(tmp_path)
             decision_snapshot=live_snapshot(),
             decision_spread_type="shortSpread",
             quote_set=None,
-            force_exit=False,
+            force_exit_reason=None,
             qff_symbol=SYMBOL_QFF,
             qff_expiry=None,
         )
@@ -785,7 +785,7 @@ def test_live_execute_post_trade_reconciliation_mismatch_pauses_strategy(
             decision_snapshot=live_snapshot(),
             decision_spread_type="shortSpread",
             quote_set=None,
-            force_exit=False,
+            force_exit_reason=None,
             qff_symbol=SYMBOL_QFF,
             qff_expiry=None,
         )

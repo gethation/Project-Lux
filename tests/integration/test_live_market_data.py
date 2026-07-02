@@ -46,6 +46,7 @@ from lux_trader.runtime.live.contracts import (
     QffContractResolution,
     cancel_entry_pending_for_contract_switch,
     mark_pending_contract_switch_if_needed,
+    resolve_force_exit_reason,
     should_force_exit_for_contract_policy,
     should_switch_contract_before_processing,
 )
@@ -3061,3 +3062,125 @@ def test_contract_policy_force_exit_helper_uses_configured_deadline(tmp_path) ->
         state,
         ts("2026-07-14T13:35:00+08:00"),
     )
+
+
+def test_resolve_force_exit_reason_weekend_requires_open_position(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    weekend_bar = ts("2026-06-20T04:58:00+08:00")  # Friday-night session tail
+    weekday_bar = ts("2026-06-18T11:45:00+08:00")  # ordinary Thursday day session
+    flat = StrategyRuntimeState(state=StrategyState.FLAT)
+    open_far_expiry = StrategyRuntimeState(
+        state=StrategyState.OPEN,
+        position_direction=Direction.SHORT_TSM_LONG_QFF,
+        trading_qff_symbol="QFF202607",
+        trading_qff_expiry="2026-07-15",
+    )
+
+    # A flat strategy is never force-exited, even in the weekend grace window.
+    assert resolve_force_exit_reason(config, flat, weekend_bar) is None
+    # An open position outside the grace window is left alone.
+    assert resolve_force_exit_reason(config, open_far_expiry, weekday_bar) is None
+    # An open position at the Friday session end is flattened for the weekend.
+    assert (
+        resolve_force_exit_reason(config, open_far_expiry, weekend_bar)
+        == "weekend_force_exit"
+    )
+
+
+def test_resolve_force_exit_reason_prefers_expiry_over_weekend(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    weekend_bar = ts("2026-06-20T04:58:00+08:00")
+    # 2026-06-22 (Mon) expiry -> force-exit deadline is the previous business day
+    # (Fri 2026-06-19) 13:35, already past by the weekend bar, so rollover wins.
+    open_near_expiry = StrategyRuntimeState(
+        state=StrategyState.OPEN,
+        position_direction=Direction.SHORT_TSM_LONG_QFF,
+        trading_qff_symbol="QFF202606",
+        trading_qff_expiry="2026-06-22",
+    )
+
+    assert (
+        resolve_force_exit_reason(config, open_near_expiry, weekend_bar)
+        == "rollover_force_exit"
+    )
+
+
+def test_live_dry_run_weekend_force_exit_flattens_before_weekend(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    # Far expiry: the contract-policy rollover must NOT fire, isolating the
+    # weekend/session-end flatten as the only force-exit driver.
+    seed_strategy_state(config, open_position_state(state=StrategyState.OPEN))
+    # Warmup-rebuild inputs: three session minutes inside the Friday-night session
+    # (2026-06-19 17:25 -> 2026-06-20 05:00), just before the live bar at 04:58.
+    warmup_qff = rows(
+        [
+            ("2026-06-20T04:55:00+08:00", 100.0),
+            ("2026-06-20T04:56:00+08:00", 100.0),
+            ("2026-06-20T04:57:00+08:00", 100.0),
+        ]
+    )
+    warmup_tsm = rows(
+        [
+            ("2026-06-20T04:55:00+08:00", 20.0),
+            ("2026-06-20T04:56:00+08:00", 20.0),
+            ("2026-06-20T04:57:00+08:00", 20.0),
+        ]
+    )
+    warmup_usd = rows(
+        [
+            ("2026-06-20T04:55:00+08:00", 25.0),
+            ("2026-06-20T04:56:00+08:00", 25.0),
+            ("2026-06-20T04:57:00+08:00", 25.0),
+        ]
+    )
+    qff, tsm, usd = dry_run_quote_providers(
+        [
+            "2026-06-20T04:58:30+08:00",
+            "2026-06-20T04:58:59+08:00",
+            "2026-06-20T04:59:01+08:00",
+        ],
+        qff_rows=warmup_qff,
+        tsm_rows=warmup_tsm,
+        usd_rows=warmup_usd,
+    )
+
+    result = LiveDryRunRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+        clock=dry_run_clock(
+            [
+                "2026-06-20T04:58:00+08:00",
+                "2026-06-20T04:58:30+08:00",
+                "2026-06-20T04:58:59+08:00",
+                "2026-06-20T04:59:01+08:00",
+                "2026-06-20T04:59:02+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+        reporter=LiveTerminalReporter(io.StringIO(), color=False),
+    ).run(resume=True, max_iterations=3)
+
+    assert result.plans_recorded == 1
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        plan = store.load_latest_execution_plan_payload()
+        assert plan is not None
+        assert plan["plan_type"] == "exit"
+        assert plan["reason"] == "weekend_force_exit"
+        event_types = [
+            row["event_type"]
+            for row in store.connection.execute(
+                "SELECT event_type FROM events ORDER BY event_id"
+            ).fetchall()
+        ]
+        assert "weekend_force_exit" in event_types
+        assert "rollover_force_exit" not in event_types
+        assert count_table(store, "trades") == 1
+        state = store.load_resume_state()
+        assert state is not None
+        assert state.strategy.state == StrategyState.FLAT
+    finally:
+        store.close()

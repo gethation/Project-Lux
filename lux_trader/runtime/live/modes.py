@@ -74,6 +74,23 @@ from lux_trader.core.tradable_spread import TradableSpreadSnapshot, estimate_tra
 from lux_trader.core.time import ensure_taipei
 
 
+# Force-exit reasons that are routed through the coordinator exit path (as opposed
+# to a normal z-score exit). Kept in one place so the exit fill label stays honest.
+FORCE_EXIT_REASONS = ("rollover_force_exit", "weekend_force_exit")
+
+
+def force_exit_report_detail(reason: str) -> str:
+    return "weekend" if reason == "weekend_force_exit" else "expiry_buffer"
+
+
+def force_exit_event_message(reason: str, *, mode_prefix: str = "") -> str:
+    tail = (
+        "forced exit before weekend market break"
+        if reason == "weekend_force_exit"
+        else "forced exit before QFF expiry"
+    )
+    return f"{mode_prefix}{tail}" if mode_prefix else tail
+
 
 @dataclass
 class LiveRuntimeStats:
@@ -149,7 +166,7 @@ class LiveModeHandler:
         decision_snapshot: IndicatorSnapshot,
         decision_spread_type: str | None,
         quote_set: LiveQuoteSet | None,
-        force_exit: bool,
+        force_exit_reason: str | None,
         qff_symbol: str,
         qff_expiry: str | None,
     ) -> LiveModeBarResult:
@@ -176,22 +193,26 @@ class PaperLiveModeHandler(LiveModeHandler):
         decision_snapshot: IndicatorSnapshot,
         decision_spread_type: str | None,
         quote_set: LiveQuoteSet | None,
-        force_exit: bool,
+        force_exit_reason: str | None,
         qff_symbol: str,
         qff_expiry: str | None,
     ) -> LiveModeBarResult:
-        if force_exit:
+        if force_exit_reason is not None:
             result = strategy.force_exit(
                 bar,
                 decision_snapshot,
-                exit_reason="rollover_force_exit",
+                exit_reason=force_exit_reason,
             )
-            reporter.event(bar.timestamp, "force_exit", "expiry_buffer")
+            reporter.event(
+                bar.timestamp,
+                "force_exit",
+                force_exit_report_detail(force_exit_reason),
+            )
             store.record_event(
                 bar.row_index,
                 bar.timestamp,
-                "rollover_force_exit",
-                "forced exit before QFF expiry",
+                force_exit_reason,
+                force_exit_event_message(force_exit_reason),
                 {"qff_symbol": qff_symbol, "qff_expiry": qff_expiry},
             )
             if result is None:
@@ -288,7 +309,7 @@ class DryRunLiveModeHandler(LiveModeHandler):
         decision_snapshot: IndicatorSnapshot,
         decision_spread_type: str | None,
         quote_set: LiveQuoteSet | None,
-        force_exit: bool,
+        force_exit_reason: str | None,
         qff_symbol: str,
         qff_expiry: str | None,
     ) -> LiveModeBarResult:
@@ -297,7 +318,7 @@ class DryRunLiveModeHandler(LiveModeHandler):
 
         plan = None
         outcome = None
-        if force_exit:
+        if force_exit_reason is not None:
             result, plan, outcome = execute_dry_run_exit(
                 strategy,
                 self.coordinator,
@@ -306,15 +327,19 @@ class DryRunLiveModeHandler(LiveModeHandler):
                 decision_spread_type,
                 quote_set,
                 self.config.live_execution.max_plan_age_seconds,
-                plan_reason="rollover_force_exit",
-                exit_reason="rollover_force_exit",
+                plan_reason=force_exit_reason,
+                exit_reason=force_exit_reason,
             )
-            reporter.event(bar.timestamp, "force_exit", "expiry_buffer")
+            reporter.event(
+                bar.timestamp,
+                "force_exit",
+                force_exit_report_detail(force_exit_reason),
+            )
             store.record_event(
                 bar.row_index,
                 bar.timestamp,
-                "rollover_force_exit",
-                "dry-run forced exit intent before QFF expiry",
+                force_exit_reason,
+                force_exit_event_message(force_exit_reason, mode_prefix="dry-run "),
                 {"qff_symbol": qff_symbol, "qff_expiry": qff_expiry},
             )
         elif strategy.state.state == StrategyState.ENTRY_PENDING:
@@ -586,7 +611,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
         decision_snapshot: IndicatorSnapshot,
         decision_spread_type: str | None,
         quote_set: LiveQuoteSet | None,
-        force_exit: bool,
+        force_exit_reason: str | None,
         qff_symbol: str,
         qff_expiry: str | None,
     ) -> LiveModeBarResult:
@@ -595,7 +620,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
 
         plan = None
         outcome = None
-        if force_exit:
+        if force_exit_reason is not None:
             result, plan, outcome = execute_live_exit(
                 strategy,
                 self.coordinator,
@@ -604,15 +629,19 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 decision_spread_type,
                 quote_set,
                 self.config.live_execution.max_plan_age_seconds,
-                plan_reason="rollover_force_exit",
-                exit_reason="rollover_force_exit",
+                plan_reason=force_exit_reason,
+                exit_reason=force_exit_reason,
             )
-            reporter.event(bar.timestamp, "force_exit", "expiry_buffer")
+            reporter.event(
+                bar.timestamp,
+                "force_exit",
+                force_exit_report_detail(force_exit_reason),
+            )
             store.record_event(
                 bar.row_index,
                 bar.timestamp,
-                "rollover_force_exit",
-                "live-execute forced exit before QFF expiry",
+                force_exit_reason,
+                force_exit_event_message(force_exit_reason, mode_prefix="live-execute "),
                 {"qff_symbol": qff_symbol, "qff_expiry": qff_expiry},
             )
         elif strategy.state.state == StrategyState.ENTRY_PENDING:
@@ -956,9 +985,9 @@ def execute_dry_run_exit(
             orders=list(outcome.orders),
             fills=list(outcome.fills),
             exit_reason=exit_reason,
-            reason="dry_run_filled"
-            if exit_reason != "rollover_force_exit"
-            else "rollover_force_exit",
+            reason=exit_reason
+            if exit_reason in FORCE_EXIT_REASONS
+            else "dry_run_filled",
         )
         return result, plan, outcome
 
@@ -1178,9 +1207,9 @@ def execute_live_exit(
             orders=list(outcome.orders),
             fills=list(outcome.fills),
             exit_reason=exit_reason,
-            reason="live_filled"
-            if exit_reason != "rollover_force_exit"
-            else "rollover_force_exit",
+            reason=exit_reason
+            if exit_reason in FORCE_EXIT_REASONS
+            else "live_filled",
         )
         return result, plan, outcome
 

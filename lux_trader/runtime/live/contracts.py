@@ -12,7 +12,7 @@ from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
 from lux_trader.brokers import PaperBroker
 from lux_trader.config import AppConfig
 from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, QffContractSelection
-from lux_trader.core.calendar import live_session_status
+from lux_trader.core.calendar import is_weekend_force_exit_bar, live_session_status
 from lux_trader.execution.intent import (
     ExecutionPlanType,
     PairExecutionPlan,
@@ -251,6 +251,36 @@ def should_force_exit_for_contract_policy(
         timestamp,
         expiry,
     )
+
+
+def should_force_exit_for_weekend(
+    config: AppConfig,
+    state: StrategyRuntimeState,
+    timestamp: datetime,
+) -> bool:
+    # Only an open position is force-closed, mirroring the contract-policy guard so
+    # a flat strategy never routes an exit while flat (which would ERROR the
+    # dry-run / live-execute coordinators).
+    if state.position_direction is None:
+        return False
+    return is_weekend_force_exit_bar(
+        timestamp,
+        config.trading_calendar.closed_dates,
+    )
+
+
+def resolve_force_exit_reason(
+    config: AppConfig,
+    state: StrategyRuntimeState,
+    timestamp: datetime,
+) -> str | None:
+    """The force-exit reason for this bar, or None. Expiry rollover takes
+    precedence over the weekend/session-end flatten."""
+    if should_force_exit_for_contract_policy(config, state, timestamp):
+        return "rollover_force_exit"
+    if should_force_exit_for_weekend(config, state, timestamp):
+        return "weekend_force_exit"
+    return None
 
 
 def switch_to_contract(

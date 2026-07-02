@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import date
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, tzinfo
 
 from .models import MarketBar
 
@@ -12,6 +12,13 @@ DAY_START = 8 * 60 + 45
 DAY_END = 13 * 60 + 45
 NIGHT_START = 17 * 60 + 25
 NIGHT_END = 5 * 60
+
+# How many minutes before a session's nominal end the live loop is still allowed
+# to fire a weekend force-exit. The live minute-bar builder finalizes minute M
+# only when minute M+1 opens, so it never processes the session's final minute;
+# a few minutes of grace guarantees at least one processed bar triggers the exit,
+# and tolerates a short data gap at the very end of the session.
+WEEKEND_FORCE_EXIT_GRACE_MINUTES = 5
 
 
 @dataclass(frozen=True)
@@ -106,6 +113,66 @@ def _is_live_session_trading(timestamp: datetime, closed_dates: set[date]) -> bo
     if in_night_session(timestamp):
         return is_live_business_day(session_start_date(timestamp), closed_dates)
     return False
+
+
+def _at_minute_of_day(day: date, minute: int, tz: tzinfo | None) -> datetime:
+    return datetime.combine(
+        day, time(hour=minute // 60, minute=minute % 60), tzinfo=tz
+    )
+
+
+def session_end_minute(timestamp: datetime) -> datetime | None:
+    """Nominal last minute of the trading session that contains ``timestamp``.
+
+    Day sessions end at 13:45 the same day; night sessions end at 05:00 the next
+    day. Returns None when the timestamp is not on a session clock.
+    """
+    minute = minute_of_day(timestamp)
+    if DAY_START <= minute <= DAY_END:
+        return _at_minute_of_day(timestamp.date(), DAY_END, timestamp.tzinfo)
+    if minute >= NIGHT_START:
+        return _at_minute_of_day(
+            timestamp.date() + timedelta(days=1), NIGHT_END, timestamp.tzinfo
+        )
+    if minute <= NIGHT_END:
+        return _at_minute_of_day(timestamp.date(), NIGHT_END, timestamp.tzinfo)
+    return None
+
+
+def is_weekend_force_exit_bar(
+    timestamp: datetime,
+    closed_dates: Iterable[date] = (),
+    *,
+    grace_minutes: int = WEEKEND_FORCE_EXIT_GRACE_MINUTES,
+) -> bool:
+    """Live equivalent of the PoC ``friday_session_end_force_close`` mask.
+
+    True when ``timestamp`` is a trading minute within ``grace_minutes`` of the end
+    of the last trading session before a market break that crosses into a new ISO
+    week (a weekend, or a weekend extended by a Monday/holiday). The live loop uses
+    this to flatten an open position before QFF is frozen over the weekend while the
+    Binance TSM perpetual keeps trading 24/7 — the uncovered-leg gap risk the PoC
+    strategy always closes out.
+
+    Known limitation: a holiday on the *Friday* itself is not covered, because the
+    live calendar treats the early-morning hours of a closed date as non-trading,
+    so the preceding Thursday-night session's tail is truncated at midnight and the
+    grace window never lands on a processed bar. See the follow-up note in the
+    weekend force-close design.
+    """
+    closed = set(closed_dates)
+    if not _is_live_session_trading(timestamp, closed):
+        return False
+    end = session_end_minute(timestamp)
+    if end is None:
+        return False
+    seconds_to_end = (end - timestamp).total_seconds()
+    if seconds_to_end < 0 or seconds_to_end > grace_minutes * 60:
+        return False
+    next_start = next_trading_session_start(end, closed)
+    current_iso = timestamp.isocalendar()
+    next_iso = next_start.isocalendar()
+    return (current_iso[0], current_iso[1]) != (next_iso[0], next_iso[1])
 
 
 class TradingCalendar:

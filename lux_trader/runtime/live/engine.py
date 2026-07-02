@@ -86,8 +86,8 @@ from lux_trader.runtime.live.contracts import (
     qff_book_is_fresh_for_signal,
     resolve_qff_contract,
     reconnect_qff_provider_if_supported,
+    resolve_force_exit_reason,
     restart_qff_books_if_supported,
-    should_force_exit_for_contract_policy,
     should_switch_contract_before_processing,
     subscribe_qff_books_if_supported,
     switch_to_contract,
@@ -638,7 +638,7 @@ class LiveRuntime:
             decision_snapshot=decision_snapshot,
             decision_spread_type=decision_spread_type,
             quote_set=build_result.quote_set,
-            force_exit=should_force_exit_for_contract_policy(
+            force_exit_reason=resolve_force_exit_reason(
                 self.config,
                 strategy.state,
                 bar.timestamp,
