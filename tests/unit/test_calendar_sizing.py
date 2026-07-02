@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+import pytest
+
 from lux_trader.core.calendar import (
     TradingCalendar,
     is_weekend_force_exit_bar,
     live_session_status,
 )
+from lux_trader.core.fees import fill_costs
 from lux_trader.core.models import Direction, MarketBar
 from lux_trader.core.sizing import size_position_for_direction
 
@@ -177,7 +180,47 @@ def test_position_sizing_direction_signs(strategy_config, fee_config) -> None:
     assert short_tsm is not None
     assert long_tsm is not None
     assert short_tsm.qff_contracts == 40
+    assert short_tsm.tsm_units == pytest.approx(-80.0)
     assert short_tsm.tsm_units < 0
     assert short_tsm.qff_units > 0
+    assert long_tsm.tsm_units == pytest.approx(80.0)
     assert long_tsm.tsm_units > 0
     assert long_tsm.qff_units < 0
+
+
+def test_position_sizing_uses_binance_contract_quantity(strategy_config, fee_config) -> None:
+    sizing = size_position_for_direction(
+        Direction.SHORT_TSM_LONG_QFF,
+        tsm_price=2880.31068,
+        qff_price=2487.5,
+        strategy=replace_strategy_notional(strategy_config, 240_000.0),
+        fees=fee_config,
+    )
+
+    assert sizing is not None
+    assert sizing.qff_contracts == 1
+    assert sizing.actual_leg_notional_twd == pytest.approx(248_750.0)
+    assert sizing.tsm_units == pytest.approx(-17.27244229)
+
+
+def test_tsm_fee_uses_binance_contract_twd_price(fee_config) -> None:
+    costs = fill_costs(
+        tsm_units=-17.27244229,
+        tsm_price=2880.31068,
+        qff_contracts=1,
+        qff_price=2487.5,
+        fees=fee_config,
+    )
+
+    assert costs["tsm_fee_twd"] == pytest.approx(124.375)
+
+
+def replace_strategy_notional(strategy_config, leg_notional_twd: float):
+    return strategy_config.__class__(
+        entry_z=strategy_config.entry_z,
+        exit_z=strategy_config.exit_z,
+        leg_notional_twd=leg_notional_twd,
+        initial_capital_twd=strategy_config.initial_capital_twd,
+        max_entry_delay_minutes=strategy_config.max_entry_delay_minutes,
+        zscore_window=strategy_config.zscore_window,
+    )

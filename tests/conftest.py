@@ -50,6 +50,7 @@ def fee_config() -> FeeConfig:
         qff_fee_per_contract_twd=5.0,
         qff_tax_rate=0.00002,
         qff_contract_multiplier=100.0,
+        tsm_contract_multiplier=5.0,
     )
 
 
@@ -73,6 +74,7 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             qff_fee_per_contract_twd=5.0,
             qff_tax_rate=0.00002,
             qff_contract_multiplier=100.0,
+            tsm_contract_multiplier=5.0,
         ),
         safety=SafetyConfig(
             allow_live_order=False,

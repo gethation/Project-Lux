@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ..config import FeeConfig
 from .sizing import round_half_up_nonnegative
+from .sizing import tsm_contract_twd_price
 
 
 def fill_costs(
@@ -12,7 +13,12 @@ def fill_costs(
     qff_price: float,
     fees: FeeConfig,
 ) -> dict[str, float]:
-    tsm_fee_twd = abs(tsm_units) * tsm_price * fees.tsm_fee_bps / 10000.0
+    tsm_fee_twd = (
+        abs(tsm_units)
+        * tsm_contract_twd_price(tsm_price, fees)
+        * fees.tsm_fee_bps
+        / 10000.0
+    )
     qff_fee_twd = abs(qff_contracts) * fees.qff_fee_per_contract_twd
     qff_tax_per_contract_twd = round_half_up_nonnegative(
         qff_price * fees.qff_contract_multiplier * fees.qff_tax_rate

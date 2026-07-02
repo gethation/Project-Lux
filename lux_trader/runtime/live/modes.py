@@ -901,6 +901,7 @@ def execute_dry_run_entry(
             quote_set,
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
+            tsm_contract_multiplier=strategy.fees.tsm_contract_multiplier,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:
@@ -975,6 +976,7 @@ def execute_dry_run_exit(
             quote_set,
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
+            tsm_contract_multiplier=strategy.fees.tsm_contract_multiplier,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:
@@ -1096,6 +1098,7 @@ def execute_live_entry(
             quote_set,
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
+            tsm_contract_multiplier=strategy.fees.tsm_contract_multiplier,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:
@@ -1197,6 +1200,7 @@ def execute_live_exit(
             quote_set,
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
+            tsm_contract_multiplier=strategy.fees.tsm_contract_multiplier,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:

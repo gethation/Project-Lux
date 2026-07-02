@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from lux_trader.execution import (
     ExecutionOutcome,
     ExecutionOutcomeStatus,
@@ -581,6 +583,9 @@ def test_live_entry_success_applies_strategy_open_position(tmp_path) -> None:
     assert result.action == StrategyAction.ENTRY_FILL
     assert strategy.state.state == StrategyState.OPEN
     assert strategy.state.position_direction == Direction.SHORT_TSM_LONG_QFF
+    tsm_leg = next(leg for leg in plan.legs if leg.broker == BrokerName.BINANCE_TSM)
+    assert tsm_leg.quantity == pytest.approx(1_000_000.0 / (1100.0 * 5.0))
+    assert strategy.state.tsm_units == pytest.approx(-1_000_000.0 / (1100.0 * 5.0))
 
 
 def test_live_entry_uses_actual_fills_for_state_and_exit_quantity(tmp_path) -> None:

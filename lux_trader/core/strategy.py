@@ -20,7 +20,7 @@ from .models import (
     StrategyAction,
     StrategyState,
 )
-from .sizing import size_position_for_direction
+from .sizing import size_position_for_direction, tsm_contract_twd_price
 
 
 def minutes_between(start: datetime, end: datetime) -> int:
@@ -559,7 +559,8 @@ class PairStrategy:
             )
         open_trade = self.state.open_trade
         tsm_pnl = self.state.tsm_units * (
-            bar.tsm_twd_fair - float(open_trade["entry_tsm_twd_fair"])
+            tsm_contract_twd_price(bar.tsm_twd_fair, self.fees)
+            - tsm_contract_twd_price(float(open_trade["entry_tsm_twd_fair"]), self.fees)
         )
         qff_pnl = self.state.qff_units * (
             bar.qff_close_filled - float(open_trade["entry_qff_close"])
@@ -720,7 +721,8 @@ class PairStrategy:
         unrealized = 0.0
         if self.state.position_direction is not None and self.state.entry_tsm is not None and self.state.entry_qff is not None:
             unrealized = self.state.tsm_units * (
-                bar.tsm_twd_fair - self.state.entry_tsm
+                tsm_contract_twd_price(bar.tsm_twd_fair, self.fees)
+                - tsm_contract_twd_price(self.state.entry_tsm, self.fees)
             ) + self.state.qff_units * (bar.qff_close_filled - self.state.entry_qff)
         equity = self.strategy.initial_capital_twd + self.state.realized_pnl + unrealized
         self.state.running_max_equity = max(self.state.running_max_equity, equity)

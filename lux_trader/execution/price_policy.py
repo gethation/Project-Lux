@@ -20,10 +20,18 @@ def apply_live_touch_market_price_policy(
     *,
     max_plan_age_seconds: int | None = None,
     plan_age_seconds: float = 0.0,
+    tsm_contract_multiplier: float = 5.0,
 ) -> PairExecutionPlan:
     return replace(
         plan,
-        legs=tuple(_apply_leg_price_policy(leg, quote_set) for leg in plan.legs),
+        legs=tuple(
+            _apply_leg_price_policy(
+                leg,
+                quote_set,
+                tsm_contract_multiplier=tsm_contract_multiplier,
+            )
+            for leg in plan.legs
+        ),
         order_type=ExecutionOrderType.MARKET.value,
         price_policy=LIVE_TOUCH_MARKET_PRICE_POLICY,
         plan_age_seconds=plan_age_seconds,
@@ -34,9 +42,15 @@ def apply_live_touch_market_price_policy(
 def _apply_leg_price_policy(
     leg: ExecutionLeg,
     quote_set: LiveQuoteSet,
+    *,
+    tsm_contract_multiplier: float,
 ) -> ExecutionLeg:
     if leg.broker == BrokerName.BINANCE_TSM:
-        return _apply_binance_tsm_price_policy(leg, quote_set)
+        return _apply_binance_tsm_price_policy(
+            leg,
+            quote_set,
+            tsm_contract_multiplier=tsm_contract_multiplier,
+        )
     if leg.broker == BrokerName.FUBON_QFF:
         return _apply_qff_price_policy(leg, quote_set.qff)
     return leg
@@ -45,10 +59,24 @@ def _apply_leg_price_policy(
 def _apply_binance_tsm_price_policy(
     leg: ExecutionLeg,
     quote_set: LiveQuoteSet,
+    *,
+    tsm_contract_multiplier: float,
 ) -> ExecutionLeg:
-    trigger_bid = _combined_tsm_twd_price(quote_set.tsm.bid, quote_set.usdttwd.bid)
-    trigger_ask = _combined_tsm_twd_price(quote_set.tsm.ask, quote_set.usdttwd.ask)
-    trigger_mid = _combined_tsm_twd_price(quote_set.tsm.price, quote_set.usdttwd.price)
+    trigger_bid = _combined_tsm_contract_twd_price(
+        quote_set.tsm.bid,
+        quote_set.usdttwd.bid,
+        tsm_contract_multiplier,
+    )
+    trigger_ask = _combined_tsm_contract_twd_price(
+        quote_set.tsm.ask,
+        quote_set.usdttwd.ask,
+        tsm_contract_multiplier,
+    )
+    trigger_mid = _combined_tsm_contract_twd_price(
+        quote_set.tsm.price,
+        quote_set.usdttwd.price,
+        tsm_contract_multiplier,
+    )
     expected = _side_expected_price(
         leg.side,
         bid=trigger_bid,
@@ -65,6 +93,7 @@ def _apply_binance_tsm_price_policy(
         "usdttwd_ask": quote_set.usdttwd.ask,
         "usdttwd_price": quote_set.usdttwd.price,
         "usdttwd_timestamp": quote_set.usdttwd.timestamp,
+        "tsm_contract_multiplier": tsm_contract_multiplier,
         "accounting_price": leg.price,
     }
     return replace(
@@ -128,3 +157,14 @@ def _combined_tsm_twd_price(
     if tsm_price is None or usdttwd_price is None:
         return None
     return tsm_price * usdttwd_price / 5.0
+
+
+def _combined_tsm_contract_twd_price(
+    tsm_price: float | None,
+    usdttwd_price: float | None,
+    multiplier: float,
+) -> float | None:
+    tsm_twd_price = _combined_tsm_twd_price(tsm_price, usdttwd_price)
+    if tsm_twd_price is None:
+        return None
+    return tsm_twd_price * float(multiplier)

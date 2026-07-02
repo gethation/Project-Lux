@@ -103,11 +103,12 @@ def test_short_entry_price_policy_uses_sell_bid_and_buy_ask() -> None:
     assert plan.order_type == "market"
     assert plan.max_plan_age_seconds == 120
     assert plan.plan_age_seconds == 0.0
-    assert tsm.expected_price == 120.0
-    assert tsm.price == 120.0
-    assert tsm.trigger_bid == 120.0
-    assert tsm.trigger_ask == 130.2
+    assert tsm.expected_price == 600.0
+    assert tsm.price == 600.0
+    assert tsm.trigger_bid == 600.0
+    assert tsm.trigger_ask == 651.0
     assert tsm.raw["accounting_price"] == 125.0
+    assert tsm.raw["tsm_contract_multiplier"] == 5.0
     assert qff.expected_price == 101.0
     assert qff.price == 101.0
     assert qff.trigger_bid == 99.0
@@ -124,8 +125,8 @@ def test_long_entry_price_policy_uses_buy_ask_and_sell_bid() -> None:
 
     tsm = leg_by_broker(plan, BrokerName.BINANCE_TSM)
     qff = leg_by_broker(plan, BrokerName.FUBON_QFF)
-    assert tsm.expected_price == 130.2
-    assert tsm.price == 130.2
+    assert tsm.expected_price == 651.0
+    assert tsm.price == 651.0
     assert qff.expected_price == 99.0
     assert qff.price == 99.0
 
@@ -142,4 +143,4 @@ def test_price_policy_plan_validates_and_simulated_fill_uses_expected_price() ->
     outcome = SimulatedExecutionAdapter().execute(validated)
 
     assert validated.status == ExecutionPlanStatus.VALIDATED
-    assert {fill.price for fill in outcome.fills} == {120.0, 101.0}
+    assert {fill.price for fill in outcome.fills} == {600.0, 101.0}

@@ -18,6 +18,7 @@ tsm_fee_bps = 5.0
 qff_fee_per_contract_twd = 5.0
 qff_tax_rate = 0.00002
 qff_contract_multiplier = 100.0
+tsm_contract_multiplier = 5.0
 
 [safety]
 allow_live_order = false

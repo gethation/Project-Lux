@@ -1907,7 +1907,7 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
             FixedPositionReadOnlyBroker(
                 broker=BrokerName.BINANCE_TSM,
                 symbol="TSM/USDT:USDT",
-                quantity=-(1_000_000.0 / 120.0),
+                quantity=-(1_000_000.0 / (120.0 * 5.0)),
                 fetched_at=ts("2026-06-18T08:47:01+08:00"),
             ),
         ),
@@ -1999,7 +1999,7 @@ def _run_live_execute_entry_to_open(config) -> None:
         binance_adapter=FakeLiveExecutionAdapter(BrokerName.BINANCE_TSM),
         readonly_brokers=_live_execute_resume_brokers(
             qff_quantity=100.0,
-            tsm_quantity=-(1_000_000.0 / 120.0),
+            tsm_quantity=-(1_000_000.0 / (120.0 * 5.0)),
             at="2026-06-18T08:47:01+08:00",
         ),
         clock=dry_run_clock(
@@ -2080,7 +2080,7 @@ def test_live_execute_resume_keeps_open_when_broker_matches(
         config,
         readonly=_live_execute_resume_brokers(
             qff_quantity=100.0,
-            tsm_quantity=-(1_000_000.0 / 120.0),
+            tsm_quantity=-(1_000_000.0 / (120.0 * 5.0)),
             at="2026-06-18T08:47:30+08:00",
         ),
     )
@@ -2150,7 +2150,7 @@ def test_live_execute_resume_pauses_when_broker_unreachable(
             FixedPositionReadOnlyBroker(
                 broker=BrokerName.BINANCE_TSM,
                 symbol="TSM/USDT:USDT",
-                quantity=-(1_000_000.0 / 120.0),
+                quantity=-(1_000_000.0 / (120.0 * 5.0)),
                 fetched_at=ts("2026-06-18T08:47:30+08:00"),
             ),
         ),

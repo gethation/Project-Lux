@@ -29,7 +29,7 @@ def size_position_for_direction(
     actual_leg_notional_twd = (
         qff_contract_count * fees.qff_contract_multiplier * qff_price
     )
-    tsm_units = actual_leg_notional_twd / tsm_price
+    tsm_units = actual_leg_notional_twd / tsm_contract_twd_price(tsm_price, fees)
     qff_units = qff_contract_count * fees.qff_contract_multiplier
 
     if direction == Direction.SHORT_TSM_LONG_QFF:
@@ -47,3 +47,10 @@ def size_position_for_direction(
         raw_qff_contracts=raw_qff_contracts,
         actual_leg_notional_twd=actual_leg_notional_twd,
     )
+
+
+def tsm_contract_twd_price(tsm_twd_fair: float, fees: FeeConfig) -> float:
+    multiplier = float(fees.tsm_contract_multiplier)
+    if multiplier <= 0:
+        raise ValueError(f"Expected a positive TSM contract multiplier, got {multiplier}")
+    return tsm_twd_fair * multiplier

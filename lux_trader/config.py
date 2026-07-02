@@ -25,6 +25,7 @@ class FeeConfig:
     qff_fee_per_contract_twd: float
     qff_tax_rate: float
     qff_contract_multiplier: float
+    tsm_contract_multiplier: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,7 @@ def load_config(path: Path) -> AppConfig:
             qff_fee_per_contract_twd=float(fees.get("qff_fee_per_contract_twd", 5.0)),
             qff_tax_rate=float(fees.get("qff_tax_rate", 0.00002)),
             qff_contract_multiplier=float(fees.get("qff_contract_multiplier", 100.0)),
+            tsm_contract_multiplier=float(fees.get("tsm_contract_multiplier", 5.0)),
         ),
         safety=SafetyConfig(
             allow_live_order=bool(safety.get("allow_live_order", False)),

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from lux_trader.brokers import PaperBroker
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.core.models import (
@@ -65,6 +67,10 @@ def test_strategy_entry_open_exit_cycle(strategy_config, fee_config) -> None:
     assert result2.action == StrategyAction.EXIT_SIGNAL
     assert result3.action == StrategyAction.EXIT_FILL
     assert result3.trade is not None
+    assert result3.trade["tsm_units"] == pytest.approx(-1_000_000.0 / (101.0 * 5.0))
+    assert result3.trade["tsm_pnl"] == pytest.approx(
+        (-1_000_000.0 / (101.0 * 5.0)) * ((103.0 - 101.0) * 5.0)
+    )
     assert strategy.state.state == StrategyState.FLAT
 
 
