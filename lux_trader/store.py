@@ -534,6 +534,33 @@ class SQLiteStore:
             for index, (timestamp, row) in enumerate(ordered)
         ]
 
+    def load_latest_qff_close_filled(self, *, qff_symbol: str | None = None) -> float | None:
+        warmup_where = ""
+        warmup_params: tuple[Any, ...] = ()
+        bars_where = ""
+        bars_params: tuple[Any, ...] = ()
+        if qff_symbol is not None:
+            warmup_where = "WHERE qff_symbol = ?"
+            warmup_params = (qff_symbol,)
+            bars_where = "WHERE qff_symbol = ?"
+            bars_params = (qff_symbol,)
+        rows = self.connection.execute(
+            f"""
+            SELECT qff_close_filled
+            FROM (
+                SELECT timestamp, qff_close_filled FROM warmup_bars {warmup_where}
+                UNION ALL
+                SELECT timestamp, qff_close_filled FROM bars {bars_where}
+            )
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (*warmup_params, *bars_params),
+        ).fetchone()
+        if rows is None or rows["qff_close_filled"] is None:
+            return None
+        return float(rows["qff_close_filled"])
+
     def start_live_run(
         self,
         *,
@@ -585,6 +612,48 @@ class SQLiteStore:
 
     def load_latest_reconciliation_report(self) -> ReconciliationReport | None:
         return ReconciliationStore(self.connection).load_latest_report()
+
+    def record_margin_check(self, decision: Any) -> int:
+        cursor = self.connection.execute(
+            """
+            INSERT INTO margin_checks (
+                checked_at, check_type,
+                binance_equity, binance_maint_margin, binance_ratio,
+                fubon_equity, fubon_maint_margin, fubon_ratio,
+                usdttwd_rate, level, transfer_amount_twd, transfer_direction,
+                guidance, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                timestamp_text(decision.checked_at),
+                decision.check_type,
+                decision.binance.equity_twd,
+                decision.binance.maint_margin_twd,
+                decision.binance.ratio,
+                decision.fubon.equity_twd,
+                decision.fubon.maint_margin_twd,
+                decision.fubon.ratio,
+                decision.usdttwd_rate,
+                decision.level,
+                decision.transfer_amount_twd,
+                decision.transfer_direction,
+                decision.guidance,
+                json.dumps(decision.payload, default=json_default),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    def load_last_margin_check(
+        self, check_type: str | None = None
+    ) -> dict[str, Any] | None:
+        query = "SELECT * FROM margin_checks"
+        params: tuple[Any, ...] = ()
+        if check_type is not None:
+            query += " WHERE check_type = ?"
+            params = (check_type,)
+        query += " ORDER BY check_id DESC LIMIT 1"
+        row = self.connection.execute(query, params).fetchone()
+        return dict(row) if row is not None else None
 
     def record_execution_plan(self, plan: PairExecutionPlan) -> None:
         ExecutionStore(self.connection).record_plan(plan)
@@ -693,6 +762,7 @@ class SQLiteStore:
                 "exit_z": strategy.exit_z,
                 "zscore_window": strategy.zscore_window,
                 "leg_notional_twd": strategy.leg_notional_twd,
+                "qff_lots": strategy.qff_lots,
                 "initial_capital_twd": strategy.initial_capital_twd,
                 "max_entry_delay_minutes": strategy.max_entry_delay_minutes,
                 "tsm_fee_bps": fees.tsm_fee_bps,

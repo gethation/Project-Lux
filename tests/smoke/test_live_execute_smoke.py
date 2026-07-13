@@ -1,40 +1,53 @@
-"""M6 minimal live-execute acceptance — SENDS TINY REAL TWO-LEG ORDERS.
+"""M6 execution-channel smoke — SENDS TINY REAL TWO-LEG ORDERS.
 
 Skipped by default. It runs only when every live-order env gate is set AND the
 gitignored configs/config.live.exec.smoke.local.toml exists with
-allow_live_order=true. Run it attended, with minimal sizing (~1 QFF lot). See
-docs/M6_LIVE_EXECUTE_ACCEPTANCE.md for the full runbook and the manual recovery
-steps if it stops with an open position.
+allow_live_order=true and [live_execution_smoke] enabled=true.
+
+This test intentionally bypasses live warmup/signal generation. M6 validates the
+execution channel only: Fubon TMF 1 lot + Binance TSM 0.1 unit entry, then the
+matching exit, with read-only reconciliation after each stage.
 """
 from __future__ import annotations
 
-import io
+import json
 import os
 import sqlite3
-from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from lux_trader.config import AppConfig, load_config
-from lux_trader.core.indicator import IndicatorEngine
-from lux_trader.core.models import Direction, StrategyState
+from lux_trader.core.models import BrokerName, Direction, OrderSide, StrategyState
 from lux_trader.core.strategy import StrategyRuntimeState
 from lux_trader.core.time import TAIPEI_TZ
+from lux_trader.execution.intent import (
+    ExecutionLeg,
+    ExecutionOrderType,
+    ExecutionPlanType,
+    PairExecutionPlan,
+    make_execution_plan_id,
+)
+from lux_trader.execution.outcome import ExecutionOutcome
+from lux_trader.execution.real_coordinator import RealExecutionCoordinator
+from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
 from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
+from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
-from lux_trader.market_data import floor_minute
-from lux_trader.reconciliation import BrokerReconciler, ReconciliationStatus
-from lux_trader.runtime.live import LiveExecuteRunner
+from lux_trader.reconciliation import ReconciliationStatus
+from lux_trader.reconciliation.post_trade import PostTradeReconciler
 from lux_trader.store import SQLiteStore
-from lux_trader.terminal_ui import LiveTerminalReporter
 
 
 EXEC_SMOKE_CONFIG = Path("configs/config.live.exec.smoke.local.toml")
+SMOKE_FUBON_SYMBOL = "TMFG6"
+SMOKE_FUBON_LOTS = 1.0
+SMOKE_TSM_UNITS = 0.1
+SMOKE_DIRECTION = Direction.SHORT_TSM_LONG_QFF
 
 REQUIRED_ENV_GATES = (
-    "LUX_LIVE_MARKETDATA",
     "LUX_READONLY_BROKER",
     "PROJECT_LUX_ALLOW_LIVE_ORDER",
     "FUBON_ALLOW_LIVE_ORDER",
@@ -42,7 +55,6 @@ REQUIRED_ENV_GATES = (
 )
 
 pytestmark = [
-    pytest.mark.live_marketdata,
     pytest.mark.readonly_broker,
     pytest.mark.live_execute_smoke,
 ]
@@ -51,18 +63,25 @@ pytestmark = [
 def load_exec_smoke_config() -> AppConfig:
     for gate in REQUIRED_ENV_GATES:
         if os.getenv(gate, "").strip() != "1":
-            pytest.skip(f"Set {gate}=1 to run the live-execute smoke (SENDS REAL ORDERS)")
+            pytest.skip(f"Set {gate}=1 to run M6 execution smoke (SENDS REAL ORDERS)")
     if not EXEC_SMOKE_CONFIG.exists():
         pytest.skip(f"Exec smoke config does not exist: {EXEC_SMOKE_CONFIG}")
     config = load_config(EXEC_SMOKE_CONFIG)
     if not config.safety.allow_live_order:
-        pytest.skip("live-execute smoke requires allow_live_order=true in the config")
+        pytest.skip("M6 execution smoke requires allow_live_order=true")
     if not config.live_execution.enabled:
-        pytest.skip("live-execute smoke requires [live_execution] enabled=true")
-    return replace(
-        config,
-        store_path=config.store_path.parent / "live_execute_smoke.sqlite3",
-    )
+        pytest.skip("M6 execution smoke requires [live_execution] enabled=true")
+    if not config.live_execution_smoke.enabled:
+        pytest.skip("M6 execution smoke requires [live_execution_smoke] enabled=true")
+    if not config.live_execution.qff_first:
+        pytest.skip("M6 execution smoke requires live_execution.qff_first=true")
+
+    smoke = config.live_execution_smoke
+    assert smoke.fubon_symbol == SMOKE_FUBON_SYMBOL
+    assert smoke.fubon_lots == int(SMOKE_FUBON_LOTS)
+    assert smoke.tsm_units == pytest.approx(SMOKE_TSM_UNITS)
+    assert smoke.binance_symbol == config.live.binance_symbol
+    return config
 
 
 def remove_sqlite_family(path: Path) -> None:
@@ -71,189 +90,326 @@ def remove_sqlite_family(path: Path) -> None:
             target.unlink()
 
 
-def seed_pending_entry_state(config: AppConfig) -> StrategyRuntimeState:
-    candidate_time = floor_minute(datetime.now(TAIPEI_TZ))
-    state = StrategyRuntimeState(
-        state=StrategyState.ENTRY_PENDING,
-        candidate_direction=Direction.SHORT_TSM_LONG_QFF,
-        candidate_idx=0,
-        candidate_time=candidate_time,
-        candidate_zscore=config.strategy.entry_z + 0.5,
-        running_max_equity=config.strategy.initial_capital_twd,
-    )
-    store = SQLiteStore(config.store_path)
-    try:
-        store.initialize()
-        store.save_state(0, candidate_time, state, IndicatorEngine(window=config.strategy.zscore_window))
-        store.commit()
-    finally:
-        store.close()
-    return state
-
-
-def seed_pending_exit_state(config: AppConfig) -> None:
-    signal_time = floor_minute(datetime.now(TAIPEI_TZ))
-    store = SQLiteStore(config.store_path)
-    try:
-        store.initialize()
-        resume_state = store.load_resume_state()
-        assert resume_state is not None
-        assert resume_state.strategy.state == StrategyState.OPEN
-        state = resume_state.strategy
-        state.state = StrategyState.EXIT_PENDING
-        state.exit_signal_idx = resume_state.row_index
-        state.exit_signal_time = signal_time
-        state.exit_signal_zscore = 0.0
-        store.save_state(resume_state.row_index, signal_time, state, resume_state.indicator)
-        store.commit()
-    finally:
-        store.close()
-
-
-def real_readonly_brokers(config: AppConfig):
-    return (
-        BinanceReadOnlyBroker(config.live.binance_symbol, config.live.fubon_env_path),
-        FubonReadOnlyBroker(config.live.fubon_env_path),
-    )
-
-
-def record_flat_account_reconciliation(config: AppConfig, state: StrategyRuntimeState) -> None:
-    """Baseline reconciliation before trading. With a flat (ENTRY_PENDING) strategy
-    this asserts the broker account is flat, so the acceptance never starts on top
-    of an existing position."""
-    brokers = real_readonly_brokers(config)
-    try:
-        report = BrokerReconciler(
-            tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
-            qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
-        ).reconcile(
-            strategy_state=state,
-            brokers=brokers,
-            tsm_symbol=config.live.binance_symbol,
-            qff_symbol=config.live.qff_symbol,
-        )
-    finally:
-        for broker in brokers:
-            broker.close()
-    assert report.status == ReconciliationStatus.MATCHED, (
-        "Account is not flat before the acceptance: "
-        + str([issue.to_jsonable() if hasattr(issue, "to_jsonable") else str(issue) for issue in report.issues])
-    )
-    store = SQLiteStore(config.store_path)
-    try:
-        store.initialize()
-        store.record_reconciliation_report(report)
-        store.commit()
-    finally:
-        store.close()
-
-
-def assert_brokers_flat(config: AppConfig) -> None:
-    brokers = real_readonly_brokers(config)
-    try:
-        for broker in brokers:
-            snapshot = broker.fetch_snapshot()
-            open_positions = [p for p in snapshot.positions if abs(p.quantity) > 1e-9]
-            assert not open_positions, f"{snapshot.broker.value} still holds a position: {open_positions}"
-            assert not snapshot.open_orders, f"{snapshot.broker.value} still has open orders: {snapshot.open_orders}"
-    finally:
-        for broker in brokers:
-            broker.close()
-
-
-def dryrun_order_count(connection: sqlite3.Connection) -> int:
-    return connection.execute("SELECT COUNT(*) FROM orders WHERE order_id LIKE 'DRYRUN-%'").fetchone()[0]
-
-
-def strategy_state_json(connection: sqlite3.Connection) -> str:
-    return connection.execute("SELECT state_json FROM strategy_state WHERE id = 1").fetchone()[0]
-
-
 def print_m6_stage(message: str) -> None:
     print(f"[M6] {message}", flush=True)
 
 
+def smoke_readonly_brokers(config: AppConfig):
+    smoke = config.live_execution_smoke
+    return (
+        FubonReadOnlyBroker(config.live.fubon_env_path, symbol=smoke.fubon_symbol),
+        BinanceReadOnlyBroker(smoke.binance_symbol, config.live.fubon_env_path),
+    )
+
+
+def close_all(resources: tuple[Any, ...]) -> None:
+    for resource in resources:
+        close = getattr(resource, "close", None)
+        if callable(close):
+            close()
+
+
+def smoke_state(config: AppConfig, *, open_position: bool) -> StrategyRuntimeState:
+    smoke = config.live_execution_smoke
+    if not open_position:
+        return StrategyRuntimeState(
+            state=StrategyState.FLAT,
+            trading_qff_symbol=smoke.fubon_symbol,
+            trading_qff_expiry=smoke.qff_expiry,
+            contract_policy_state="active",
+        )
+    return StrategyRuntimeState(
+        state=StrategyState.OPEN,
+        position_direction=SMOKE_DIRECTION,
+        tsm_units=-float(smoke.tsm_units),
+        qff_units=float(smoke.fubon_lots),
+        qff_contracts=int(smoke.fubon_lots),
+        trading_qff_symbol=smoke.fubon_symbol,
+        trading_qff_expiry=smoke.qff_expiry,
+        contract_policy_state="active",
+    )
+
+
+def record_reconciliation(
+    config: AppConfig,
+    store: SQLiteStore,
+    *,
+    state: StrategyRuntimeState,
+    label: str,
+) -> None:
+    brokers = smoke_readonly_brokers(config)
+    try:
+        report = PostTradeReconciler(
+            tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
+            qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
+        ).reconcile(
+            store=store,
+            strategy_state=state,
+            brokers=brokers,
+            tsm_symbol=config.live_execution_smoke.binance_symbol,
+            qff_symbol=config.live_execution_smoke.fubon_symbol,
+            timestamp=datetime.now(TAIPEI_TZ),
+        )
+    finally:
+        close_all(brokers)
+    store.record_reconciliation_report(report)
+    store.commit()
+    print_m6_stage(
+        f"{label} read-only reconciliation status={report.status.value} "
+        f"issues={len(report.issues)}"
+    )
+    assert report.status == ReconciliationStatus.MATCHED, (
+        f"{label} reconciliation failed: "
+        + str([issue.to_jsonable() if hasattr(issue, "to_jsonable") else str(issue) for issue in report.issues])
+    )
+
+
+def build_smoke_plan(
+    config: AppConfig,
+    *,
+    plan_type: ExecutionPlanType,
+    row_index: int,
+) -> PairExecutionPlan:
+    smoke = config.live_execution_smoke
+    timestamp = datetime.now(TAIPEI_TZ)
+    if plan_type == ExecutionPlanType.ENTRY:
+        fubon_side = OrderSide.BUY
+        binance_side = OrderSide.SELL
+    else:
+        fubon_side = OrderSide.SELL
+        binance_side = OrderSide.BUY
+    common = {
+        "timestamp": timestamp,
+        "row_index": row_index,
+        "qff_expiry": smoke.qff_expiry,
+        "contract_policy_state": "active",
+        "order_type": ExecutionOrderType.MARKET.value,
+        "expected_price": 1.0,
+        "price_source": "m6_execution_smoke_placeholder",
+        "raw": {"source": "m6_execution_smoke"},
+    }
+    legs = (
+        ExecutionLeg(
+            broker=BrokerName.FUBON_QFF,
+            symbol=smoke.fubon_symbol,
+            side=fubon_side,
+            quantity=float(smoke.fubon_lots),
+            price=1.0,
+            qff_symbol=smoke.fubon_symbol,
+            **common,
+        ),
+        ExecutionLeg(
+            broker=BrokerName.BINANCE_TSM,
+            symbol=smoke.binance_symbol,
+            side=binance_side,
+            quantity=float(smoke.tsm_units),
+            price=1.0,
+            qff_symbol=smoke.fubon_symbol,
+            **common,
+        ),
+    )
+    return PairExecutionPlan(
+        plan_id=make_execution_plan_id(
+            plan_type=plan_type,
+            direction=SMOKE_DIRECTION,
+            timestamp=timestamp,
+            row_index=row_index,
+        ),
+        plan_type=plan_type,
+        direction=SMOKE_DIRECTION,
+        timestamp=timestamp,
+        row_index=row_index,
+        legs=legs,
+        reason=f"m6_execution_smoke_{plan_type.value}",
+        qff_symbol=smoke.fubon_symbol,
+        qff_expiry=smoke.qff_expiry,
+        contract_policy_state="active",
+        order_type=ExecutionOrderType.MARKET.value,
+        price_policy="m6_execution_smoke_market",
+        plan_age_seconds=0.0,
+        max_plan_age_seconds=config.live_execution.max_plan_age_seconds,
+    )
+
+
+def execute_smoke_plan(
+    store: SQLiteStore,
+    coordinator: RealExecutionCoordinator,
+    plan: PairExecutionPlan,
+) -> ExecutionOutcome:
+    _, outcome = coordinator.execute(plan)
+    for order in outcome.orders:
+        store.record_order(order)
+    for fill in outcome.fills:
+        store.record_fill(fill)
+    store.commit()
+    print_m6_stage(
+        f"{plan.plan_type.value} execution status={outcome.status.value} "
+        f"message={outcome.message}"
+    )
+    if not outcome.filled:
+        print_m6_stage(json.dumps(outcome.to_jsonable(), ensure_ascii=False, default=str))
+        pytest.fail(f"{plan.plan_type.value} execution did not fill: {outcome.status.value}")
+    return outcome
+
+
+def dryrun_order_count(connection: sqlite3.Connection) -> int:
+    return connection.execute(
+        "SELECT COUNT(*) FROM orders WHERE order_id LIKE 'DRYRUN-%'"
+    ).fetchone()[0]
+
+
+def latest_plan_legs(
+    connection: sqlite3.Connection,
+    plan_type: str,
+) -> dict[str, dict[str, object]]:
+    rows = connection.execute(
+        """
+        SELECT broker, symbol, side, quantity
+        FROM execution_legs
+        WHERE plan_id = (
+            SELECT plan_id
+            FROM execution_plans
+            WHERE plan_type = ?
+            ORDER BY timestamp DESC, row_index DESC, plan_id DESC
+            LIMIT 1
+        )
+        """,
+        (plan_type,),
+    ).fetchall()
+    return {
+        str(row[0]): {
+            "symbol": row[1],
+            "side": row[2],
+            "quantity": float(row[3]),
+        }
+        for row in rows
+    }
+
+
+def assert_smoke_quantities(
+    connection: sqlite3.Connection,
+    plan_type: str,
+) -> None:
+    legs = latest_plan_legs(connection, plan_type)
+    fubon_leg = legs["FUBON_QFF"]
+    binance_leg = legs["BINANCE_TSM"]
+    assert fubon_leg["symbol"] == SMOKE_FUBON_SYMBOL
+    assert fubon_leg["quantity"] == pytest.approx(SMOKE_FUBON_LOTS)
+    assert binance_leg["quantity"] == pytest.approx(SMOKE_TSM_UNITS)
+
+
+def latest_outcome_payload(connection: sqlite3.Connection, plan_type: str) -> dict:
+    row = connection.execute(
+        """
+        SELECT outcome.payload_json
+        FROM execution_outcomes AS outcome
+        JOIN execution_plans AS plan ON plan.plan_id = outcome.plan_id
+        WHERE plan.plan_type = ?
+        ORDER BY outcome.outcome_id DESC
+        LIMIT 1
+        """,
+        (plan_type,),
+    ).fetchone()
+    assert row is not None
+    return json.loads(row[0])
+
+
+def assert_and_print_leg_timing_gap(
+    connection: sqlite3.Connection,
+    plan_type: str,
+) -> None:
+    outcome = latest_outcome_payload(connection, plan_type)
+    gap = (outcome.get("payload") or {}).get("primary_leg_timing_gap")
+    assert gap is not None, f"{plan_type} outcome did not record leg timing gap"
+    assert gap["submit_start_gap_seconds"] is not None
+    print_m6_stage(
+        f"{plan_type} leg timing "
+        f"submit_start_gap={float(gap['submit_start_gap_seconds']):.3f}s "
+        f"submit_handoff_gap={float(gap['submit_handoff_gap_seconds']):.3f}s"
+    )
+
+
+def assert_store_smoke_results(config: AppConfig, *, plan_type: str) -> None:
+    connection = sqlite3.connect(config.store_path)
+    try:
+        assert dryrun_order_count(connection) == 0
+        assert_smoke_quantities(connection, plan_type)
+        assert_and_print_leg_timing_gap(connection, plan_type)
+    finally:
+        connection.close()
+
+
 def test_real_live_execute_entry_and_exit_returns_flat() -> None:
     config = load_exec_smoke_config()
+    smoke = config.live_execution_smoke
     print_m6_stage(f"config loaded store_path={config.store_path}")
+    print_m6_stage(
+        "smoke quantities "
+        f"fubon_symbol={smoke.fubon_symbol} "
+        f"fubon_lots={smoke.fubon_lots:g} "
+        f"tsm_symbol={smoke.binance_symbol} "
+        f"tsm_units={smoke.tsm_units:g}"
+    )
     remove_sqlite_family(config.store_path)
     print_m6_stage("sqlite store reset")
 
-    state = seed_pending_entry_state(config)
-    print_m6_stage(
-        f"pending entry state seeded direction={state.candidate_direction.value}"
+    store = SQLiteStore(config.store_path)
+    binance_adapter = BinanceTsmExecutionAdapter(
+        smoke.binance_symbol,
+        config.live.fubon_env_path,
+        leverage=config.binance_execution.leverage,
+        margin_mode=config.binance_execution.margin_mode,
+        enforce_leverage=config.binance_execution.enforce_leverage,
     )
-    record_flat_account_reconciliation(config, state)
-    print_m6_stage("pre-entry read-only reconciliation matched")
-
-    # --- real two-leg entry ---
-    entry_output = io.StringIO()
-    entry_result = LiveExecuteRunner(
-        config, reporter=LiveTerminalReporter(entry_output, color=False)
-    ).run(resume=True, max_iterations=130)
-    print_m6_stage(
-        "entry runner finished "
-        f"iterations={entry_result.iterations} "
-        f"bars_processed={entry_result.bars_processed} "
-        f"plans_recorded={entry_result.plans_recorded} "
-        f"qff_symbol={entry_result.qff_symbol}"
+    fubon_adapter = FubonFutureExecutionAdapter(
+        smoke.fubon_symbol,
+        config.live.fubon_env_path,
     )
-
-    assert entry_result.plans_recorded >= 1
-    entry_text = entry_output.getvalue()
-    assert "live_execution filled" in entry_text
-    assert "post_trade_reconciliation matched" in entry_text
-
-    connection = sqlite3.connect(config.store_path)
     try:
-        dryrun_orders = dryrun_order_count(connection)
-        order_count = connection.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
-        fill_count = connection.execute("SELECT COUNT(*) FROM fills").fetchone()[0]
-        assert dryrun_orders == 0, "live-execute must send real, not DRYRUN, orders"
-        assert order_count >= 2
-        assert fill_count >= 2
-        latest_outcome = connection.execute(
-            "SELECT status FROM execution_outcomes ORDER BY outcome_id DESC LIMIT 1"
-        ).fetchone()
-        assert latest_outcome == ("filled",)
-        assert '"state": "open"' in strategy_state_json(connection)
+        store.initialize()
+        record_reconciliation(
+            config,
+            store,
+            state=smoke_state(config, open_position=False),
+            label="pre-entry flat",
+        )
+
+        coordinator = RealExecutionCoordinator(
+            store=store,
+            binance_adapter=binance_adapter,
+            fubon_adapter=fubon_adapter,
+            qff_first=config.live_execution.qff_first,
+        )
+
+        entry_plan = build_smoke_plan(
+            config,
+            plan_type=ExecutionPlanType.ENTRY,
+            row_index=0,
+        )
+        execute_smoke_plan(store, coordinator, entry_plan)
+        assert_store_smoke_results(config, plan_type="entry")
+        record_reconciliation(
+            config,
+            store,
+            state=smoke_state(config, open_position=True),
+            label="post-entry open",
+        )
+
+        exit_plan = build_smoke_plan(
+            config,
+            plan_type=ExecutionPlanType.EXIT,
+            row_index=1,
+        )
+        execute_smoke_plan(store, coordinator, exit_plan)
+        assert_store_smoke_results(config, plan_type="exit")
+        record_reconciliation(
+            config,
+            store,
+            state=smoke_state(config, open_position=False),
+            label="post-exit flat",
+        )
     finally:
-        connection.close()
-    print_m6_stage(
-        f"entry verified real_orders={order_count} fills={fill_count} "
-        "latest_outcome=filled state=open"
-    )
+        close_all((binance_adapter, fubon_adapter))
+        store.close()
 
-    # --- real two-leg exit ---
-    seed_pending_exit_state(config)
-    print_m6_stage("pending exit state seeded")
-    exit_output = io.StringIO()
-    exit_result = LiveExecuteRunner(
-        config, reporter=LiveTerminalReporter(exit_output, color=False)
-    ).run(resume=True, max_iterations=70)
-    print_m6_stage(
-        "exit runner finished "
-        f"iterations={exit_result.iterations} "
-        f"bars_processed={exit_result.bars_processed} "
-        f"plans_recorded={exit_result.plans_recorded} "
-        f"qff_symbol={exit_result.qff_symbol}"
-    )
-
-    exit_text = exit_output.getvalue()
-    assert "live_execution filled" in exit_text
-    assert "post_trade_reconciliation matched" in exit_text
-
-    connection = sqlite3.connect(config.store_path)
-    try:
-        dryrun_orders = dryrun_order_count(connection)
-        trade_count = connection.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
-        assert dryrun_orders == 0
-        assert trade_count == 1
-        assert '"state": "flat"' in strategy_state_json(connection)
-    finally:
-        connection.close()
-    print_m6_stage(f"exit verified trades={trade_count} state=flat")
-
-    # --- final safety: the broker account must be flat again ---
-    assert_brokers_flat(config)
-    print_m6_stage("final broker flat check passed")
+    print_m6_stage("final broker flat reconciliation passed")

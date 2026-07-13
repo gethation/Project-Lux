@@ -3,7 +3,24 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from lux_trader.execution.simulation import ExecutionSimulationScenario
+
+def add_ui_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--ui",
+        choices=("dashboard", "compact"),
+        default="compact",
+        help="Live terminal UI style (default: compact; dashboard = rich panels)",
+    )
+    parser.add_argument(
+        "--quiet-ui",
+        action="store_true",
+        help="Disable live terminal UI and print only the final summary",
+    )
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Keep live terminal UI but disable colors",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -16,55 +33,52 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--resume", action="store_true")
     replay.add_argument("--reset-store", action="store_true")
 
-    summary = subparsers.add_parser("summary", help="Print SQLite replay summary")
+    summary = subparsers.add_parser(
+        "summary",
+        help="Print SQLite replay summary (or execution summary with --execution)",
+    )
     summary.add_argument("--config", type=Path, required=True)
+    summary.add_argument(
+        "--execution",
+        action="store_true",
+        help="Print the execution plan/outcome summary instead of the replay summary",
+    )
 
-    doctor = subparsers.add_parser("doctor", help="Check MVP configuration")
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Check configuration (replay by default; --mode live/order for "
+        "live market data / live-order gate checks)",
+    )
     doctor.add_argument("--config", type=Path, required=True)
-
-    broker_doctor = subparsers.add_parser(
-        "broker-doctor",
-        help="Check read-only broker reconciliation skeleton config",
+    doctor.add_argument(
+        "--mode",
+        choices=("replay", "live", "order"),
+        default="replay",
+        help="Which checks to run (live touches real market data only with "
+        "LUX_LIVE_MARKETDATA=1; order prints the live execution gate report)",
     )
-    broker_doctor.add_argument("--config", type=Path, required=True)
 
-    fubon_account_funds = subparsers.add_parser(
-        "fubon-account-funds",
-        help="Print Fubon futures account margin/equity using read-only API",
+    live_dry_run = subparsers.add_parser(
+        "live-dry-run",
+        help="Run the full live rehearsal with a simulated execution adapter",
     )
-    fubon_account_funds.add_argument("--config", type=Path, required=True)
-    fubon_account_funds.add_argument(
-        "--raw-json",
+    live_dry_run.add_argument("--config", type=Path, required=True)
+    live_dry_run.add_argument("--resume", action="store_true")
+    live_dry_run.add_argument("--reset-store", action="store_true")
+    live_dry_run.add_argument("--max-iterations", type=int)
+    live_dry_run.add_argument(
+        "--skip-warmup",
         action="store_true",
-        help="Print raw Fubon margin rows for field-level audit",
+        help="Require existing warmup seed bars instead of auto-building them",
     )
+    add_ui_arguments(live_dry_run)
 
-    fubon_order_records = subparsers.add_parser(
-        "fubon-order-records",
-        help="Print Fubon futures position, open orders, and order records read-only",
+    live_status = subparsers.add_parser(
+        "live-status",
+        help="Print persisted strategy state, position, and latest reconciliation "
+        "(read-only)",
     )
-    fubon_order_records.add_argument("--config", type=Path, required=True)
-    fubon_order_records.add_argument("--symbol", required=True)
-    fubon_order_records.add_argument(
-        "--raw-json",
-        action="store_true",
-        help="Print raw Fubon order result rows",
-    )
-
-    fubon_manual_close = subparsers.add_parser(
-        "fubon-manual-close",
-        help="Emergency close a Fubon futures position with market IOC",
-    )
-    fubon_manual_close.add_argument("--config", type=Path, required=True)
-    fubon_manual_close.add_argument("--symbol", required=True)
-    fubon_manual_close.add_argument("--side", choices=("buy", "sell"), required=True)
-    fubon_manual_close.add_argument("--lot", type=int, required=True)
-    fubon_manual_close.add_argument("--confirm-symbol", required=True)
-    fubon_manual_close.add_argument(
-        "--raw-json",
-        action="store_true",
-        help="Print raw Fubon order result rows after manual close",
-    )
+    live_status.add_argument("--config", type=Path, required=True)
 
     reconcile_brokers = subparsers.add_parser(
         "reconcile-brokers",
@@ -72,37 +86,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reconcile_brokers.add_argument("--config", type=Path, required=True)
     reconcile_brokers.add_argument(
-        "--fake",
-        action="store_true",
-        help="Use deterministic fake read-only brokers",
-    )
-    reconcile_brokers.add_argument(
         "--readonly",
         action="store_true",
-        help="Use real Fubon and Binance read-only brokers",
+        help="Use real Fubon and Binance read-only brokers "
+        "(requires LUX_READONLY_BROKER=1)",
     )
-    reconcile_brokers.add_argument(
-        "--fubon-readonly",
-        action="store_true",
-        help="Use real Fubon read-only broker",
-    )
-    reconcile_brokers.add_argument(
-        "--fake-binance",
-        action="store_true",
-        help="Use fake Binance broker with real Fubon",
-    )
-    reconcile_brokers.add_argument(
-        "--fake-case",
-        choices=("matched", "mismatch", "error"),
-        default="matched",
-        help="Fake broker scenario for the Phase 3 skeleton",
-    )
-
-    live_status = subparsers.add_parser(
-        "live-status",
-        help="Print persisted strategy state, position, and latest reconciliation (read-only)",
-    )
-    live_status.add_argument("--config", type=Path, required=True)
 
     clear_pause = subparsers.add_parser(
         "clear-pause",
@@ -110,196 +98,117 @@ def build_parser() -> argparse.ArgumentParser:
     )
     clear_pause.add_argument("--config", type=Path, required=True)
     clear_pause.add_argument(
-        "--fake",
-        action="store_true",
-        help="Use deterministic fake read-only brokers",
-    )
-    clear_pause.add_argument(
         "--readonly",
         action="store_true",
-        help="Use real Fubon and Binance read-only brokers",
-    )
-    clear_pause.add_argument(
-        "--fubon-readonly",
-        action="store_true",
-        help="Use real Fubon read-only broker",
-    )
-    clear_pause.add_argument(
-        "--fake-binance",
-        action="store_true",
-        help="Use fake Binance broker with real Fubon",
-    )
-    clear_pause.add_argument(
-        "--fake-case",
-        choices=("matched", "mismatch", "error"),
-        default="matched",
-        help="Fake broker scenario when using --fake",
+        help="Use real Fubon and Binance read-only brokers "
+        "(requires LUX_READONLY_BROKER=1)",
     )
 
-    binance_manual_close = subparsers.add_parser(
-        "binance-manual-close",
-        help="Emergency close a Binance TSM position with a market order",
+    warmup_live = subparsers.add_parser(
+        "warmup-live",
+        help="Seed live warmup bars (debug/acceptance tool)",
     )
-    binance_manual_close.add_argument("--config", type=Path, required=True)
-    binance_manual_close.add_argument("--symbol", required=True)
-    binance_manual_close.add_argument("--side", choices=("buy", "sell"), required=True)
-    binance_manual_close.add_argument("--quantity", type=float, required=True)
-    binance_manual_close.add_argument("--confirm-symbol", required=True)
+    warmup_live.add_argument("--config", type=Path, required=True)
+    warmup_live.add_argument("--reset-store", action="store_true")
 
-    dry_run_doctor = subparsers.add_parser(
-        "dry-run-doctor",
-        help="Check dry-run execution recorder skeleton config",
+    margin_check = subparsers.add_parser(
+        "margin-check",
+        help="Read both accounts' margin ratios and print transfer guidance "
+        "(read-only; requires LUX_READONLY_BROKER=1)",
     )
-    dry_run_doctor.add_argument("--config", type=Path, required=True)
-
-    execution_summary = subparsers.add_parser(
-        "execution-summary",
-        help="Print dry-run execution intent summary",
-    )
-    execution_summary.add_argument("--config", type=Path, required=True)
-
-    live_dry_run = subparsers.add_parser(
-        "live-dry-run",
-        help="Run dry-run execution intent skeleton",
-    )
-    live_dry_run.add_argument("--config", type=Path, required=True)
-    live_dry_run.add_argument("--resume", action="store_true")
-    live_dry_run.add_argument("--reset-store", action="store_true")
-    live_dry_run.add_argument("--max-iterations", type=int)
-    live_dry_run.add_argument(
-        "--fake",
-        action="store_true",
-        help="Use deterministic fake execution intents",
-    )
-    live_dry_run.add_argument(
-        "--fake-case",
-        choices=("valid", "rejected"),
-        default="valid",
-        help="Fake dry-run scenario for the Phase 4 skeleton",
-    )
-    live_dry_run.add_argument("--max-bars", type=int, default=1)
-    live_dry_run.add_argument(
-        "--quiet-ui",
-        action="store_true",
-        help="Disable live terminal UI and print only the final summary",
-    )
-    live_dry_run.add_argument(
-        "--no-color",
-        action="store_true",
-        help="Keep live terminal UI but disable ANSI colors",
-    )
-    live_dry_run.add_argument(
-        "--skip-warmup",
-        action="store_true",
-        help="Require existing warmup seed bars instead of auto-building them at startup",
-    )
-
-    simulate_execution = subparsers.add_parser(
-        "simulate-execution",
-        help="Simulate dry-run execution failure scenarios",
-    )
-    simulate_execution.add_argument("--config", type=Path, required=True)
-    simulate_execution.add_argument(
-        "--scenario",
-        choices=tuple(scenario.value for scenario in ExecutionSimulationScenario),
-        required=True,
-    )
-    simulate_execution.add_argument(
-        "--fake-plan",
-        action="store_true",
-        help="Create a deterministic fake execution plan before simulating",
-    )
-    simulate_execution.add_argument("--reset-store", action="store_true")
-
-    live_order_doctor = subparsers.add_parser(
-        "live-order-doctor",
-        help="Check Phase 5 live execution gates without sending orders",
-    )
-    live_order_doctor.add_argument("--config", type=Path, required=True)
+    margin_check.add_argument("--config", type=Path, required=True)
 
     live_execute = subparsers.add_parser(
         "live-execute",
-        help="Reserved Phase 5 live execution entrypoint",
+        help="Run live execution with real two-leg orders (all safety gates "
+        "must be open)",
     )
     live_execute.add_argument("--config", type=Path, required=True)
     live_execute.add_argument("--resume", action="store_true")
     live_execute.add_argument("--reset-store", action="store_true")
     live_execute.add_argument("--max-iterations", type=int)
     live_execute.add_argument(
-        "--quiet-ui",
-        action="store_true",
-        help="Disable live terminal UI and print only the final summary",
-    )
-    live_execute.add_argument(
-        "--no-color",
-        action="store_true",
-        help="Keep live terminal UI but disable ANSI colors",
-    )
-    live_execute.add_argument(
         "--skip-warmup",
         action="store_true",
-        help="Require existing warmup seed bars instead of auto-building them at startup",
+        help="Require existing warmup seed bars instead of auto-building them",
     )
+    add_ui_arguments(live_execute)
 
-    binance_exec_smoke = subparsers.add_parser(
-        "binance-exec-smoke",
-        help="Manually run a tiny Binance TSM execution adapter smoke",
+    exec_smoke = subparsers.add_parser(
+        "exec-smoke",
+        help="Run a tiny single-venue real entry/exit adapter smoke "
+        "(SENDS REAL ORDERS behind env gates)",
     )
-    binance_exec_smoke.add_argument("--config", type=Path, required=True)
-    binance_exec_smoke.add_argument("--quantity", type=float, required=True)
-    binance_exec_smoke.add_argument("--confirm-symbol", required=True)
-
-    fubon_exec_smoke = subparsers.add_parser(
-        "fubon-exec-smoke",
-        help="Manually run a tiny Fubon futures execution adapter smoke",
+    exec_smoke.add_argument("--config", type=Path, required=True)
+    exec_smoke.add_argument(
+        "--venue", choices=("fubon", "binance"), required=True
     )
-    fubon_exec_smoke.add_argument("--config", type=Path, required=True)
-    fubon_exec_smoke.add_argument("--symbol", required=True)
-    fubon_exec_smoke.add_argument("--lot", type=int, required=True)
-    fubon_exec_smoke.add_argument("--confirm-symbol", required=True)
-    fubon_exec_smoke.add_argument(
+    exec_smoke.add_argument(
+        "--symbol", help="Fubon futures symbol (required for --venue fubon)"
+    )
+    exec_smoke.add_argument(
+        "--lot", type=int, help="Fubon lot count (required for --venue fubon)"
+    )
+    exec_smoke.add_argument(
+        "--quantity",
+        type=float,
+        help="Binance quantity (required for --venue binance)",
+    )
+    exec_smoke.add_argument("--confirm-symbol", required=True)
+    exec_smoke.add_argument(
         "--raw-json",
         action="store_true",
         help="Print raw Fubon order result rows after the smoke",
     )
 
-    live_doctor = subparsers.add_parser("live-doctor", help="Check live-paper config")
-    live_doctor.add_argument("--config", type=Path, required=True)
-
-    warmup_live = subparsers.add_parser("warmup-live", help="Seed live-paper warmup bars")
-    warmup_live.add_argument("--config", type=Path, required=True)
-    warmup_live.add_argument("--reset-store", action="store_true")
-
-    qff_warmup_check = subparsers.add_parser(
-        "qff-warmup-check",
-        help="Validate Fubon + TAIFEX QFF warmup data",
+    manual_close = subparsers.add_parser(
+        "manual-close",
+        help="Emergency-close a single stranded leg with a market order "
+        "(SENDS A REAL ORDER behind env gates)",
     )
-    qff_warmup_check.add_argument("--config", type=Path, required=True)
-    qff_warmup_check.add_argument(
-        "--output-csv",
-        default=None,
-        help="Write comparison CSV to this path; pass an empty string to disable",
+    manual_close.add_argument("--config", type=Path, required=True)
+    manual_close.add_argument(
+        "--venue", choices=("fubon", "binance"), required=True
     )
-
-    live_paper = subparsers.add_parser("live-paper", help="Run live market data with PaperBroker")
-    live_paper.add_argument("--config", type=Path, required=True)
-    live_paper.add_argument("--resume", action="store_true")
-    live_paper.add_argument("--reset-store", action="store_true")
-    live_paper.add_argument("--max-iterations", type=int)
-    live_paper.add_argument(
-        "--quiet-ui",
+    manual_close.add_argument("--symbol", required=True)
+    manual_close.add_argument("--side", choices=("buy", "sell"), required=True)
+    manual_close.add_argument(
+        "--lot", type=int, help="Fubon lot count (required for --venue fubon)"
+    )
+    manual_close.add_argument(
+        "--quantity",
+        type=float,
+        help="Binance quantity (required for --venue binance)",
+    )
+    manual_close.add_argument("--confirm-symbol", required=True)
+    manual_close.add_argument(
+        "--raw-json",
         action="store_true",
-        help="Disable live terminal UI and print only the final summary",
+        help="Print raw Fubon order result rows",
     )
-    live_paper.add_argument(
-        "--no-color",
+
+    broker_status = subparsers.add_parser(
+        "broker-status",
+        help="Read-only broker checks: config/skeleton by default, account "
+        "snapshots with LUX_READONLY_BROKER=1, --funds / --orders for Fubon "
+        "details",
+    )
+    broker_status.add_argument("--config", type=Path, required=True)
+    broker_status.add_argument(
+        "--funds",
         action="store_true",
-        help="Keep live terminal UI but disable ANSI colors",
+        help="Print the Fubon margin/equity snapshot (needs LUX_READONLY_BROKER=1)",
     )
-    live_paper.add_argument(
-        "--skip-warmup",
+    broker_status.add_argument(
+        "--orders",
+        metavar="SYMBOL",
+        help="Print Fubon position/open-orders/order-records for SYMBOL "
+        "(needs LUX_READONLY_BROKER=1)",
+    )
+    broker_status.add_argument(
+        "--raw-json",
         action="store_true",
-        help="Require existing warmup seed bars instead of auto-building them at startup",
+        help="Print raw broker rows for field-level audit",
     )
+
     return parser
-

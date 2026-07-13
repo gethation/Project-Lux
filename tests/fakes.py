@@ -1,19 +1,30 @@
+"""Shared test fakes.
+
+``build_fake_reconciliation_brokers`` was a CLI helper in the legacy project
+(behind ``--fake`` flags); the rebuilt CLI only exposes real read-only brokers,
+so the fake pair-broker builder lives here and is injected into commands by
+monkeypatching ``lux_trader.cli.commands_live.build_reconciliation_brokers``.
+"""
+
 from __future__ import annotations
 
-import argparse
-import os
 from datetime import datetime
 
-from .execution.intent import ExecutionPlanType, pair_execution_plan_from_order_requests
-from .core.models import BrokerName, Direction, OrderRequest, OrderSide
-from .integrations.binance.readonly import BinanceReadOnlyBroker
-from .integrations.fubon.readonly import FubonReadOnlyBroker
-from .reconciliation import (
+from lux_trader.core.models import BrokerName, Direction, OrderRequest, OrderSide
+from lux_trader.execution.intent import (
+    ExecutionPlanType,
+    pair_execution_plan_from_order_requests,
+)
+from lux_trader.reconciliation import (
     BrokerPositionSnapshot,
     BrokerReconciler,
     FakeReadOnlyBroker,
-    ReadOnlyBroker,
 )
+
+
+def reconciliation_qff_symbol(config: object, strategy_state: object) -> str:
+    trading_symbol = getattr(strategy_state, "trading_qff_symbol", None)
+    return str(trading_symbol or config.live.qff_symbol)
 
 
 def build_fake_reconciliation_brokers(
@@ -85,71 +96,6 @@ def build_fake_reconciliation_brokers(
     )
 
 
-def build_reconciliation_brokers(
-    args: argparse.Namespace,
-    config: object,
-    strategy_state: object,
-    timestamp: datetime,
-) -> tuple[ReadOnlyBroker, ...]:
-    if args.fake:
-        return build_fake_reconciliation_brokers(
-            config,
-            strategy_state,
-            fake_case=args.fake_case,
-            timestamp=timestamp,
-        )
-    if args.readonly:
-        require_readonly_broker_enabled()
-        return build_real_readonly_brokers(config)
-    if args.fubon_readonly and args.fake_binance:
-        require_readonly_broker_enabled()
-        fake_binance = build_fake_reconciliation_brokers(
-            config,
-            strategy_state,
-            fake_case=args.fake_case,
-            timestamp=timestamp,
-        )[0]
-        return (
-            FubonReadOnlyBroker(config.live.fubon_env_path),
-            fake_binance,
-        )
-    raise SystemExit(
-        "Use --fake, --readonly, or --fubon-readonly --fake-binance"
-    )
-
-
-def build_real_readonly_brokers(config: object) -> tuple[ReadOnlyBroker, ReadOnlyBroker]:
-    return (
-        FubonReadOnlyBroker(config.live.fubon_env_path),
-        BinanceReadOnlyBroker(
-            config.live.binance_symbol,
-            config.live.fubon_env_path,
-        ),
-    )
-
-
-def close_brokers(brokers: tuple[ReadOnlyBroker, ...]) -> None:
-    for broker in brokers:
-        try:
-            broker.close()
-        except Exception:
-            pass
-
-
-def readonly_broker_enabled() -> bool:
-    return os.getenv("LUX_READONLY_BROKER", "").strip() == "1"
-
-
-def require_readonly_broker_enabled() -> None:
-    if not readonly_broker_enabled():
-        raise SystemExit("Set LUX_READONLY_BROKER=1 to use real read-only brokers")
-
-
-def reconciliation_qff_symbol(config: object, strategy_state: object) -> str:
-    trading_symbol = getattr(strategy_state, "trading_qff_symbol", None)
-    return str(trading_symbol or config.live.qff_symbol)
-
-
 def build_fake_execution_plan(
     config: object,
     *,
@@ -199,3 +145,17 @@ def build_fake_execution_plan(
         decision_zscore=2.14,
         decision_spread_type="shortSpread",
     )
+
+
+def make_fake_broker_builder(fake_case: str):
+    """Return a drop-in replacement for commands_live.build_reconciliation_brokers."""
+
+    def builder(config, strategy_state, *, readonly):  # noqa: ARG001 - CLI seam
+        return build_fake_reconciliation_brokers(
+            config,
+            strategy_state,
+            fake_case=fake_case,
+            timestamp=datetime.now().astimezone(),
+        )
+
+    return builder

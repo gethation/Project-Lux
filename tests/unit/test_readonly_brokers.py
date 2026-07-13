@@ -17,6 +17,7 @@ from lux_trader.integrations.fubon.readonly import (
     FubonReadOnlyBroker,
     normalize_fubon_margin,
     normalize_fubon_order,
+    normalize_fubon_position,
 )
 
 
@@ -169,6 +170,40 @@ def test_fubon_order_normalizer_skips_final_orders() -> None:
     assert normalize_fubon_order({"status": "filled", "symbol": "QFFG6"}) is None
     assert normalize_fubon_order({"status": "canceled", "symbol": "QFFG6"}) is None
     assert normalize_fubon_order({"status": "open", "symbol": "QFFG6"}) is not None
+
+
+def test_fubon_position_normalizer_parses_official_lot_fields() -> None:
+    position = normalize_fubon_position(
+        {
+            "symbol": "FIQFF",
+            "expiry_date": 202607,
+            "buy_sell": "Buy",
+            "orig_lots": 1,
+            "tradable_lot": 1,
+        },
+        expected_symbol="QFFG6",
+    )
+
+    assert position is not None
+    assert position.symbol == "QFFG6"
+    assert position.quantity == 1
+    assert position.raw["symbol"] == "FIQFF"
+
+
+def test_fubon_position_normalizer_applies_sell_side_to_official_lot_fields() -> None:
+    position = normalize_fubon_position(
+        {
+            "symbol": "FIQFF",
+            "expiry_date": 202607,
+            "buy_sell": "Sell",
+            "orig_lots": 2,
+        },
+        expected_symbol="QFFG6",
+    )
+
+    assert position is not None
+    assert position.symbol == "QFFG6"
+    assert position.quantity == -2
 
 
 def test_fubon_margin_normalizer_parses_value_json_string() -> None:

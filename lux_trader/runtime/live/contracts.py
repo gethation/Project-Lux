@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
-from lux_trader.brokers import PaperBroker
 from lux_trader.config import AppConfig
 from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, QffContractSelection
 from lux_trader.core.calendar import is_weekend_force_exit_bar, live_session_status
@@ -29,6 +28,7 @@ from lux_trader.execution.price_policy import apply_live_touch_market_price_poli
 from lux_trader.integrations.binance.market_data import BinanceMarketData
 from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
+from lux_trader.integrations.fubon.contracts import normalize_fubon_order_symbol
 from lux_trader.integrations.fubon.market_data import FubonQffMarketData
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
@@ -331,8 +331,13 @@ def resolve_qff_contract(
 ) -> QffContractResolution:
     configured = config.live.qff_symbol
     if configured.lower() != "auto":
+        symbol = normalize_fubon_order_symbol(
+            configured,
+            product=config.live.qff_product,
+            reference_date=ensure_taipei(now).date() if now is not None else None,
+        )
         return QffContractResolution(
-            symbol=configured,
+            symbol=symbol,
             expiry=None,
             policy_state="fixed_symbol",
         )
@@ -344,8 +349,14 @@ def resolve_qff_contract(
             product=config.live.qff_product,
             now=now,
         )
+        symbol = normalize_fubon_order_symbol(
+            selection.symbol,
+            product=config.live.qff_product,
+            expiry=selection.expiry,
+            reference_date=ensure_taipei(now).date() if now is not None else None,
+        )
         return QffContractResolution(
-            symbol=selection.symbol,
+            symbol=symbol,
             expiry=selection.expiry.isoformat(),
             policy_state="active",
             selection=selection,
@@ -354,9 +365,14 @@ def resolve_qff_contract(
     selector = getattr(provider, "select_front_month_symbol", None)
     if selector is None:
         raise RuntimeError("qff_symbol=auto requires a provider with front-month selector")
+    selected_symbol = str(selector(config.live.qff_product))
+    symbol = normalize_fubon_order_symbol(
+        selected_symbol,
+        product=config.live.qff_product,
+        reference_date=ensure_taipei(now).date() if now is not None else None,
+    )
     return QffContractResolution(
-        symbol=str(selector(config.live.qff_product)),
+        symbol=symbol,
         expiry=None,
         policy_state="front_month",
     )
-

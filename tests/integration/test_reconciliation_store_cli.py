@@ -4,21 +4,18 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from lux_trader.cli import (
-    build_parser,
-    command_broker_doctor,
-    command_fubon_account_funds,
-    command_reconcile_brokers,
-)
+import lux_trader.cli.commands_live as commands_live
+from lux_trader.cli.commands_live import command_reconcile_brokers
+from lux_trader.cli.parser import build_parser
 from lux_trader.core.models import BrokerName
 from lux_trader.reconciliation import (
-    BrokerAccountSnapshot,
-    BrokerMarginSnapshot,
     BrokerReconciler,
     FakeReadOnlyBroker,
     ReconciliationStatus,
 )
 from lux_trader.store import SQLiteStore
+
+from fakes import make_fake_broker_builder
 
 
 def write_config(tmp_path: Path) -> Path:
@@ -51,6 +48,14 @@ def write_config(tmp_path: Path) -> Path:
 
 def count_table(connection: sqlite3.Connection, table: str) -> int:
     return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+def use_fake_brokers(monkeypatch, fake_case: str) -> None:
+    monkeypatch.setattr(
+        commands_live,
+        "build_reconciliation_brokers",
+        make_fake_broker_builder(fake_case),
+    )
 
 
 def test_store_initializes_reconciliation_tables(tmp_path: Path) -> None:
@@ -99,28 +104,14 @@ def test_store_records_and_loads_latest_reconciliation_report(tmp_path: Path) ->
         store.close()
 
 
-def test_broker_doctor_cli_succeeds_without_private_api(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    parser = build_parser()
-    args = parser.parse_args(["broker-doctor", "--config", str(write_config(tmp_path))])
-
-    exit_code = command_broker_doctor(args)
-
-    output = capsys.readouterr().out
-    assert exit_code == 0
-    assert "Broker doctor checks passed" in output
-    assert "private_api=disabled" in output
-
-
 def test_reconcile_brokers_fake_matched_records_report(
     tmp_path: Path,
     capsys,
+    monkeypatch,
 ) -> None:
     config_path = write_config(tmp_path)
-    parser = build_parser()
-    args = parser.parse_args(["reconcile-brokers", "--config", str(config_path), "--fake"])
+    use_fake_brokers(monkeypatch, "matched")
+    args = build_parser().parse_args(["reconcile-brokers", "--config", str(config_path)])
 
     exit_code = command_reconcile_brokers(args)
 
@@ -138,17 +129,11 @@ def test_reconcile_brokers_fake_matched_records_report(
 def test_reconcile_brokers_fake_mismatch_warns_but_exits_zero(
     tmp_path: Path,
     capsys,
+    monkeypatch,
 ) -> None:
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "reconcile-brokers",
-            "--config",
-            str(write_config(tmp_path)),
-            "--fake",
-            "--fake-case",
-            "mismatch",
-        ]
+    use_fake_brokers(monkeypatch, "mismatch")
+    args = build_parser().parse_args(
+        ["reconcile-brokers", "--config", str(write_config(tmp_path))]
     )
 
     exit_code = command_reconcile_brokers(args)
@@ -162,17 +147,11 @@ def test_reconcile_brokers_fake_mismatch_warns_but_exits_zero(
 def test_reconcile_brokers_fake_error_exits_nonzero(
     tmp_path: Path,
     capsys,
+    monkeypatch,
 ) -> None:
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "reconcile-brokers",
-            "--config",
-            str(write_config(tmp_path)),
-            "--fake",
-            "--fake-case",
-            "error",
-        ]
+    use_fake_brokers(monkeypatch, "error")
+    args = build_parser().parse_args(
+        ["reconcile-brokers", "--config", str(write_config(tmp_path))]
     )
 
     exit_code = command_reconcile_brokers(args)
@@ -188,8 +167,7 @@ def test_reconcile_brokers_readonly_requires_env_flag(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("LUX_READONLY_BROKER", raising=False)
-    parser = build_parser()
-    args = parser.parse_args(
+    args = build_parser().parse_args(
         [
             "reconcile-brokers",
             "--config",
@@ -206,72 +184,18 @@ def test_reconcile_brokers_readonly_requires_env_flag(
         raise AssertionError("Expected SystemExit")
 
 
-def test_fubon_account_funds_requires_readonly_gate(
+def test_reconcile_brokers_without_readonly_refuses_real_brokers(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("LUX_READONLY_BROKER", raising=False)
-    parser = build_parser()
-    args = parser.parse_args(
-        ["fubon-account-funds", "--config", str(write_config(tmp_path))]
+    args = build_parser().parse_args(
+        ["reconcile-brokers", "--config", str(write_config(tmp_path))]
     )
 
     try:
-        command_fubon_account_funds(args)
+        command_reconcile_brokers(args)
     except SystemExit as exc:
-        assert "LUX_READONLY_BROKER=1" in str(exc)
+        assert "--readonly" in str(exc)
     else:
-        raise AssertionError("Expected SystemExit")
-
-
-def test_fubon_account_funds_prints_margin_snapshot(
-    tmp_path: Path,
-    monkeypatch,
-    capsys,
-) -> None:
-    class FakeFubonBroker:
-        def __init__(self, env_path):
-            self.env_path = env_path
-            self.closed = False
-
-        def fetch_snapshot(self):
-            return BrokerAccountSnapshot(
-                broker=BrokerName.FUBON_QFF,
-                account_id="****253",
-                fetched_at=datetime(2026, 6, 25, 9, 0, tzinfo=timezone.utc),
-                margins=(
-                    BrokerMarginSnapshot(
-                        broker=BrokerName.FUBON_QFF,
-                        currency="TWD",
-                        equity=1_234_567.0,
-                        available=1_000_000.25,
-                        margin_used=234_566.75,
-                        raw={"equity": 1234567, "available_margin": 1000000.25},
-                    ),
-                ),
-            )
-
-        def close(self):
-            self.closed = True
-
-    monkeypatch.setenv("LUX_READONLY_BROKER", "1")
-    monkeypatch.setattr("lux_trader.cli.FubonReadOnlyBroker", FakeFubonBroker)
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "fubon-account-funds",
-            "--config",
-            str(write_config(tmp_path)),
-            "--raw-json",
-        ]
-    )
-
-    exit_code = command_fubon_account_funds(args)
-
-    output = capsys.readouterr().out
-    assert exit_code == 0
-    assert "Fubon account funds" in output
-    assert "account=****253" in output
-    assert "equity=1,234,567" in output
-    assert "available=1,000,000.25" in output
-    assert '"available_margin": 1000000.25' in output
+        raise AssertionError("Expected SystemExit without --readonly")

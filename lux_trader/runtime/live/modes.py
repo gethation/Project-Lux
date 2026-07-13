@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
-from lux_trader.brokers import PaperBroker
 from lux_trader.config import AppConfig
 from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, QffContractSelection
 from lux_trader.core.calendar import live_session_status
@@ -59,7 +58,14 @@ from lux_trader.market_data import (
     prioritized_qff_close_frame,
 )
 from lux_trader.store import SQLiteStore
-from lux_trader.core.models import Direction, IndicatorSnapshot, MarketBar, StrategyAction, StrategyState
+from lux_trader.core.models import (
+    BrokerName,
+    Direction,
+    IndicatorSnapshot,
+    MarketBar,
+    StrategyAction,
+    StrategyState,
+)
 from lux_trader.reconciliation.post_trade import PostTradeReconciler
 from lux_trader.execution.real_coordinator import RealExecutionCoordinator
 from lux_trader.reconciliation import ReadOnlyBroker, ReconciliationReport, ReconciliationStatus
@@ -171,86 +177,6 @@ class LiveModeHandler:
         qff_expiry: str | None,
     ) -> LiveModeBarResult:
         raise NotImplementedError
-
-
-class PaperLiveModeHandler(LiveModeHandler):
-    mode = "live-paper"
-    auto_warmup_context = "before_live"
-    complete_contract_switch_after_flat = True
-
-    def validate_config(self, config: AppConfig) -> None:
-        if config.safety.allow_live_order:
-            raise RuntimeError("Refusing live-paper with allow_live_order=true")
-
-    def handle_bar(
-        self,
-        *,
-        config: AppConfig,
-        store: SQLiteStore,
-        reporter: Any,
-        strategy: PairStrategy,
-        bar: MarketBar,
-        decision_snapshot: IndicatorSnapshot,
-        decision_spread_type: str | None,
-        quote_set: LiveQuoteSet | None,
-        force_exit_reason: str | None,
-        qff_symbol: str,
-        qff_expiry: str | None,
-    ) -> LiveModeBarResult:
-        if force_exit_reason is not None:
-            result = strategy.force_exit(
-                bar,
-                decision_snapshot,
-                exit_reason=force_exit_reason,
-            )
-            reporter.event(
-                bar.timestamp,
-                "force_exit",
-                force_exit_report_detail(force_exit_reason),
-            )
-            store.record_event(
-                bar.row_index,
-                bar.timestamp,
-                force_exit_reason,
-                force_exit_event_message(force_exit_reason),
-                {"qff_symbol": qff_symbol, "qff_expiry": qff_expiry},
-            )
-            if result is None:
-                result = strategy.on_bar(bar, decision_snapshot)
-        else:
-            result = strategy.on_bar(bar, decision_snapshot)
-            if (
-                result.action == StrategyAction.ENTRY_SIGNAL
-                and strategy.state.state == StrategyState.ENTRY_PENDING
-            ):
-                record_live_signal_event(store, reporter, bar, strategy, result)
-                result = strategy.fill_pending_entry(bar, decision_snapshot)
-            elif (
-                result.action == StrategyAction.EXIT_SIGNAL
-                and strategy.state.state == StrategyState.EXIT_PENDING
-            ):
-                record_live_signal_event(store, reporter, bar, strategy, result)
-                result = strategy.fill_pending_exit(
-                    bar,
-                    decision_snapshot,
-                    exit_reason="zscore_exit",
-                )
-
-        for order in result.orders:
-            store.record_order(order)
-        for fill in result.fills:
-            store.record_fill(fill)
-        if result.trade is not None:
-            store.record_trade(result.trade)
-        if result.action.value != "none":
-            store.record_event(
-                bar.row_index,
-                bar.timestamp,
-                result.action.value,
-                result.reason,
-                {"state": strategy.state.state.value},
-            )
-        return LiveModeBarResult(result=result)
 
 
 class DryRunLiveModeHandler(LiveModeHandler):
@@ -511,7 +437,10 @@ class LiveExecuteModeHandler(LiveModeHandler):
             )
         if self.readonly_brokers is None:
             self.readonly_brokers = (
-                FubonReadOnlyBroker(self.config.live.fubon_env_path),
+                FubonReadOnlyBroker(
+                    self.config.live.fubon_env_path,
+                    symbol=qff_symbol,
+                ),
                 BinanceReadOnlyBroker(
                     self.config.live.binance_symbol,
                     self.config.live.fubon_env_path,
@@ -1251,6 +1180,17 @@ def report_live_execution_events(
     outcome: ExecutionOutcome,
 ) -> None:
     payload = outcome.payload or {}
+    timing_gap = payload.get("primary_leg_timing_gap")
+    if isinstance(timing_gap, dict):
+        submit_gap = timing_gap.get("submit_start_gap_seconds")
+        handoff_gap = timing_gap.get("submit_handoff_gap_seconds")
+        detail_parts = []
+        if submit_gap is not None:
+            detail_parts.append(f"submit_start={float(submit_gap):.3f}s")
+        if handoff_gap is not None:
+            detail_parts.append(f"submit_handoff={float(handoff_gap):.3f}s")
+        if detail_parts:
+            reporter.event(timestamp, "leg_timing_gap", " ".join(detail_parts))
     for event in payload.get("events", []):
         event_type = str(event.get("event_type") or "")
         event_payload = event.get("payload") or {}

@@ -37,7 +37,7 @@ from lux_trader.market_data import (
     qff_symbol_to_taifex_contract_month,
     select_qff_front_month,
 )
-from lux_trader.runtime.live import LiveDryRunRunner, LiveExecuteRunner, LivePaperRunner
+from lux_trader.runtime.live import LiveDryRunRunner, LiveExecuteRunner
 from lux_trader.runtime.live.bootstrap import (
     WindowsTimeSyncResult,
     run_live_startup_preflight,
@@ -46,6 +46,7 @@ from lux_trader.runtime.live.contracts import (
     QffContractResolution,
     cancel_entry_pending_for_contract_switch,
     mark_pending_contract_switch_if_needed,
+    resolve_qff_contract,
     resolve_force_exit_reason,
     should_force_exit_for_contract_policy,
     should_switch_contract_before_processing,
@@ -111,6 +112,15 @@ class FakeQffProvider:
 
     def restart_books_session(self, symbol: str, *, after_hours: bool | None = None) -> None:
         self.restart_books_calls.append(symbol)
+
+
+class FakeQffCandidateProvider(FakeQffProvider):
+    def __init__(self, candidates: list[dict[str, object]]) -> None:
+        super().__init__()
+        self.candidates = candidates
+
+    def fetch_candidates(self, product: str) -> list[dict[str, object]]:
+        return self.candidates
 
 
 class FakeOhlcvProvider:
@@ -383,6 +393,9 @@ def test_load_config_defaults_live_freshness_and_clock_preflight(tmp_path) -> No
     assert config.live.sync_windows_time_on_startup is True
     assert config.live.clock_skew_fail_seconds == pytest.approx(60.0)
     assert config.live.windows_time_sync_timeout_seconds == pytest.approx(15.0)
+    assert config.live_execution_smoke.enabled is False
+    assert config.live_execution_smoke.fubon_lots == 1
+    assert config.live_execution_smoke.tsm_units == pytest.approx(0.1)
 
 
 def test_project_config_relative_paths_resolve_from_project_root() -> None:
@@ -415,6 +428,37 @@ def test_load_config_reads_live_freshness_and_clock_preflight(tmp_path) -> None:
     assert config.live.sync_windows_time_on_startup is False
     assert config.live.clock_skew_fail_seconds == pytest.approx(12.5)
     assert config.live.windows_time_sync_timeout_seconds == pytest.approx(3.0)
+
+
+def test_load_config_reads_live_execution_smoke_config(tmp_path) -> None:
+    config_path = tmp_path / "config.test.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[paths]",
+                "store_path = 'project_lux.sqlite3'",
+                "input_csv = ''",
+                "",
+                "[live_execution_smoke]",
+                "enabled = true",
+                "fubon_symbol = 'TMFG6'",
+                "fubon_lots = 1",
+                "binance_symbol = 'TSM/USDT:USDT'",
+                "tsm_units = 0.1",
+                "qff_expiry = '202607'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.live_execution_smoke.enabled is True
+    assert config.live_execution_smoke.fubon_symbol == "TMFG6"
+    assert config.live_execution_smoke.fubon_lots == 1
+    assert config.live_execution_smoke.binance_symbol == "TSM/USDT:USDT"
+    assert config.live_execution_smoke.tsm_units == pytest.approx(0.1)
+    assert config.live_execution_smoke.qff_expiry == "202607"
 
 
 def test_live_startup_preflight_syncs_windows_time_and_accepts_clock_skew(tmp_path) -> None:
@@ -542,7 +586,7 @@ def test_live_runtime_clock_preflight_failure_stops_before_qff_provider(
     monkeypatch.setattr(live_engine, "run_live_startup_preflight", fail_preflight)
 
     with pytest.raises(RuntimeError, match="clock skew test"):
-        LivePaperRunner(
+        LiveDryRunRunner(
             config,
             qff_provider=qff,
             tsm_provider=tsm,
@@ -571,7 +615,7 @@ def test_live_runtime_skips_clock_preflight_when_clock_is_injected(
 
     monkeypatch.setattr(live_engine, "run_live_startup_preflight", fail_preflight)
 
-    result = LivePaperRunner(
+    result = LiveDryRunRunner(
         config,
         qff_provider=qff,
         tsm_provider=tsm,
@@ -624,7 +668,7 @@ def seed_warmup_bars(config: AppConfig) -> None:
             qff_close_filled=100.0,
             tsm_twd_fair=100.0 + index,
             spread=float(index),
-            qff_symbol="QFF202607",
+            qff_symbol="QFFG6",
             qff_expiry="2026-07-15",
             contract_policy_state="active",
         )
@@ -772,8 +816,8 @@ def test_live_runtime_tears_down_qff_books_during_non_trading_and_restarts_on_op
 
     assert result.iterations == 3
     assert qff.teardown_books_calls == 1
-    assert qff.restart_books_calls == ["QFF202607"]
-    assert qff.quote_calls == ["QFF202607", "QFF202607"]
+    assert qff.restart_books_calls == ["QFFG6"]
+    assert qff.quote_calls == ["QFFG6", "QFFG6"]
 
 
 def test_live_runtime_qff_watchdog_restarts_once_with_backoff(tmp_path) -> None:
@@ -825,7 +869,7 @@ def test_live_runtime_qff_watchdog_restarts_once_with_backoff(tmp_path) -> None:
     ).run(max_iterations=3, skip_warmup=True)
 
     assert result.iterations == 3
-    assert qff.restart_books_calls == ["QFF202607"]
+    assert qff.restart_books_calls == ["QFFG6"]
     assert "WARN qff_reconnecting skip_signal" in terminal_output.getvalue()
 
 
@@ -1022,6 +1066,40 @@ def test_qff_symbol_to_taifex_contract_month_accepts_fubon_code() -> None:
         )
         == "202607"
     )
+
+
+def test_resolve_qff_contract_normalizes_policy_selection_for_fubon_ordering(tmp_path) -> None:
+    config = make_app_config(tmp_path)
+    contract = resolve_qff_contract(
+        config,
+        FakeQffCandidateProvider(
+            [{"symbol": "QFF202607", "contractMonth": "202607"}]
+        ),
+        now=ts("2026-06-18T08:45:00+08:00"),
+    )
+
+    assert contract.symbol == "QFFG6"
+    assert contract.expiry == "2026-07-15"
+    assert contract.selection is not None
+    assert contract.selection.symbol == "QFF202607"
+
+
+def test_resolve_qff_contract_normalizes_front_month_selector_for_fubon_ordering(tmp_path) -> None:
+    config = make_app_config(tmp_path)
+    config = replace(
+        config,
+        contract_policy=replace(config.contract_policy, enabled=False),
+    )
+
+    contract = resolve_qff_contract(
+        config,
+        FakeQffProvider(),
+        now=ts("2026-06-18T08:45:00+08:00"),
+    )
+
+    assert contract.symbol == "QFFG6"
+    assert contract.expiry is None
+    assert contract.policy_state == "front_month"
 
 
 def test_parse_timestamp_accepts_fubon_microsecond_epoch() -> None:
@@ -1582,7 +1660,7 @@ def test_live_minute_bar_builder_forward_fills_stale_qff_quote() -> None:
     assert result.bar.qff_close_filled == 99.0
 
 
-def test_live_paper_runner_uses_paper_broker_and_minute_boundaries(tmp_path) -> None:
+def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
     config = small_live_config(tmp_path)
     warmup_qff = FakeQffProvider(
         rows(
@@ -1654,7 +1732,7 @@ def test_live_paper_runner_uses_paper_broker_and_minute_boundaries(tmp_path) -> 
     terminal_output = io.StringIO()
     reporter = LiveTerminalReporter(terminal_output, color=False)
 
-    result = LivePaperRunner(
+    result = LiveDryRunRunner(
         config,
         qff_provider=qff,
         tsm_provider=tsm,
@@ -1692,7 +1770,7 @@ def test_live_paper_runner_uses_paper_broker_and_minute_boundaries(tmp_path) -> 
         store.close()
 
 
-def test_live_paper_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
+def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
     config = small_live_config(tmp_path)
     warmup_qff = FakeQffProvider(
         rows(
@@ -1759,7 +1837,7 @@ def test_live_paper_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
     )
     terminal_output = io.StringIO()
 
-    result = LivePaperRunner(
+    result = LiveDryRunRunner(
         config,
         qff_provider=qff,
         tsm_provider=tsm,
@@ -1900,7 +1978,7 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
         readonly_brokers=(
             FixedPositionReadOnlyBroker(
                 broker=BrokerName.FUBON_QFF,
-                symbol="QFF202607",
+                symbol="QFFG6",
                 quantity=100.0,
                 fetched_at=ts("2026-06-18T08:47:01+08:00"),
             ),
@@ -1967,7 +2045,7 @@ def _live_execute_resume_brokers(*, qff_quantity: float, tsm_quantity: float, at
     return (
         FixedPositionReadOnlyBroker(
             broker=BrokerName.FUBON_QFF,
-            symbol="QFF202607",
+            symbol="QFFG6",
             quantity=qff_quantity,
             fetched_at=ts(at),
         ),
@@ -2399,15 +2477,15 @@ def open_position_state(*, state: StrategyState) -> StrategyRuntimeState:
             "entry_qff_fee_twd": 500.0,
             "entry_qff_tax_twd": 2.0,
             "entry_fee_twd": 1002.0,
-            "qff_symbol": "QFF202607",
+            "qff_symbol": "QFFG6",
             "qff_expiry": "2026-07-15",
             "contract_policy_state": "active",
         },
-        trading_qff_symbol="QFF202607",
+        trading_qff_symbol="QFFG6",
         trading_qff_expiry="2026-07-15",
-        eligible_active_qff_symbol="QFF202607",
+        eligible_active_qff_symbol="QFFG6",
         eligible_active_qff_expiry="2026-07-15",
-        last_warmup_symbol="QFF202607",
+        last_warmup_symbol="QFFG6",
         contract_policy_state="active",
     )
 
@@ -2453,7 +2531,7 @@ def test_live_dry_run_exit_pending_records_exit_intent(tmp_path) -> None:
         sides = {leg["broker"]: leg["side"] for leg in plan["legs"]}
         assert sides[BrokerName.BINANCE_TSM.value] == OrderSide.BUY.value
         assert sides[BrokerName.FUBON_QFF.value] == OrderSide.SELL.value
-        assert plan["qff_symbol"] == "QFF202607"
+        assert plan["qff_symbol"] == "QFFG6"
         assert plan["qff_expiry"] == "2026-07-15"
         assert plan["contract_policy_state"] == "active"
         assert count_table(store, "execution_outcomes") == 1
@@ -2549,7 +2627,7 @@ def test_live_dry_run_force_exit_records_rollover_exit_intent(tmp_path) -> None:
         store.close()
 
 
-def test_live_paper_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
+def test_live_runtime_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
     config = small_live_config(tmp_path)
     qff = FakeQffProvider(
         rows(
@@ -2580,7 +2658,7 @@ def test_live_paper_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
     )
     terminal_output = io.StringIO()
 
-    result = LivePaperRunner(
+    result = LiveDryRunRunner(
         config,
         qff_provider=qff,
         tsm_provider=tsm,
@@ -2591,7 +2669,7 @@ def test_live_paper_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
     ).run(reset_store=True, max_iterations=0)
 
     assert result.iterations == 0
-    assert result.qff_symbol == "QFF202607"
+    assert result.qff_symbol == "QFFG6"
     assert qff.fetch_1m_calls
     output = terminal_output.getvalue()
     assert "EVENT startup store_ready" in output
@@ -2619,7 +2697,7 @@ def test_live_paper_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
         store.close()
 
 
-def test_live_paper_uses_existing_seed_without_rebuilding(tmp_path) -> None:
+def test_live_runtime_uses_existing_seed_without_rebuilding(tmp_path) -> None:
     config = small_live_config(tmp_path)
     warmup_qff = FakeQffProvider(
         rows(
@@ -2661,7 +2739,7 @@ def test_live_paper_uses_existing_seed_without_rebuilding(tmp_path) -> None:
     live_usd = FakeOhlcvProvider(pd.DataFrame())
     terminal_output = io.StringIO()
 
-    LivePaperRunner(
+    LiveDryRunRunner(
         config,
         qff_provider=live_qff,
         tsm_provider=live_tsm,
@@ -2677,7 +2755,7 @@ def test_live_paper_uses_existing_seed_without_rebuilding(tmp_path) -> None:
     assert "warmup_auto" not in terminal_output.getvalue()
 
 
-def test_live_paper_skip_warmup_requires_existing_seed(tmp_path) -> None:
+def test_live_runtime_skip_warmup_requires_existing_seed(tmp_path) -> None:
     config = small_live_config(tmp_path)
     qff = FakeQffProvider(
         rows(
@@ -2708,7 +2786,7 @@ def test_live_paper_skip_warmup_requires_existing_seed(tmp_path) -> None:
     )
 
     with pytest.raises(RuntimeError, match="Warmup seed is missing"):
-        LivePaperRunner(
+        LiveDryRunRunner(
             config,
             qff_provider=qff,
             tsm_provider=tsm,
@@ -2722,7 +2800,7 @@ def test_live_paper_skip_warmup_requires_existing_seed(tmp_path) -> None:
     assert usd.fetch_ohlcv_calls == []
 
 
-def test_live_paper_rejects_live_order_flag(tmp_path) -> None:
+def test_live_runtime_rejects_live_order_flag(tmp_path) -> None:
     config = small_live_config(tmp_path)
     config = replace(
         config,
@@ -2734,7 +2812,7 @@ def test_live_paper_rejects_live_order_flag(tmp_path) -> None:
     )
 
     with pytest.raises(RuntimeError, match="allow_live_order"):
-        LivePaperRunner(config).run(max_iterations=0)
+        LiveDryRunRunner(config).run(max_iterations=0)
 
 
 def test_warmup_runner_rejects_live_order_flag_before_provider_calls(tmp_path) -> None:
@@ -2806,9 +2884,9 @@ def test_warmup_runner_fixed_symbol_skips_front_month_selector_and_writes_seed_o
     ).run(reset_store=True, end=ts("2026-06-18T08:48:00+08:00"))
 
     assert result.bars_written == 3
-    assert result.qff_symbol == "QFF202607"
+    assert result.qff_symbol == "QFFG6"
     assert qff.select_calls == 0
-    assert qff.fetch_1m_calls[0][0] == "QFF202607"
+    assert qff.fetch_1m_calls[0][0] == "QFFG6"
 
     store = SQLiteStore(config.store_path)
     try:
@@ -2842,7 +2920,7 @@ def test_qff_warmup_check_runner_uses_fubon_and_taifex_only(tmp_path) -> None:
         taifex_provider=taifex,
     ).run(output_csv="", end=ts("2026-06-18T08:48:00+08:00"))
 
-    assert result.qff_symbol == "QFF202607"
+    assert result.qff_symbol == "QFFG6"
     assert len(result.report.frame) == 3
     assert result.report.null_count == 0
     assert result.report.source_rows == {"taifex": 3, "fubon": 1}

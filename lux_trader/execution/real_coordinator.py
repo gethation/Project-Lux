@@ -84,12 +84,18 @@ class RealExecutionCoordinator:
             return recorded, outcome
 
         primary_outcomes: dict[BrokerName, ExecutionOutcome] = {}
+        primary_leg_timings: dict[BrokerName, dict[str, Any]] = {}
         emergency_outcomes: list[ExecutionOutcome] = []
         events: list[RecordedExecutionEvent] = []
         sequence = [qff_leg, binance_leg]
 
         first_leg = sequence[0]
-        first_outcome = self._execute_leg(recorded, first_leg, suffix="primary")
+        first_outcome = self._execute_leg(
+            recorded,
+            first_leg,
+            suffix="primary",
+            timings=primary_leg_timings,
+        )
         primary_outcomes[first_leg.broker] = first_outcome
         first_filled_quantity = filled_quantity(first_outcome, first_leg)
         if not first_outcome.filled:
@@ -109,6 +115,7 @@ class RealExecutionCoordinator:
                 status=first_outcome.status,
                 message=f"live execution stopped after {first_leg.broker.value}",
                 primary_outcomes=primary_outcomes,
+                primary_leg_timings=primary_leg_timings,
                 emergency_outcomes=emergency_outcomes,
                 events=events,
             )
@@ -116,7 +123,12 @@ class RealExecutionCoordinator:
             return recorded, outcome
 
         second_leg = sequence[1]
-        second_outcome = self._execute_leg(recorded, second_leg, suffix="primary")
+        second_outcome = self._execute_leg(
+            recorded,
+            second_leg,
+            suffix="primary",
+            timings=primary_leg_timings,
+        )
         primary_outcomes[second_leg.broker] = second_outcome
         second_filled_quantity = filled_quantity(second_outcome, second_leg)
         if second_outcome.filled:
@@ -125,6 +137,7 @@ class RealExecutionCoordinator:
                 status=ExecutionOutcomeStatus.FILLED,
                 message="real execution pair filled",
                 primary_outcomes=primary_outcomes,
+                primary_leg_timings=primary_leg_timings,
                 emergency_outcomes=(),
                 events=events,
             )
@@ -153,6 +166,7 @@ class RealExecutionCoordinator:
             status=second_outcome.status,
             message=f"live execution {breach_type}",
             primary_outcomes=primary_outcomes,
+            primary_leg_timings=primary_leg_timings,
             emergency_outcomes=emergency_outcomes,
             events=events,
         )
@@ -165,6 +179,7 @@ class RealExecutionCoordinator:
         leg: ExecutionLeg,
         *,
         suffix: str,
+        timings: dict[BrokerName, dict[str, Any]] | None = None,
     ) -> ExecutionOutcome:
         leg_plan = replace(
             plan,
@@ -172,7 +187,17 @@ class RealExecutionCoordinator:
             legs=(leg,),
             checks=(),
         )
-        return self._safe_adapter_execute(leg.broker, leg_plan)
+        started_at = self.clock()
+        outcome = self._safe_adapter_execute(leg.broker, leg_plan)
+        finished_at = self.clock()
+        if timings is not None:
+            timings[leg.broker] = leg_timing_payload(
+                leg=leg,
+                outcome=outcome,
+                execute_started_at=started_at,
+                execute_finished_at=finished_at,
+            )
+        return outcome
 
     def _safe_adapter_execute(
         self,
@@ -311,6 +336,7 @@ class RealExecutionCoordinator:
         status: ExecutionOutcomeStatus,
         message: str,
         primary_outcomes: dict[BrokerName, ExecutionOutcome],
+        primary_leg_timings: dict[BrokerName, dict[str, Any]] | None = None,
         emergency_outcomes: list[ExecutionOutcome] | tuple[ExecutionOutcome, ...],
         events: list[RecordedExecutionEvent],
     ) -> ExecutionOutcome:
@@ -338,6 +364,13 @@ class RealExecutionCoordinator:
                     broker.value: outcome.to_jsonable()
                     for broker, outcome in primary_outcomes.items()
                 },
+                "primary_leg_timings": {
+                    broker.value: timing
+                    for broker, timing in (primary_leg_timings or {}).items()
+                },
+                "primary_leg_timing_gap": primary_leg_timing_gap(
+                    primary_leg_timings or {}
+                ),
                 "emergency_close_outcomes": [
                     outcome.to_jsonable() for outcome in emergency_outcomes
                 ],
@@ -583,3 +616,92 @@ def sum_fills(
         for fill in fills
         if fill.broker == broker and fill.symbol == symbol
     )
+
+
+def leg_timing_payload(
+    *,
+    leg: ExecutionLeg,
+    outcome: ExecutionOutcome,
+    execute_started_at: datetime,
+    execute_finished_at: datetime,
+) -> dict[str, Any]:
+    payload = outcome.payload or {}
+    return {
+        "broker": leg.broker.value,
+        "symbol": leg.symbol,
+        "side": leg.side.value,
+        "quantity": leg.quantity,
+        "execute_started_at": execute_started_at.isoformat(),
+        "execute_finished_at": execute_finished_at.isoformat(),
+        "execute_duration_seconds": seconds_between(
+            execute_finished_at,
+            execute_started_at,
+        ),
+        "submit_started_at": iso_or_none(payload.get("submit_started_at")),
+        "submit_finished_at": iso_or_none(payload.get("submit_finished_at")),
+        "outcome_status": outcome.status.value,
+    }
+
+
+def primary_leg_timing_gap(
+    timings: dict[BrokerName, dict[str, Any]],
+) -> dict[str, Any] | None:
+    first = timings.get(BrokerName.FUBON_QFF)
+    second = timings.get(BrokerName.BINANCE_TSM)
+    if first is None or second is None:
+        return None
+    return {
+        "first_broker": BrokerName.FUBON_QFF.value,
+        "second_broker": BrokerName.BINANCE_TSM.value,
+        "execute_start_gap_seconds": optional_seconds_between(
+            second.get("execute_started_at"),
+            first.get("execute_started_at"),
+        ),
+        "execute_handoff_gap_seconds": optional_seconds_between(
+            second.get("execute_started_at"),
+            first.get("execute_finished_at"),
+        ),
+        "submit_start_gap_seconds": optional_seconds_between(
+            second.get("submit_started_at"),
+            first.get("submit_started_at"),
+        ),
+        "submit_handoff_gap_seconds": optional_seconds_between(
+            second.get("submit_started_at"),
+            first.get("submit_finished_at"),
+        ),
+    }
+
+
+def iso_or_none(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def optional_seconds_between(
+    later: Any,
+    earlier: Any,
+) -> float | None:
+    later_dt = parse_timing_datetime(later)
+    earlier_dt = parse_timing_datetime(earlier)
+    if later_dt is None or earlier_dt is None:
+        return None
+    return seconds_between(later_dt, earlier_dt)
+
+
+def parse_timing_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return datetime.fromisoformat(text)
+
+
+def seconds_between(later: datetime, earlier: datetime) -> float:
+    return (later - earlier).total_seconds()

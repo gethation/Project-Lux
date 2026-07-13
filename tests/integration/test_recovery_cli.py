@@ -3,17 +3,16 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from lux_trader.cli import (
-    build_parser,
-    command_binance_manual_close,
-    command_clear_pause,
-    command_live_status,
-)
+import lux_trader.cli.commands_live as commands_live
+from lux_trader.cli.commands_live import command_clear_pause, command_live_status
+from lux_trader.cli.parser import build_parser
 from lux_trader.config import load_config
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.core.models import Direction, StrategyState
 from lux_trader.core.strategy import StrategyRuntimeState
 from lux_trader.store import SQLiteStore
+
+from fakes import make_fake_broker_builder
 
 
 def ts() -> datetime:
@@ -85,6 +84,14 @@ def load_persisted_state(config_path: Path) -> StrategyRuntimeState:
         store.close()
 
 
+def use_fake_brokers(monkeypatch, fake_case: str) -> None:
+    monkeypatch.setattr(
+        commands_live,
+        "build_reconciliation_brokers",
+        make_fake_broker_builder(fake_case),
+    )
+
+
 # --- live-status ----------------------------------------------------------
 
 
@@ -115,14 +122,13 @@ def test_live_status_reports_paused_position(tmp_path: Path, capsys) -> None:
 
 
 def test_clear_pause_matched_clears_to_open_with_position(
-    tmp_path: Path, capsys
+    tmp_path: Path, capsys, monkeypatch
 ) -> None:
     config_path = write_config(tmp_path)
     seed_state(config_path, state=StrategyState.PAUSED, with_position=True)
+    use_fake_brokers(monkeypatch, "matched")
 
-    args = build_parser().parse_args(
-        ["clear-pause", "--config", str(config_path), "--fake", "--fake-case", "matched"]
-    )
+    args = build_parser().parse_args(["clear-pause", "--config", str(config_path)])
     assert command_clear_pause(args) == 0
 
     output = capsys.readouterr().out
@@ -131,14 +137,13 @@ def test_clear_pause_matched_clears_to_open_with_position(
 
 
 def test_clear_pause_matched_clears_to_flat_without_position(
-    tmp_path: Path, capsys
+    tmp_path: Path, capsys, monkeypatch
 ) -> None:
     config_path = write_config(tmp_path)
     seed_state(config_path, state=StrategyState.PAUSED, with_position=False)
+    use_fake_brokers(monkeypatch, "matched")
 
-    args = build_parser().parse_args(
-        ["clear-pause", "--config", str(config_path), "--fake", "--fake-case", "matched"]
-    )
+    args = build_parser().parse_args(["clear-pause", "--config", str(config_path)])
     assert command_clear_pause(args) == 0
 
     output = capsys.readouterr().out
@@ -147,14 +152,13 @@ def test_clear_pause_matched_clears_to_flat_without_position(
 
 
 def test_clear_pause_mismatch_refuses_and_keeps_paused(
-    tmp_path: Path, capsys
+    tmp_path: Path, capsys, monkeypatch
 ) -> None:
     config_path = write_config(tmp_path)
     seed_state(config_path, state=StrategyState.PAUSED, with_position=True)
+    use_fake_brokers(monkeypatch, "mismatch")
 
-    args = build_parser().parse_args(
-        ["clear-pause", "--config", str(config_path), "--fake", "--fake-case", "mismatch"]
-    )
+    args = build_parser().parse_args(["clear-pause", "--config", str(config_path)])
     assert command_clear_pause(args) == 1
 
     output = capsys.readouterr().out
@@ -163,67 +167,29 @@ def test_clear_pause_mismatch_refuses_and_keeps_paused(
     assert load_persisted_state(config_path).state == StrategyState.PAUSED
 
 
-def test_clear_pause_noop_when_not_paused(tmp_path: Path, capsys) -> None:
+def test_clear_pause_noop_when_not_paused(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
     config_path = write_config(tmp_path)
     seed_state(config_path, state=StrategyState.FLAT, with_position=False)
+    use_fake_brokers(monkeypatch, "matched")
 
-    args = build_parser().parse_args(
-        ["clear-pause", "--config", str(config_path), "--fake"]
-    )
+    args = build_parser().parse_args(["clear-pause", "--config", str(config_path)])
     assert command_clear_pause(args) == 0
     assert "nothing to clear" in capsys.readouterr().out
 
 
-# --- binance-manual-close gating -----------------------------------------
-
-
-def test_binance_manual_close_requires_allow_live_order(tmp_path: Path) -> None:
-    args = build_parser().parse_args(
-        [
-            "binance-manual-close",
-            "--config",
-            str(write_config(tmp_path, allow_live_order=False)),
-            "--symbol",
-            "TSM/USDT:USDT",
-            "--side",
-            "buy",
-            "--quantity",
-            "0.02",
-            "--confirm-symbol",
-            "TSM/USDT:USDT",
-        ]
-    )
-    try:
-        command_binance_manual_close(args)
-    except SystemExit as exc:
-        assert "allow_live_order" in str(exc)
-    else:
-        raise AssertionError("Expected SystemExit when allow_live_order is false")
-
-
-def test_binance_manual_close_requires_env_gates(
+def test_clear_pause_without_readonly_refuses_real_brokers(
     tmp_path: Path, monkeypatch
 ) -> None:
-    for name in ("PROJECT_LUX_ALLOW_LIVE_ORDER", "BINANCE_ALLOW_LIVE_ORDER", "LUX_BINANCE_MANUAL_CLOSE"):
-        monkeypatch.delenv(name, raising=False)
-    args = build_parser().parse_args(
-        [
-            "binance-manual-close",
-            "--config",
-            str(write_config(tmp_path, allow_live_order=True)),
-            "--symbol",
-            "TSM/USDT:USDT",
-            "--side",
-            "buy",
-            "--quantity",
-            "0.02",
-            "--confirm-symbol",
-            "TSM/USDT:USDT",
-        ]
-    )
+    monkeypatch.delenv("LUX_READONLY_BROKER", raising=False)
+    config_path = write_config(tmp_path)
+    seed_state(config_path, state=StrategyState.PAUSED, with_position=False)
+
+    args = build_parser().parse_args(["clear-pause", "--config", str(config_path)])
     try:
-        command_binance_manual_close(args)
+        command_clear_pause(args)
     except SystemExit as exc:
-        assert "gates closed" in str(exc)
+        assert "--readonly" in str(exc)
     else:
-        raise AssertionError("Expected SystemExit when manual-close env gates are closed")
+        raise AssertionError("Expected SystemExit without --readonly")

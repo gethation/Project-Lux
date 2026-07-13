@@ -19,10 +19,14 @@ def size_position_for_direction(
     strategy: StrategyConfig,
     fees: FeeConfig,
 ) -> PositionSizing | None:
-    raw_qff_contracts = strategy.leg_notional_twd / (
-        qff_price * fees.qff_contract_multiplier
-    )
-    qff_contract_count = round_half_up_nonnegative(raw_qff_contracts)
+    if strategy.qff_lots is not None:
+        raw_qff_contracts = float(strategy.qff_lots)
+        qff_contract_count = strategy.qff_lots
+    else:
+        raw_qff_contracts = strategy.leg_notional_twd / (
+            qff_price * fees.qff_contract_multiplier
+        )
+        qff_contract_count = round_half_up_nonnegative(raw_qff_contracts)
     if qff_contract_count == 0:
         return None
 

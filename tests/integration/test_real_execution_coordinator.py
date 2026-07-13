@@ -28,7 +28,10 @@ from lux_trader.core.models import (
 )
 from lux_trader.brokers import PaperBroker
 from lux_trader.core.fees import fill_costs
-from lux_trader.runtime.live.modes import LiveExecuteModeHandler, execute_live_entry
+from lux_trader.runtime.live.modes import (
+    LiveExecuteModeHandler,
+    execute_live_entry,
+)
 from lux_trader.reconciliation import (
     BrokerAccountSnapshot,
     BrokerPositionSnapshot,
@@ -134,7 +137,7 @@ class FakeExecutionAdapter:
                 if status == ExecutionOutcomeStatus.FILLED
                 else StrategyState.PAUSED
             ),
-            payload={"adapter": self.broker.value},
+            payload={"adapter": self.broker.value, **spec.get("payload", {})},
         )
 
 
@@ -246,6 +249,39 @@ def test_qff_and_binance_full_fill_combines_to_filled() -> None:
     assert len(outcome.fills) == 2
     assert store.events == []
     assert store.outcomes == [outcome]
+
+
+def test_pair_fill_records_primary_leg_timing_gap() -> None:
+    store = FakeStore()
+    runner = coordinator(
+        store,
+        qff_outcomes=[
+            {
+                "status": ExecutionOutcomeStatus.FILLED,
+                "payload": {
+                    "submit_started_at": "2026-02-02T09:15:01+08:00",
+                    "submit_finished_at": "2026-02-02T09:15:01.250000+08:00",
+                },
+            }
+        ],
+        binance_outcomes=[
+            {
+                "status": ExecutionOutcomeStatus.FILLED,
+                "payload": {
+                    "submit_started_at": "2026-02-02T09:15:02+08:00",
+                    "submit_finished_at": "2026-02-02T09:15:02.100000+08:00",
+                },
+            }
+        ],
+    )
+
+    _, outcome = runner.execute(pair_plan())
+
+    gap = (outcome.payload or {})["primary_leg_timing_gap"]
+    assert gap["first_broker"] == BrokerName.FUBON_QFF.value
+    assert gap["second_broker"] == BrokerName.BINANCE_TSM.value
+    assert gap["submit_start_gap_seconds"] == pytest.approx(1.0)
+    assert gap["submit_handoff_gap_seconds"] == pytest.approx(0.75)
 
 
 def test_qff_full_fill_binance_failed_attempts_qff_emergency_close() -> None:

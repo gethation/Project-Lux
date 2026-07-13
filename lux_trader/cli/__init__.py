@@ -1,13 +1,10 @@
-from __future__ import annotations
+"""Command-line interface for Project Lux.
 
-import time
-from datetime import datetime
+M1 exposes only the replay-strategy surface: ``replay``, ``summary``, ``doctor``.
+Live and execution commands are added by later milestones.
+"""
 
-from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
-from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
-from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
-from lux_trader.runtime.live import LiveExecuteRunner
-
+from .dispatch import main
 from .parser import build_parser
-from .dispatch import COMMAND_HANDLERS, main
-from .commands import *  # noqa: F401,F403
+
+__all__ = ["build_parser", "main"]

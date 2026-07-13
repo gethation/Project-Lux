@@ -24,9 +24,28 @@ MONTH_CODES = {
     "K": 11,
     "L": 12,
 }
+ORDER_MONTH_CODES = {month: code for code, month in MONTH_CODES.items()}
+FUBON_MONTH_CODES = {
+    "F": 1,
+    "G": 2,
+    "H": 3,
+    "J": 4,
+    "K": 5,
+    "M": 6,
+    "N": 7,
+    "Q": 8,
+    "U": 9,
+    "V": 10,
+    "X": 11,
+    "Z": 12,
+}
 FUBON_PRODUCT_ALIASES = {
     "TMF": {"TMF", "FITM"},
-    "QFF": {"QFF"},
+    "QFF": {"QFF", "FIQFF"},
+}
+FUBON_BROKER_PRODUCTS = {
+    "FITM": "TMF",
+    "FIQFF": "QFF",
 }
 
 
@@ -107,9 +126,63 @@ def fubon_symbol_matches(row: Any, requested_symbol: str) -> bool:
     return FubonContractIdentity.from_symbol(requested_symbol).matches(row)
 
 
+def normalize_fubon_order_symbol(
+    symbol: str,
+    *,
+    product: str | None = None,
+    expiry: date | str | None = None,
+    reference_date: date | None = None,
+) -> str:
+    """Return the FutOptOrder symbol format accepted by Fubon's trading API."""
+    requested = str(symbol or "").strip().upper()
+    if not requested:
+        return requested
+    order_product = (
+        str(product or "").strip().upper()
+        or product_prefix_from_symbol(requested)
+        or product_from_numeric_symbol(requested)
+    )
+    contract_month = (
+        contract_month_from_expiry(expiry)
+        or contract_month_from_symbol(requested, reference_date=reference_date)
+        or contract_month_from_numeric_symbol(requested)
+    )
+    if not order_product or contract_month is None:
+        return requested
+    month = int(contract_month[4:6])
+    month_code = ORDER_MONTH_CODES.get(month)
+    if month_code is None:
+        return requested
+    year_digit = int(contract_month[:4]) % 10
+    return f"{order_product}{month_code}{year_digit}"
+
+
 def product_prefix_from_symbol(symbol: str) -> str | None:
-    match = re.fullmatch(r"([A-Z]+)([A-L])(\d)", symbol.strip().upper())
+    normalized = symbol.strip().upper()
+    for broker_prefix, product in FUBON_BROKER_PRODUCTS.items():
+        if normalized.startswith(broker_prefix):
+            return product
+    match = re.fullmatch(r"([A-Z]+)([A-L])(\d)", normalized)
     return match.group(1) if match is not None else None
+
+
+def product_from_numeric_symbol(symbol: str) -> str | None:
+    match = re.fullmatch(r"([A-Z]+)20\d{2}(0[1-9]|1[0-2])", symbol.strip().upper())
+    return match.group(1) if match is not None else None
+
+
+def contract_month_from_expiry(value: date | str | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return f"{value.year}{value.month:02d}"
+    digits = re.sub(r"\D", "", str(value))
+    return digits[:6] if len(digits) >= 6 else None
+
+
+def contract_month_from_numeric_symbol(symbol: str) -> str | None:
+    match = re.search(r"(20\d{2})(0[1-9]|1[0-2])", symbol.strip().upper())
+    return f"{match.group(1)}{match.group(2)}" if match is not None else None
 
 
 def contract_month_from_symbol(
@@ -117,13 +190,30 @@ def contract_month_from_symbol(
     *,
     reference_date: date | None = None,
 ) -> str | None:
-    match = re.fullmatch(r"([A-Z]+)([A-L])(\d)", symbol.strip().upper())
+    normalized = symbol.strip().upper()
+    reference = reference_date or datetime.now().astimezone().date()
+    fubon_match = re.fullmatch(r"(FI[A-Z]+)([FGHJKMNQUVXZ])(\d{2})", normalized)
+    if fubon_match is not None:
+        code_month = FUBON_MONTH_CODES.get(fubon_match.group(2))
+        numeric_tail = int(fubon_match.group(3))
+        month = (
+            numeric_tail
+            if 1 <= numeric_tail <= 12 and numeric_tail == code_month
+            else code_month
+        )
+        if month is None:
+            return None
+        year = reference.year
+        if month < reference.month:
+            year += 1
+        return f"{year}{month:02d}"
+
+    match = re.fullmatch(r"([A-Z]+)([A-L])(\d)", normalized)
     if match is None:
         return None
     month = MONTH_CODES.get(match.group(2))
     if month is None:
         return None
-    reference = reference_date or datetime.now().astimezone().date()
     year_digit = int(match.group(3))
     decade = reference.year - reference.year % 10
     year = decade + year_digit
@@ -180,4 +270,3 @@ def fubon_lot_matches(row: Any, lot: float | int) -> bool:
         "qty",
     )
     return actual is not None and abs(actual - float(lot)) <= 1e-12
-

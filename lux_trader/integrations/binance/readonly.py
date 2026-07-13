@@ -68,6 +68,22 @@ class BinanceReadOnlyBroker:
             },
         )
 
+    def fetch_margins(self) -> BrokerAccountSnapshot:
+        """Balance only (equity + totalUnrealizedProfit) for the live account panel.
+
+        Skips fetch_positions / fetch_open_orders so the per-minute panel refresh
+        stays a single lightweight private call.
+        """
+        exchange = self._ensure_exchange()
+        balance = exchange.fetch_balance()
+        return BrokerAccountSnapshot(
+            broker=self.broker,
+            account_id="BINANCE_USDM",
+            fetched_at=self.clock(),
+            margins=normalize_binance_margins(balance),
+            raw={"exchange": "binanceusdm", "symbol": self.symbol},
+        )
+
     def close(self) -> None:
         close = getattr(self.exchange, "close", None)
         if callable(close):
@@ -84,6 +100,10 @@ class BinanceReadOnlyBroker:
             "secret": secret,
             "enableRateLimit": True,
             "timeout": 30_000,
+            # Futures-only API keys have no spot-wallet permission; stop
+            # load_markets from calling sapi/v1/capital/config/getall
+            # (it fails with -2015 and is not needed for USDM futures).
+            "options": {"fetchCurrencies": False},
         }
         if self.exchange_factory is not None:
             self.exchange = self.exchange_factory(options)
@@ -141,19 +161,45 @@ def normalize_binance_order(
 def normalize_binance_margins(
     balance: dict[str, Any],
 ) -> tuple[BrokerMarginSnapshot, ...]:
+    # /fapi account-level figures live in ccxt's balance["info"]; keep the
+    # margin fields margin management needs (equity incl. unrealized PnL and
+    # maintenance margin) in raw so BrokerMarginSnapshot stays unchanged.
+    # totalUnrealizedProfit lets the live account panel read position uPnL
+    # directly (falls back to totalMarginBalance - totalWalletBalance).
+    info = balance.get("info")
+    account_fields: dict[str, Any] = {}
+    if isinstance(info, dict):
+        for name in (
+            "totalMarginBalance",
+            "totalMaintMargin",
+            "totalWalletBalance",
+            "availableBalance",
+            "totalUnrealizedProfit",
+        ):
+            if info.get(name) is not None:
+                account_fields[name] = info.get(name)
     rows: list[BrokerMarginSnapshot] = []
     for currency in ("USDT",):
         item = balance.get(currency)
         if not isinstance(item, dict):
             continue
+        raw = dict(safe_jsonable(item) or {})
+        raw.update(safe_jsonable(account_fields) or {})
+        total_margin_balance = parse_optional_float(
+            account_fields.get("totalMarginBalance")
+        )
         rows.append(
             BrokerMarginSnapshot(
                 broker=BrokerName.BINANCE_TSM,
                 currency=currency,
-                equity=parse_optional_float(item.get("total")),
+                equity=(
+                    total_margin_balance
+                    if total_margin_balance is not None
+                    else parse_optional_float(item.get("total"))
+                ),
                 available=parse_optional_float(item.get("free")),
                 margin_used=parse_optional_float(item.get("used")),
-                raw=safe_jsonable(item),
+                raw=raw,
             )
         )
     return tuple(rows)

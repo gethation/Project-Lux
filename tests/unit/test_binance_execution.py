@@ -5,12 +5,13 @@ from pathlib import Path
 
 import pytest
 
-import lux_trader.cli as cli_module
+import lux_trader.cli.commands_execution as cli_module
 from lux_trader.integrations.binance.execution import (
     BinanceTsmExecutionAdapter,
     normalize_binance_order_quantity,
 )
-from lux_trader.cli import build_parser, command_binance_exec_smoke
+from lux_trader.cli.parser import build_parser
+from lux_trader.cli.commands_execution import command_exec_smoke as command_binance_exec_smoke
 from lux_trader.execution import ExecutionOutcome, ExecutionOutcomeStatus
 from lux_trader.execution.intent import (
     ExecutionLeg,
@@ -38,10 +39,14 @@ class FakeExchange:
         *,
         create_order_response: dict | None = None,
         fetch_order_response: dict | None = None,
+        fetch_order_responses: list[dict] | None = None,
         create_error: Exception | None = None,
         fetch_error: Exception | None = None,
+        client_lookup_response: dict | None = None,
+        client_lookup_error: Exception | None = None,
         open_orders: list[dict] | None = None,
         positions: list[dict] | None = None,
+        position_results: list[list[dict]] | None = None,
         current_margin_mode: str | None = None,
         current_leverage: int | None = None,
         precision_quantity: str | None = None,
@@ -49,15 +54,22 @@ class FakeExchange:
     ) -> None:
         self.create_order_response = create_order_response
         self.fetch_order_response = fetch_order_response
+        self.fetch_order_responses = fetch_order_responses
         self.create_error = create_error
         self.fetch_error = fetch_error
+        self.client_lookup_response = client_lookup_response
+        self.client_lookup_error = client_lookup_error
         self.open_orders = open_orders or []
         self.positions = positions or []
+        self.position_results = position_results
         self.current_margin_mode = current_margin_mode
         self.current_leverage = current_leverage
         self.precision_quantity = precision_quantity
         self.minimum_amount = minimum_amount
         self.create_calls: list[dict] = []
+        self.fetch_calls: list[dict] = []
+        self.client_lookup_calls: list[dict] = []
+        self.position_calls = 0
         self.set_margin_mode_calls: list[tuple[str, str]] = []
         self.set_leverage_calls: list[tuple[int, str]] = []
         self.load_markets_called = False
@@ -93,9 +105,20 @@ class FakeExchange:
             "amount": amount,
         }
 
-    def fetch_order(self, order_id: str, symbol: str) -> dict:
+    def fetch_order(self, order_id, symbol: str, params: dict | None = None) -> dict:
+        if params and params.get("origClientOrderId"):
+            self.client_lookup_calls.append(dict(params))
+            if self.client_lookup_error is not None:
+                raise self.client_lookup_error
+            if self.client_lookup_response is None:
+                raise TypeError("client order id lookup not configured")
+            return self.client_lookup_response
+        self.fetch_calls.append({"order_id": order_id, "symbol": symbol})
         if self.fetch_error is not None:
             raise self.fetch_error
+        if self.fetch_order_responses is not None:
+            index = min(len(self.fetch_calls) - 1, len(self.fetch_order_responses) - 1)
+            return self.fetch_order_responses[index]
         amount = self.create_calls[-1]["amount"] if self.create_calls else 1.0
         return self.fetch_order_response or {
             "id": order_id,
@@ -111,6 +134,10 @@ class FakeExchange:
         return self.open_orders
 
     def fetch_positions(self, symbols: list[str]) -> list[dict]:
+        self.position_calls += 1
+        if self.position_results is not None:
+            index = min(self.position_calls - 1, len(self.position_results) - 1)
+            return self.position_results[index]
         return self.positions
 
     def amount_to_precision(self, symbol: str, amount: float) -> str:
@@ -216,16 +243,16 @@ def test_adapter_loads_env_and_places_entry_market_without_reduce_only(
     assert fake_exchange.load_markets_called
     assert captured_options["apiKey"] == "test-key"
     assert captured_options["secret"] == "test-secret"
-    assert fake_exchange.create_calls == [
-        {
-            "symbol": SYMBOL,
-            "order_type": "market",
-            "side": "buy",
-            "amount": 0.01,
-            "price": None,
-            "params": {},
-        }
-    ]
+    assert len(fake_exchange.create_calls) == 1
+    create_call = fake_exchange.create_calls[0]
+    assert create_call["symbol"] == SYMBOL
+    assert create_call["order_type"] == "market"
+    assert create_call["side"] == "buy"
+    assert create_call["amount"] == 0.01
+    assert create_call["price"] is None
+    assert "reduceOnly" not in create_call["params"]
+    # every order carries a pre-assigned client id for create-timeout recovery
+    assert create_call["params"]["newClientOrderId"].startswith("LUX-")
     assert outcome.fills[0].price == 123.45
 
 
@@ -238,7 +265,9 @@ def test_adapter_exit_order_uses_reduce_only() -> None:
     ).execute(execution_plan(plan_type=ExecutionPlanType.EXIT, side=OrderSide.SELL))
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
-    assert fake_exchange.create_calls[0]["params"] == {"reduceOnly": True}
+    params = fake_exchange.create_calls[0]["params"]
+    assert params["reduceOnly"] is True
+    assert params["newClientOrderId"].startswith("LUX-")
 
 
 def test_adapter_normalizes_quantity_before_order_and_records_actual_request() -> None:
@@ -355,6 +384,8 @@ def test_adapter_maps_partial_fill_to_paused() -> None:
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
+        sleep=lambda _: None,
+        max_poll_seconds=0,
     ).execute(execution_plan())
 
     assert outcome.status == ExecutionOutcomeStatus.PARTIAL_FILL
@@ -385,18 +416,111 @@ def test_adapter_maps_canceled_order_to_failed() -> None:
     assert outcome.fills == ()
 
 
-def test_adapter_create_order_exception_is_failed() -> None:
-    fake_exchange = FakeExchange(create_error=RuntimeError("exchange rejected"))
+def test_adapter_create_order_exception_is_failed_when_lookup_confirms_absence() -> None:
+    class OrderNotFound(Exception):
+        pass
+
+    fake_exchange = FakeExchange(
+        create_error=RuntimeError("exchange rejected"),
+        client_lookup_error=OrderNotFound("Order does not exist"),
+    )
 
     outcome = BinanceTsmExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
+        sleep=lambda _: None,
     ).execute(execution_plan())
 
     assert outcome.status == ExecutionOutcomeStatus.FAILED
     assert outcome.recommended_state == StrategyState.PAUSED
     assert "create_order failed" in outcome.message
+    assert outcome.payload["recovery"]["status"] == "not_found"
+    assert outcome.payload["client_order_id"].startswith("LUX-")
+    # the client order id was pre-assigned to the create request... which
+    # failed, so it only appears in the recovery lookup
+    assert fake_exchange.client_lookup_calls
+
+
+def test_adapter_create_exception_recovers_filled_order_by_client_order_id() -> None:
+    fake_exchange = FakeExchange(
+        create_error=RuntimeError("read timeout"),
+        client_lookup_response={
+            "id": "order-77",
+            "status": "closed",
+            "amount": 0.01,
+            "filled": 0.01,
+            "average": 125.0,
+        },
+        fetch_order_response={
+            "id": "order-77",
+            "status": "closed",
+            "amount": 0.01,
+            "filled": 0.01,
+            "average": 125.0,
+        },
+    )
+
+    outcome = BinanceTsmExecutionAdapter(
+        SYMBOL,
+        exchange=fake_exchange,
+        clock=ts,
+        sleep=lambda _: None,
+    ).execute(execution_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.FILLED
+    assert outcome.recommended_state is None
+    assert outcome.fills[0].quantity == 0.01
+    assert outcome.payload["recovery"]["status"] == "found"
+
+
+def test_adapter_create_exception_with_failed_lookup_uses_position_delta() -> None:
+    fake_exchange = FakeExchange(
+        create_error=RuntimeError("read timeout"),
+        client_lookup_error=RuntimeError("lookup also down"),
+        position_results=[
+            [],  # before order: flat
+            [  # after order: the position exists — the order actually filled
+                {
+                    "symbol": SYMBOL,
+                    "info": {"symbol": "TSMUSDT", "positionAmt": "0.01"},
+                }
+            ],
+        ],
+    )
+
+    outcome = BinanceTsmExecutionAdapter(
+        SYMBOL,
+        exchange=fake_exchange,
+        clock=ts,
+        sleep=lambda _: None,
+        recovery_attempts=1,
+    ).execute(execution_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.FILLED
+    assert outcome.payload["fill_source"] == "position_delta"
+    assert outcome.payload["recovery"]["status"] == "error"
+    assert outcome.fills[0].quantity == pytest.approx(0.01)
+
+
+def test_adapter_create_exception_without_any_evidence_is_unknown() -> None:
+    fake_exchange = FakeExchange(
+        create_error=RuntimeError("read timeout"),
+        client_lookup_error=RuntimeError("lookup also down"),
+    )
+
+    outcome = BinanceTsmExecutionAdapter(
+        SYMBOL,
+        exchange=fake_exchange,
+        clock=ts,
+        sleep=lambda _: None,
+        recovery_attempts=1,
+    ).execute(execution_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.UNKNOWN
+    assert outcome.recommended_state == StrategyState.PAUSED
+    assert "create_order outcome unknown" in outcome.message
+    assert outcome.payload["recovery"]["status"] == "error"
 
 
 def test_adapter_fetch_order_exception_is_unknown() -> None:
@@ -406,12 +530,44 @@ def test_adapter_fetch_order_exception_is_unknown() -> None:
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
+        sleep=lambda _: None,
+        max_poll_seconds=1.0,
+        poll_interval_seconds=0.5,
     ).execute(execution_plan())
 
     assert outcome.status == ExecutionOutcomeStatus.UNKNOWN
     assert outcome.recommended_state == StrategyState.PAUSED
     assert outcome.orders[0].status == OrderStatus.OPEN
-    assert "fetch_order failed" in outcome.message
+    # every fetch attempt is recorded for audit
+    assert len(outcome.payload["poll_errors"]) == 3
+
+
+def test_adapter_polling_confirms_fill_on_second_fetch_attempt() -> None:
+    fake_exchange = FakeExchange(
+        fetch_order_responses=[
+            {"id": "order-1", "status": "open", "amount": 0.01, "filled": 0.0},
+            {
+                "id": "order-1",
+                "status": "closed",
+                "amount": 0.01,
+                "filled": 0.01,
+                "average": 124.5,
+            },
+        ]
+    )
+
+    outcome = BinanceTsmExecutionAdapter(
+        SYMBOL,
+        exchange=fake_exchange,
+        clock=ts,
+        sleep=lambda _: None,
+        max_poll_seconds=1.0,
+        poll_interval_seconds=0.5,
+    ).execute(execution_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.FILLED
+    assert outcome.payload["fill_source"] == "order_result"
+    assert len(fake_exchange.fetch_calls) == 2
 
 
 @pytest.mark.parametrize(
@@ -545,24 +701,25 @@ def set_smoke_env(monkeypatch) -> None:
 
 def test_binance_exec_smoke_requires_quantity_arg(tmp_path: Path) -> None:
     parser = build_parser()
+    args = parser.parse_args(
+        [
+            "exec-smoke", "--venue", "binance",
+            "--config",
+            str(write_config(tmp_path)),
+            "--confirm-symbol",
+            SYMBOL,
+        ]
+    )
 
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            [
-                "binance-exec-smoke",
-                "--config",
-                str(write_config(tmp_path)),
-                "--confirm-symbol",
-                SYMBOL,
-            ]
-        )
+    with pytest.raises(SystemExit, match="--quantity is required"):
+        command_binance_exec_smoke(args)
 
 
 def test_binance_exec_smoke_rejects_missing_env_gates(tmp_path: Path) -> None:
     parser = build_parser()
     args = parser.parse_args(
         [
-            "binance-exec-smoke",
+            "exec-smoke", "--venue", "binance",
             "--config",
             str(write_config(tmp_path)),
             "--quantity",
@@ -584,7 +741,7 @@ def test_binance_exec_smoke_rejects_symbol_mismatch(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "binance-exec-smoke",
+            "exec-smoke", "--venue", "binance",
             "--config",
             str(write_config(tmp_path)),
             "--quantity",
@@ -612,7 +769,7 @@ def test_binance_exec_smoke_rejects_existing_position(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "binance-exec-smoke",
+            "exec-smoke", "--venue", "binance",
             "--config",
             str(write_config(tmp_path)),
             "--quantity",
@@ -643,7 +800,7 @@ def test_binance_exec_smoke_rejects_existing_open_orders(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "binance-exec-smoke",
+            "exec-smoke", "--venue", "binance",
             "--config",
             str(write_config(tmp_path)),
             "--quantity",
@@ -675,7 +832,7 @@ def test_binance_exec_smoke_opens_then_reduce_only_closes(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "binance-exec-smoke",
+            "exec-smoke", "--venue", "binance",
             "--config",
             str(write_config(tmp_path)),
             "--quantity",

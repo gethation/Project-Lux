@@ -9,6 +9,7 @@ from lux_trader.cli import build_parser
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.market_data import LiveQuote, LiveQuoteSet
 from lux_trader.core.models import MarketBar, StrategyAction, StrategyState
+from lux_trader.margin.display import AccountDisplay
 from lux_trader.terminal_ui import (
     LiveTerminalReporter,
     format_countdown,
@@ -156,15 +157,75 @@ def test_live_terminal_reporter_clears_live_before_permanent_lines() -> None:
     reporter.error(ts("2026-06-18T09:31:08+08:00"), "RuntimeError: Fubon quote fetch failed")
 
     output = stream.getvalue()
+    # No account_display passed -> pnl/margin render as NA.
     assert (
         "09:12 BAR  mid=1.86 z=1.78 "
         "shortSpread(spread=1.62,z=1.51) "
-        "longSpread(spread=2.06,z=1.93) FLAT none pnl=0 eq=1,000,000\n"
+        "longSpread(spread=2.06,z=1.93) FLAT none pnl=NA margin(bina=NA,fubon=NA)\n"
     ) in output
     assert "09:13:23 WARN stale_tsm skipped_minute\n" in output
     assert "09:14:00 EVENT entry_signal zscore_crossed\n" in output
     assert "09:31:08 ERR RuntimeError: Fubon quote fetch failed\n" in output
     assert "\x1b[" not in output
+
+
+def test_live_terminal_reporter_bar_renders_account_pnl_and_margin() -> None:
+    stream = io.StringIO()
+    reporter = LiveTerminalReporter(stream, color=False)
+    spread_snapshot = TradableSpreadSnapshot(
+        mid_spread=1.861422,
+        mid_zscore=1.7781,
+        short_spread=1.62,
+        short_zscore=1.51,
+        long_spread=2.06,
+        long_zscore=1.93,
+    )
+
+    reporter.bar(
+        ts("2026-06-18T09:12:00+08:00"),
+        spread_snapshot,
+        StrategyState.OPEN,
+        StrategyAction.NONE,
+        "no_action",
+        0.0,
+        1_000_000.0,
+        account_display=AccountDisplay(
+            combined_upnl_twd=12_345.0,
+            binance_ratio=1.42,
+            fubon_ratio=1.38,
+        ),
+    )
+
+    output = stream.getvalue()
+    assert "pnl=12,345 margin(bina=142%,fubon=138%)\n" in output
+
+
+def test_live_terminal_reporter_bar_marks_stale_account_display() -> None:
+    stream = io.StringIO()
+    reporter = LiveTerminalReporter(stream, color=False)
+    spread_snapshot = TradableSpreadSnapshot(
+        mid_spread=1.0,
+        mid_zscore=0.5,
+        short_spread=1.0,
+        short_zscore=0.5,
+        long_spread=1.0,
+        long_zscore=0.5,
+    )
+
+    reporter.bar(
+        ts("2026-06-18T09:12:00+08:00"),
+        spread_snapshot,
+        StrategyState.OPEN,
+        StrategyAction.NONE,
+        "no_action",
+        0.0,
+        1_000_000.0,
+        account_display=AccountDisplay(binance_ratio=1.42, fubon_ratio=1.38, stale=True),
+    )
+
+    output = stream.getvalue()
+    # Combined uPnL unavailable -> NA; stale marked with a ~ prefix on the ratios.
+    assert "pnl=NA margin(~bina=142%,fubon=138%)\n" in output
 
 
 def test_live_terminal_reporter_compacts_action_reason_and_supports_color() -> None:
@@ -368,24 +429,30 @@ def test_tradable_spread_treats_qff_diagnostic_quote_as_stale_qff() -> None:
     assert snapshot.missing_reason == "stale_qff"
 
 
-def test_live_paper_cli_flags_default_on_and_can_disable_ui_or_color() -> None:
+def test_live_dry_run_cli_flags_default_on_and_can_disable_ui_or_color() -> None:
     parser = build_parser()
 
-    defaults = parser.parse_args(["live-paper", "--config", "configs/live.example.toml"])
+    defaults = parser.parse_args(
+        ["live-dry-run", "--config", "configs/live.example.toml"]
+    )
+    assert defaults.ui == "compact"
     assert not defaults.quiet_ui
     assert not defaults.no_color
     assert not defaults.skip_warmup
 
     disabled = parser.parse_args(
         [
-            "live-paper",
+            "live-dry-run",
             "--config",
             "configs/live.example.toml",
+            "--ui",
+            "compact",
             "--quiet-ui",
             "--no-color",
             "--skip-warmup",
         ]
     )
+    assert disabled.ui == "compact"
     assert disabled.quiet_ui
     assert disabled.no_color
     assert disabled.skip_warmup

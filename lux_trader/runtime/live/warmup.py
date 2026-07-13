@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
-from lux_trader.brokers import PaperBroker
 from lux_trader.config import AppConfig
 from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, QffContractSelection
 from lux_trader.core.calendar import live_session_status
@@ -301,7 +300,7 @@ def load_or_build_live_indicator(
     if len(seed_bars) < config.strategy.zscore_window:
         if not allow_rebuild:
             raise RuntimeError(
-                "Warmup seed is missing or insufficient for live-paper startup: "
+                "Warmup seed is missing or insufficient for live startup: "
                 f"found {len(seed_bars)} bars for {qff_symbol}, "
                 f"need {config.strategy.zscore_window}. "
                 "Remove --skip-warmup or run warmup-live first."
@@ -313,7 +312,7 @@ def load_or_build_live_indicator(
                 -1,
                 end,
                 "warmup_auto_before_live",
-                "live-paper auto warmup started",
+                "auto warmup started",
                 {
                     "qff_symbol": qff_symbol,
                     "qff_expiry": qff_expiry,
@@ -356,7 +355,7 @@ def load_or_build_live_indicator(
                 seed_bars[-1].row_index,
                 seed_bars[-1].timestamp,
                 "warmup_auto_before_live",
-                "live-paper auto warmup bars written",
+                "auto warmup bars written",
                 {
                     "bars": len(seed_bars),
                     "qff_symbol": qff_symbol,

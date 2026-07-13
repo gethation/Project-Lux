@@ -2,3 +2,4 @@ numpy>=2.4
 pandas>=3.0
 ccxt>=4.5
 requests>=2.34
+rich>=13.0

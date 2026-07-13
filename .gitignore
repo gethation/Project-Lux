@@ -1,25 +1,32 @@
+# Secrets / credentials — never commit
 .env
 .env.*
 *.pfx
-*.p12
-*.local.toml
-.idea/
-.vs/
+*.pem
+*.key
+
+# Local / runtime-generated configs
+configs/*.local.toml
+configs/*.runtime_*.toml
+
+# Runtime artifacts (SQLite stores, logs, caches, generated CSVs)
+data/
+log/
+logs/
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.tmp_pytest*/
 .mypy_cache/
 .ruff_cache/
-data/*.db
-data/*.sqlite
-data/*.sqlite3
-data/*.sqlite3-shm
-data/*.sqlite3-wal
-data/taifex_cache/
-data/qff_warmup_check_*.csv
-logs/*
-!logs/.gitkeep
-log/
-dist/
-build/
 *.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-import lux_trader.cli as cli_module
-from lux_trader.cli import (
-    build_parser,
-    command_fubon_exec_smoke,
-    command_fubon_manual_close,
-    command_fubon_order_records,
+import lux_trader.cli.commands_execution as cli_module
+from lux_trader.cli.parser import build_parser
+from lux_trader.cli.commands_execution import (
+    command_broker_status as command_fubon_order_records,
+    command_exec_smoke as command_fubon_exec_smoke,
+    command_manual_close as command_fubon_manual_close,
 )
 from lux_trader.execution import ExecutionOutcome, ExecutionOutcomeStatus
 from lux_trader.execution.intent import (
@@ -23,6 +23,7 @@ from lux_trader.integrations.fubon.contracts import (
     FubonContractIdentity,
     contract_month_from_symbol,
     fubon_symbol_matches,
+    normalize_fubon_order_symbol,
 )
 from lux_trader.integrations.fubon.execution import (
     FubonFutureExecutionAdapter,
@@ -66,9 +67,11 @@ class FakeFutOpt:
         self,
         *,
         order_results: list[dict] | None = None,
+        order_results_response: FakeResult | None = None,
         place_result: FakeResult | None = None,
     ) -> None:
         self.order_results = order_results or []
+        self.order_results_response = order_results_response
         self.place_result = place_result
         self.place_calls: list[dict] = []
         self.get_order_results_calls = []
@@ -95,14 +98,27 @@ class FakeFutOpt:
 
     def get_order_results(self, account, market_type):
         self.get_order_results_calls.append((account, market_type))
+        if self.order_results_response is not None:
+            return self.order_results_response
         return FakeResult(self.order_results)
 
 
 class FakeAccounting:
-    def __init__(self, positions: list[dict] | None = None) -> None:
+    def __init__(
+        self,
+        positions: list[dict] | None = None,
+        *,
+        position_results: list[list[dict]] | None = None,
+    ) -> None:
         self.positions = positions or []
+        self.position_results = position_results
+        self.calls = 0
 
     def query_single_position(self, account):
+        self.calls += 1
+        if self.position_results is not None:
+            index = min(self.calls - 1, len(self.position_results) - 1)
+            return FakeResult(self.position_results[index])
         return FakeResult(self.positions)
 
 
@@ -111,14 +127,20 @@ class FakeSdk:
         self,
         *,
         order_results: list[dict] | None = None,
+        order_results_response: FakeResult | None = None,
         place_result: FakeResult | None = None,
         positions: list[dict] | None = None,
+        position_results: list[list[dict]] | None = None,
     ) -> None:
         self.futopt = FakeFutOpt(
             order_results=order_results,
+            order_results_response=order_results_response,
             place_result=place_result,
         )
-        self.futopt_accounting = FakeAccounting(positions)
+        self.futopt_accounting = FakeAccounting(
+            positions,
+            position_results=position_results,
+        )
         self.logout_called = False
 
     def logout(self) -> None:
@@ -180,6 +202,21 @@ def filled_row(*, filled_lot: float = 1.0, status: str = "filled") -> dict:
         "filled_lot": filled_lot,
         "average_price": 123.0,
         "status": status,
+    }
+
+
+def active_row(*, symbol: str = SYMBOL, expiry_date: str = "202607") -> dict:
+    return {
+        "order_no": "order-1",
+        "seq_no": "seq-1",
+        "symbol": symbol,
+        "expiry_date": expiry_date,
+        "buy_sell": "Buy",
+        "lot": 1,
+        "after_lot": 1,
+        "filled_lot": 0,
+        "filled_money": 0,
+        "status": "10",
     }
 
 
@@ -320,10 +357,43 @@ def test_fubon_repr_row_parser_and_tmf_symbol_match() -> None:
     assert fubon_symbol_matches(raw, "TMFG6")
 
 
+def test_normalize_fubon_order_symbol_converts_market_and_broker_aliases() -> None:
+    reference = date(2026, 7, 2)
+
+    assert (
+        normalize_fubon_order_symbol(
+            "QFF202607",
+            product="QFF",
+            reference_date=reference,
+        )
+        == "QFFG6"
+    )
+    assert (
+        normalize_fubon_order_symbol(
+            "FIQFFN07",
+            product="QFF",
+            reference_date=reference,
+        )
+        == "QFFG6"
+    )
+    assert (
+        normalize_fubon_order_symbol(
+            "FITMN07",
+            product="TMF",
+            reference_date=reference,
+        )
+        == "TMFG6"
+    )
+
+
 def test_contract_identity_supports_tmf_and_qff_aliases() -> None:
     tmf = FubonContractIdentity.from_symbol(
         "TMFG6",
         reference_date=date(2026, 6, 25),
+    )
+    fitm = FubonContractIdentity.from_symbol(
+        "FITMN07",
+        reference_date=date(2026, 7, 2),
     )
     qff = FubonContractIdentity.from_symbol(
         "QFFG6",
@@ -334,9 +404,43 @@ def test_contract_identity_supports_tmf_and_qff_aliases() -> None:
     assert tmf.contract_month == "202607"
     assert "FITM" in tmf.broker_symbols
     assert tmf.matches(fubon_raw_row(fubon_repr_order_result()), side=OrderSide.BUY, lot=1)
+    assert fitm.product == "TMF"
+    assert fitm.contract_month == "202607"
+    assert "FITM" in fitm.broker_symbols
+    assert fitm.matches(
+        {
+            "symbol": "FITM",
+            "expiry_date": "202607",
+            "buy_sell": "Buy",
+            "lot": 1,
+        },
+        side=OrderSide.BUY,
+        lot=1,
+    )
+    assert not fitm.matches(
+        {
+            "symbol": "FITM",
+            "expiry_date": "202608",
+            "buy_sell": "Buy",
+            "lot": 1,
+        },
+        side=OrderSide.BUY,
+        lot=1,
+    )
     assert qff.product == "QFF"
     assert qff.contract_month == "202607"
+    assert "FIQFF" in qff.broker_symbols
     assert qff.matches(fubon_raw_row(qff_repr_order_result()), side=OrderSide.SELL, lot=2)
+    assert qff.matches(
+        {
+            "symbol": "FIQFF",
+            "expiry_date": "202607",
+            "buy_sell": "Buy",
+            "lot": 1,
+        },
+        side=OrderSide.BUY,
+        lot=1,
+    )
 
 
 def test_fubon_status_mapping_uses_fill_quantity_before_status_code() -> None:
@@ -413,6 +517,55 @@ def test_adapter_maps_pending_timeout_to_unknown() -> None:
     assert outcome.recommended_state == StrategyState.PAUSED
     assert outcome.orders[0].status == OrderStatus.OPEN
     assert outcome.fills == ()
+
+
+def test_adapter_uses_position_delta_when_order_result_stays_active() -> None:
+    fake_sdk = FakeSdk(
+        order_results=[active_row(symbol="FITM")],
+        position_results=[
+            [],
+            [
+                {
+                    "symbol": "FITM",
+                    "expiry_date": 202607,
+                    "buy_sell": "Buy",
+                    "orig_lots": 1,
+                    "tradable_lot": 1,
+                }
+            ],
+        ],
+    )
+
+    outcome = adapter_for(fake_sdk).execute(execution_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.FILLED
+    assert outcome.recommended_state is None
+    assert outcome.orders[0].status == OrderStatus.FILLED
+    assert outcome.fills[0].quantity == 1
+    assert outcome.fills[0].price == 100.0
+    assert outcome.payload["fill_source"] == "position_delta"
+    assert outcome.payload["position_delta"]["before"] == 0.0
+    assert outcome.payload["position_delta"]["after"] == 1.0
+    assert outcome.payload["position_delta"]["confirmed_fill_lot"] == 1.0
+    assert "position_delta_confirmed" in outcome.message
+
+
+def test_adapter_records_order_poll_errors_in_payload() -> None:
+    fake_sdk = FakeSdk(
+        order_results_response=FakeResult(
+            None,
+            is_success=False,
+            message="業務系統流量控管",
+        ),
+    )
+
+    outcome = adapter_for(fake_sdk).execute(execution_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.UNKNOWN
+    assert outcome.recommended_state == StrategyState.PAUSED
+    assert outcome.payload["poll_errors"]
+    assert outcome.payload["poll_errors"][0]["stage"] == "get_order_results"
+    assert "業務系統流量控管" in outcome.payload["poll_errors"][0]["error"]
 
 
 @pytest.mark.parametrize(
@@ -608,19 +761,20 @@ def clear_smoke_env(monkeypatch) -> None:
 
 def test_fubon_exec_smoke_requires_lot_arg(tmp_path: Path) -> None:
     parser = build_parser()
+    args = parser.parse_args(
+        [
+            "exec-smoke", "--venue", "fubon",
+            "--config",
+            str(write_config(tmp_path)),
+            "--symbol",
+            SYMBOL,
+            "--confirm-symbol",
+            SYMBOL,
+        ]
+    )
 
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            [
-                "fubon-exec-smoke",
-                "--config",
-                str(write_config(tmp_path)),
-                "--symbol",
-                SYMBOL,
-                "--confirm-symbol",
-                SYMBOL,
-            ]
-        )
+    with pytest.raises(SystemExit, match="--lot is required"):
+        command_fubon_exec_smoke(args)
 
 
 def test_fubon_exec_smoke_rejects_missing_env_gates(
@@ -631,7 +785,7 @@ def test_fubon_exec_smoke_rejects_missing_env_gates(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "fubon-exec-smoke",
+            "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -656,7 +810,7 @@ def test_fubon_exec_smoke_rejects_symbol_mismatch(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "fubon-exec-smoke",
+            "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -686,7 +840,7 @@ def test_fubon_exec_smoke_rejects_existing_position(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "fubon-exec-smoke",
+            "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -719,7 +873,7 @@ def test_fubon_exec_smoke_rejects_existing_open_orders(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "fubon-exec-smoke",
+            "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -753,7 +907,7 @@ def test_fubon_exec_smoke_opens_then_closes(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "fubon-exec-smoke",
+            "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -802,7 +956,7 @@ def test_fubon_exec_smoke_entry_unknown_prints_diagnostics_without_close(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "fubon-exec-smoke",
+            "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -842,10 +996,10 @@ def test_fubon_order_records_readonly_prints_position_and_records(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "fubon-order-records",
+            "broker-status",
             "--config",
             str(write_config(tmp_path)),
-            "--symbol",
+            "--orders",
             SYMBOL,
             "--raw-json",
         ]
@@ -871,7 +1025,7 @@ def test_fubon_manual_close_requires_env_gates(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "fubon-manual-close",
+            "manual-close", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -897,7 +1051,7 @@ def test_fubon_manual_close_rejects_confirm_symbol_mismatch(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "fubon-manual-close",
+            "manual-close", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -929,7 +1083,7 @@ def test_fubon_manual_close_rejects_open_orders(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "fubon-manual-close",
+            "manual-close", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -964,7 +1118,7 @@ def test_fubon_manual_close_sends_close_order_and_reports_success(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "fubon-manual-close",
+            "manual-close", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -1010,7 +1164,7 @@ def test_fubon_manual_close_partial_fill_requires_manual_intervention(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "fubon-manual-close",
+            "manual-close", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -1048,7 +1202,7 @@ def test_fubon_exec_smoke_close_failure_warns_manual_intervention(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "fubon-exec-smoke",
+            "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",

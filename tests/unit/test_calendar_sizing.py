@@ -203,6 +203,37 @@ def test_position_sizing_uses_binance_contract_quantity(strategy_config, fee_con
     assert sizing.tsm_units == pytest.approx(-17.27244229)
 
 
+def test_position_sizing_can_use_fixed_qff_lots(strategy_config, fee_config) -> None:
+    sizing = size_position_for_direction(
+        Direction.SHORT_TSM_LONG_QFF,
+        tsm_price=2880.31068,
+        qff_price=2487.5,
+        strategy=replace_strategy_qff_lots(strategy_config, 2),
+        fees=fee_config,
+    )
+
+    assert sizing is not None
+    assert sizing.qff_contracts == 2
+    assert sizing.raw_qff_contracts == 2.0
+    assert sizing.actual_leg_notional_twd == pytest.approx(497_500.0)
+    assert sizing.tsm_units == pytest.approx(-34.54488459)
+
+
+def test_fixed_qff_lots_preserves_direction_signs(strategy_config, fee_config) -> None:
+    sizing = size_position_for_direction(
+        Direction.LONG_TSM_SHORT_QFF,
+        tsm_price=2500.0,
+        qff_price=250.0,
+        strategy=replace_strategy_qff_lots(strategy_config, 3),
+        fees=fee_config,
+    )
+
+    assert sizing is not None
+    assert sizing.qff_contracts == -3
+    assert sizing.qff_units == -300.0
+    assert sizing.tsm_units == pytest.approx(6.0)
+
+
 def test_tsm_fee_uses_binance_contract_twd_price(fee_config) -> None:
     costs = fill_costs(
         tsm_units=-17.27244229,
@@ -223,4 +254,17 @@ def replace_strategy_notional(strategy_config, leg_notional_twd: float):
         initial_capital_twd=strategy_config.initial_capital_twd,
         max_entry_delay_minutes=strategy_config.max_entry_delay_minutes,
         zscore_window=strategy_config.zscore_window,
+        qff_lots=strategy_config.qff_lots,
+    )
+
+
+def replace_strategy_qff_lots(strategy_config, qff_lots: int):
+    return strategy_config.__class__(
+        entry_z=strategy_config.entry_z,
+        exit_z=strategy_config.exit_z,
+        leg_notional_twd=strategy_config.leg_notional_twd,
+        initial_capital_twd=strategy_config.initial_capital_twd,
+        max_entry_delay_minutes=strategy_config.max_entry_delay_minutes,
+        zscore_window=strategy_config.zscore_window,
+        qff_lots=qff_lots,
     )

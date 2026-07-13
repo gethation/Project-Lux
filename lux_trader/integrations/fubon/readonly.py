@@ -17,6 +17,7 @@ from .auth import (
     login_fubon_sdk,
     select_futopt_account,
 )
+from .contracts import FubonContractIdentity
 from .parsing import (
     apply_side_sign,
     fubon_first_float,
@@ -57,12 +58,14 @@ class FubonReadOnlyBroker:
         accounts: list[Any] | None = None,
         sdk_factory: Callable[[], Any] | None = None,
         clock: Callable[[], datetime] | None = None,
+        symbol: str | None = None,
     ) -> None:
         self.env_path = env_path
         self.sdk = sdk
         self.accounts = accounts
         self.sdk_factory = sdk_factory
         self.clock = clock or (lambda: datetime.now().astimezone())
+        self.symbol = str(symbol).strip() if symbol else None
         self.account: Any | None = None
 
     def fetch_snapshot(self) -> BrokerAccountSnapshot:
@@ -95,7 +98,12 @@ class FubonReadOnlyBroker:
             positions=tuple(
                 position
                 for row in position_rows
-                if (position := normalize_fubon_position(row)) is not None
+                if (
+                    position := normalize_fubon_position(
+                        row,
+                        expected_symbol=self.symbol,
+                    )
+                )
             ),
             open_orders=tuple(
                 order
@@ -114,6 +122,30 @@ class FubonReadOnlyBroker:
                 "position_rows": len(position_rows),
                 "order_rows": len(order_rows),
             },
+        )
+
+    def fetch_margins(self) -> BrokerAccountSnapshot:
+        """Margins only (query_margin_equity) for the live account panel.
+
+        Deliberately skips query_single_position / get_order_results: those are
+        heavier and Fubon rate-limits them (業務系統流量控管) under the panel's
+        per-minute cadence, and the panel only needs equity + unrealized PnL.
+        """
+        sdk, account = self._ensure_connected()
+        margin_rows = checked_result_data(
+            sdk.futopt_accounting.query_margin_equity(account),
+            "Fubon query_margin_equity",
+        )
+        return BrokerAccountSnapshot(
+            broker=self.broker,
+            account_id=mask_account(row_get(account, "account", "account_no", "id")),
+            fetched_at=self.clock(),
+            margins=tuple(
+                margin
+                for row in margin_rows
+                if (margin := normalize_fubon_margin(row)) is not None
+            ),
+            raw={"margin_rows": len(margin_rows)},
         )
 
     def close(self) -> None:
@@ -140,7 +172,11 @@ class FubonReadOnlyBroker:
         return FutOptMarketType.Future, FutOptMarketType.FutureNight
 
 
-def normalize_fubon_position(row: Any) -> BrokerPositionSnapshot | None:
+def normalize_fubon_position(
+    row: Any,
+    *,
+    expected_symbol: str | None = None,
+) -> BrokerPositionSnapshot | None:
     raw = fubon_raw_row(row)
     symbol = fubon_first_text(
         raw,
@@ -153,6 +189,10 @@ def normalize_fubon_position(row: Any) -> BrokerPositionSnapshot | None:
     )
     if not symbol:
         return None
+    if expected_symbol and FubonContractIdentity.from_symbol(
+        expected_symbol
+    ).matches(raw):
+        symbol = expected_symbol
     quantity = fubon_first_float(
         raw,
         "net_quantity",
@@ -163,6 +203,16 @@ def normalize_fubon_position(row: Any) -> BrokerPositionSnapshot | None:
         "qty",
         "lot",
         "lots",
+        "orig_lots",
+        "origLots",
+        "orig_lot",
+        "origLot",
+        "original_lots",
+        "originalLots",
+        "tradable_lots",
+        "tradableLots",
+        "tradable_lot",
+        "tradableLot",
     )
     if quantity is None:
         buy = fubon_first_float(
@@ -299,4 +349,3 @@ __all__ = [
     "normalize_fubon_position",
     "select_futopt_account",
 ]
-

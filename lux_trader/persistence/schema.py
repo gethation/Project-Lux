@@ -305,7 +305,25 @@ SQLITE_SCHEMA = r"""
                 payload_json TEXT NOT NULL,
                 FOREIGN KEY(plan_id) REFERENCES execution_plans(plan_id)
             );
-            
+
+            CREATE TABLE IF NOT EXISTS margin_checks (
+                check_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                checked_at TEXT NOT NULL,
+                check_type TEXT NOT NULL,
+                binance_equity REAL,
+                binance_maint_margin REAL,
+                binance_ratio REAL,
+                fubon_equity REAL,
+                fubon_maint_margin REAL,
+                fubon_ratio REAL,
+                usdttwd_rate REAL,
+                level TEXT NOT NULL,
+                transfer_amount_twd REAL,
+                transfer_direction TEXT,
+                guidance TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+
 """
 
 

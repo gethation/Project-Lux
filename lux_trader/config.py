@@ -17,6 +17,7 @@ class StrategyConfig:
     initial_capital_twd: float
     max_entry_delay_minutes: int
     zscore_window: int
+    qff_lots: int | None = None
 
 
 @dataclass(frozen=True)
@@ -90,10 +91,39 @@ class LiveExecutionConfig:
 
 
 @dataclass(frozen=True)
+class LiveExecutionSmokeConfig:
+    enabled: bool
+    fubon_symbol: str
+    fubon_lots: int
+    binance_symbol: str
+    tsm_units: float
+    qff_expiry: str | None = None
+
+
+@dataclass(frozen=True)
 class BinanceExecutionConfig:
     leverage: int
     margin_mode: str
     enforce_leverage: bool
+
+
+@dataclass(frozen=True)
+class MarginManagementConfig:
+    # Semi-automatic dual-account margin policy: the system only computes and
+    # reports transfer guidance; transfers/closes stay manual. Thresholds are
+    # ratios of account equity over per-leg notional (leg_notional_twd);
+    # defaults come from the PoC margin_management_analysis simulation.
+    enabled: bool = False
+    check_time: str = "10:00"
+    red_line_interval_minutes: int = 15
+    binance_transfer_ratio: float = 0.11
+    binance_red_line_ratio: float = 0.05
+    fubon_transfer_ratio: float = 0.20
+    fubon_red_line_ratio: float = 0.135
+    target_ratio: float = 0.30
+    red_line_maint_multiplier: float = 1.3
+    # 0 falls back to strategy.leg_notional_twd.
+    leg_notional_twd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -111,12 +141,16 @@ class AppConfig:
     live: LiveMarketDataConfig
     broker_reconciliation: BrokerReconciliationConfig
     live_execution: LiveExecutionConfig
+    live_execution_smoke: LiveExecutionSmokeConfig
     binance_execution: BinanceExecutionConfig = field(
         default_factory=lambda: BinanceExecutionConfig(
             leverage=1,
             margin_mode="cross",
             enforce_leverage=True,
         )
+    )
+    margin_management: MarginManagementConfig = field(
+        default_factory=MarginManagementConfig
     )
 
 
@@ -134,7 +168,9 @@ def load_config(path: Path) -> AppConfig:
     live = raw.get("live_market_data", {})
     broker_reconciliation = raw.get("broker_reconciliation", {})
     live_execution = raw.get("live_execution", {})
+    live_execution_smoke = raw.get("live_execution_smoke", {})
     binance_execution = raw.get("binance_execution", {})
+    margin_management = raw.get("margin_management", {})
 
     input_csv = Path(paths.get("input_csv", "")).expanduser()
     store_path = Path(paths["store_path"]).expanduser()
@@ -162,6 +198,10 @@ def load_config(path: Path) -> AppConfig:
             initial_capital_twd=float(strategy.get("initial_capital_twd", 2_000_000.0)),
             max_entry_delay_minutes=int(strategy.get("max_entry_delay_minutes", 15)),
             zscore_window=int(strategy.get("zscore_window", 500)),
+            qff_lots=optional_positive_int(
+                strategy.get("qff_lots"),
+                "strategy.qff_lots",
+            ),
         ),
         fees=FeeConfig(
             tsm_fee_bps=float(fees.get("tsm_fee_bps", 5.0)),
@@ -247,10 +287,66 @@ def load_config(path: Path) -> AppConfig:
             max_plan_age_seconds=int(live_execution.get("max_plan_age_seconds", 120)),
             qff_first=bool(live_execution.get("qff_first", True)),
         ),
+        live_execution_smoke=LiveExecutionSmokeConfig(
+            enabled=bool(live_execution_smoke.get("enabled", False)),
+            fubon_symbol=str(
+                live_execution_smoke.get(
+                    "fubon_symbol",
+                    live.get("qff_symbol", "TMFG6"),
+                )
+            ).strip(),
+            fubon_lots=optional_positive_int(
+                live_execution_smoke.get(
+                    "fubon_lots",
+                    live_execution.get("smoke_test_fubon_lots", 1),
+                ),
+                "live_execution_smoke.fubon_lots",
+            )
+            or 1,
+            binance_symbol=str(
+                live_execution_smoke.get(
+                    "binance_symbol",
+                    live.get("binance_symbol", "TSM/USDT:USDT"),
+                )
+            ).strip(),
+            tsm_units=optional_positive_float(
+                live_execution_smoke.get(
+                    "tsm_units",
+                    live_execution.get("smoke_test_tsm_units", 0.1),
+                ),
+                "live_execution_smoke.tsm_units",
+            )
+            or 0.1,
+            qff_expiry=optional_text(live_execution_smoke.get("qff_expiry")),
+        ),
         binance_execution=BinanceExecutionConfig(
             leverage=int(binance_execution.get("leverage", 1)),
             margin_mode=str(binance_execution.get("margin_mode", "cross")).strip().lower(),
             enforce_leverage=bool(binance_execution.get("enforce_leverage", True)),
+        ),
+        margin_management=MarginManagementConfig(
+            enabled=bool(margin_management.get("enabled", False)),
+            check_time=str(margin_management.get("check_time", "10:00")),
+            red_line_interval_minutes=int(
+                margin_management.get("red_line_interval_minutes", 15)
+            ),
+            binance_transfer_ratio=float(
+                margin_management.get("binance_transfer_ratio", 0.11)
+            ),
+            binance_red_line_ratio=float(
+                margin_management.get("binance_red_line_ratio", 0.05)
+            ),
+            fubon_transfer_ratio=float(
+                margin_management.get("fubon_transfer_ratio", 0.20)
+            ),
+            fubon_red_line_ratio=float(
+                margin_management.get("fubon_red_line_ratio", 0.135)
+            ),
+            target_ratio=float(margin_management.get("target_ratio", 0.30)),
+            red_line_maint_multiplier=float(
+                margin_management.get("red_line_maint_multiplier", 1.3)
+            ),
+            leg_notional_twd=float(margin_management.get("leg_notional_twd", 0.0)),
         ),
     )
 
@@ -292,3 +388,28 @@ def optional_path(value: object, root: Path) -> Path | None:
     if not path.is_absolute():
         path = root / path
     return path
+
+
+def optional_positive_int(value: object, label: str) -> int | None:
+    if value is None:
+        return None
+    parsed = int(value)
+    if parsed <= 0:
+        raise RuntimeError(f"{label} must be positive when set")
+    return parsed
+
+
+def optional_positive_float(value: object, label: str) -> float | None:
+    if value is None:
+        return None
+    parsed = float(value)
+    if parsed <= 0:
+        raise RuntimeError(f"{label} must be positive when set")
+    return parsed
+
+
+def optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

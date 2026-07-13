@@ -16,7 +16,7 @@ from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.market_data import FubonQffMarketData
 from lux_trader.market_data import floor_minute
 from lux_trader.runtime.live import (
-    LivePaperRunner,
+    LiveDryRunRunner,
     QffWarmupCheckRunner,
     WarmupRunner,
     resolve_qff_contract,
@@ -44,7 +44,7 @@ def startup_smoke_config() -> AppConfig:
     config = load_smoke_config()
     return replace(
         config,
-        store_path=config.store_path.parent / "live_paper_startup_smoke.sqlite3",
+        store_path=config.store_path.parent / "live_startup_smoke.sqlite3",
     )
 
 
@@ -145,12 +145,12 @@ def test_warmup_live_smoke_writes_seed_bars_only() -> None:
         connection.close()
 
 
-def test_live_paper_startup_smoke_auto_warmup_and_resume() -> None:
+def test_live_startup_smoke_auto_warmup_and_resume() -> None:
     config = startup_smoke_config()
     remove_sqlite_family(config.store_path)
 
     first_output = io.StringIO()
-    first_result = LivePaperRunner(
+    first_result = LiveDryRunRunner(
         config,
         reporter=LiveTerminalReporter(first_output, color=False),
     ).run(reset_store=True, max_iterations=130)
@@ -231,7 +231,7 @@ def test_live_paper_startup_smoke_auto_warmup_and_resume() -> None:
         connection.close()
 
     second_output = io.StringIO()
-    second_result = LivePaperRunner(
+    second_result = LiveDryRunRunner(
         config,
         reporter=LiveTerminalReporter(second_output, color=False),
     ).run(resume=True, max_iterations=70)

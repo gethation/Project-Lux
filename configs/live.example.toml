@@ -88,3 +88,19 @@ qff_first = true
 leverage = 1
 margin_mode = 'cross'
 enforce_leverage = true
+
+[margin_management]
+# Semi-automatic dual-account margin policy (PoC margin_management_analysis).
+# The system only computes and reports transfer guidance; transfers and closes
+# stay manual. Requires LUX_READONLY_BROKER=1 at runtime.
+enabled = false
+check_time = '10:00'
+red_line_interval_minutes = 15
+binance_transfer_ratio = 0.11
+binance_red_line_ratio = 0.05
+fubon_transfer_ratio = 0.20
+fubon_red_line_ratio = 0.135
+target_ratio = 0.30
+red_line_maint_multiplier = 1.3
+# 0 falls back to strategy.leg_notional_twd
+leg_notional_twd = 0.0

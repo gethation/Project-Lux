@@ -10,6 +10,7 @@ from lux_trader.config import (
     ContractPolicyConfig,
     FeeConfig,
     LiveExecutionConfig,
+    LiveExecutionSmokeConfig,
     LiveMarketDataConfig,
     SafetyConfig,
     StrategyConfig,
@@ -119,5 +120,13 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             require_readonly_reconciliation=True,
             max_plan_age_seconds=120,
             qff_first=True,
+        ),
+        live_execution_smoke=LiveExecutionSmokeConfig(
+            enabled=False,
+            fubon_symbol="TMFG6",
+            fubon_lots=1,
+            binance_symbol="TSM/USDT:USDT",
+            tsm_units=0.1,
+            qff_expiry="202607",
         ),
     )

@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
-from lux_trader.brokers import PaperBroker
 from lux_trader.config import AppConfig
 from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, QffContractSelection
 from lux_trader.core.calendar import live_session_status
@@ -38,6 +37,8 @@ from lux_trader.execution.gate import (
     assert_live_execution_gate_open,
     evaluate_live_execution_gate,
 )
+from lux_trader.margin.display import AccountDisplay, AccountDisplayProvider
+from lux_trader.margin.monitor import MarginMonitor, READONLY_BROKER_ENV
 from lux_trader.market_data import (
     CsvQffWarmupProvider,
     LiveMinuteBarBuilder,
@@ -100,17 +101,8 @@ from lux_trader.runtime.live.modes import (
     LiveExecuteModeHandler,
     LiveModeHandler,
     LiveRuntimeStats,
-    PaperLiveModeHandler,
 )
 from lux_trader.runtime.live.bootstrap import build_live_minute_builder
-
-
-@dataclass(frozen=True)
-class LivePaperResult:
-    iterations: int
-    bars_processed: int
-    skipped_minutes: int
-    qff_symbol: str
 
 
 @dataclass(frozen=True)
@@ -143,6 +135,7 @@ class LiveRuntime:
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], None] | None = None,
         reporter: Any | None = None,
+        margin_brokers_factory: Callable[[], tuple[Any, Any]] | None = None,
     ) -> None:
         self.config = config
         self.handler = handler
@@ -153,6 +146,7 @@ class LiveRuntime:
         self.clock = clock or (lambda: datetime.now().astimezone())
         self.sleeper = sleeper or time.sleep
         self.reporter = reporter or NullLiveReporter()
+        self.margin_brokers_factory = margin_brokers_factory
 
     def run(
         self,
@@ -171,6 +165,8 @@ class LiveRuntime:
             )
         store = SQLiteStore(self.config.store_path)
         live_run_id: int | None = None
+        margin_monitor: MarginMonitor | None = None
+        account_display: AccountDisplayProvider | None = None
         qff_provider_to_close: Any | None = None
         qff_symbol = ""
         stats = LiveRuntimeStats()
@@ -234,6 +230,36 @@ class LiveRuntime:
             )
             store.commit()
             self.reporter.event(runtime.started_at, "startup", "live_loop")
+            def _usdttwd_rate() -> float | None:
+                return getattr(
+                    usdttwd_provider.fetch_quote(self.config.live.bitopro_symbol),
+                    "price",
+                    None,
+                )
+
+            # Live account panel (real pnl / margin water level). Owns the shared
+            # read-only broker pair; the margin monitor reuses it so Fubon is not
+            # logged in twice.
+            # Not given the runtime clock on purpose: refresh() runs every bar and
+            # only needs a wall-clock display timestamp; consuming an injected
+            # (finite, test-budgeted) clock here would starve the loop.
+            account_display = AccountDisplayProvider(
+                self.config,
+                usdttwd_rate=_usdttwd_rate,
+                brokers_factory=self.margin_brokers_factory,
+            )
+            if not account_display.enabled():
+                self.reporter.event(
+                    runtime.started_at,
+                    "account_panel",
+                    f"disabled: set {READONLY_BROKER_ENV}=1 for live pnl/margin",
+                )
+            margin_monitor = MarginMonitor(
+                self.config,
+                usdttwd_rate=_usdttwd_rate,
+                brokers_factory=account_display.ensure_brokers,
+                clock=self.clock,
+            )
             last_non_trading_event_minute: datetime | None = None
             qff_books_torn_down_for_non_trading = False
             qff_reconnecting_until: datetime | None = None
@@ -247,6 +273,12 @@ class LiveRuntime:
                 session_status = live_session_status(
                     observed_at,
                     self.config.trading_calendar.closed_dates,
+                )
+                margin_monitor.maybe_run(
+                    observed_at,
+                    strategy_state=strategy.state,
+                    store=store,
+                    reporter=self.reporter,
                 )
                 if not session_status.is_trading:
                     if not qff_books_torn_down_for_non_trading:
@@ -399,7 +431,7 @@ class LiveRuntime:
                 self.reporter.live(
                     observed_at,
                     live_spread_snapshot,
-                    strategy.state.state,
+                    strategy.state,
                 )
                 for quote in (quote_set.qff, quote_set.tsm, quote_set.usdttwd):
                     store.record_market_tick(quote, observed_at)
@@ -446,6 +478,7 @@ class LiveRuntime:
                             next_row_index=next_row_index,
                             stats=stats,
                             max_iterations=max_iterations,
+                            account_display=account_display,
                             signal_block_override="qff_reconnecting"
                             if qff_reconnecting
                             else None,
@@ -494,6 +527,10 @@ class LiveRuntime:
                     store.commit()
                 except Exception:
                     store.rollback()
+            if account_display is not None:
+                account_display.close()
+            if margin_monitor is not None:
+                margin_monitor.close()
             store.close()
             self.handler.close()
             close_provider_quietly(qff_provider_to_close)
@@ -515,6 +552,7 @@ class LiveRuntime:
         next_row_index: int,
         stats: LiveRuntimeStats,
         max_iterations: int | None,
+        account_display: AccountDisplayProvider | None = None,
         signal_block_override: str | None = None,
     ) -> dict[str, Any]:
         bar = replace(
@@ -661,14 +699,20 @@ class LiveRuntime:
             decision_spread_type=decision_spread_type,
             decision_zscore=decision_zscore,
         )
+        account_snapshot: AccountDisplay | None = None
+        if account_display is not None:
+            account_snapshot = account_display.refresh(
+                notional_twd=self._current_leg_notional_twd(bar, strategy.state)
+            )
         self.reporter.bar(
             bar.timestamp,
             tradable_snapshot,
-            strategy.state.state,
+            strategy.state,
             result.action,
             result.reason,
             result.unrealized_pnl,
             result.equity,
+            account_display=account_snapshot,
         )
         if result.action.value != "none":
             self.reporter.event(
@@ -842,6 +886,37 @@ class LiveRuntime:
             build_live_minute_builder(self.config, seed_bars),
         )
 
+    def _current_leg_notional_twd(
+        self, bar: MarketBar, state: StrategyRuntimeState
+    ) -> float:
+        """Current-price single-leg notional for the margin-level denominator.
+
+        Holding -> mark the held Fubon leg to the current price; flat -> price a
+        standard leg at the current bar so the 保證金水位 still shows. Falls back
+        to the configured leg notional when a price is unavailable.
+        """
+        fallback = (
+            self.config.margin_management.leg_notional_twd
+            if self.config.margin_management.leg_notional_twd > 0
+            else self.config.strategy.leg_notional_twd
+        )
+        qff_price = getattr(bar, "qff_close_filled", None)
+        tsm_price = getattr(bar, "tsm_twd_fair", None)
+        contracts = int(getattr(state, "qff_contracts", 0) or 0)
+        if contracts != 0 and qff_price:
+            return abs(contracts) * self.config.fees.qff_contract_multiplier * qff_price
+        if tsm_price and qff_price:
+            sizing = size_position_for_direction(
+                Direction.LONG_TSM_SHORT_QFF,
+                tsm_price,
+                qff_price,
+                self.config.strategy,
+                self.config.fees,
+            )
+            if sizing is not None and sizing.actual_leg_notional_twd > 0:
+                return sizing.actual_leg_notional_twd
+        return fallback
+
     def _sleep_if_needed(
         self,
         iterations: int,
@@ -849,51 +924,6 @@ class LiveRuntime:
     ) -> None:
         if max_iterations is None or iterations < max_iterations:
             self.sleeper(self.config.live.polling_seconds)
-
-
-class LivePaperRunner:
-    def __init__(
-        self,
-        config: AppConfig,
-        *,
-        qff_provider: QuoteProvider | FubonQffMarketData | None = None,
-        tsm_provider: QuoteProvider | None = None,
-        usdttwd_provider: QuoteProvider | None = None,
-        clock: Callable[[], datetime] | None = None,
-        sleeper: Callable[[float], None] | None = None,
-        reporter: Any | None = None,
-    ) -> None:
-        self.runtime = LiveRuntime(
-            config,
-            handler=PaperLiveModeHandler(),
-            qff_provider=qff_provider,
-            tsm_provider=tsm_provider,
-            usdttwd_provider=usdttwd_provider,
-            clock=clock,
-            sleeper=sleeper,
-            reporter=reporter,
-        )
-
-    def run(
-        self,
-        *,
-        resume: bool = False,
-        reset_store: bool = False,
-        max_iterations: int | None = None,
-        skip_warmup: bool = False,
-    ) -> LivePaperResult:
-        result = self.runtime.run(
-            resume=resume,
-            reset_store=reset_store,
-            max_iterations=max_iterations,
-            skip_warmup=skip_warmup,
-        )
-        return LivePaperResult(
-            iterations=result.iterations,
-            bars_processed=result.bars_processed,
-            skipped_minutes=result.skipped_minutes,
-            qff_symbol=result.qff_symbol,
-        )
 
 
 class LiveDryRunRunner:

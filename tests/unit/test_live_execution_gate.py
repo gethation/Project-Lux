@@ -14,7 +14,7 @@ from lux_trader.reconciliation import (
     ReconciliationStatus,
 )
 from lux_trader.core.models import BrokerName, OrderSide
-from lux_trader.cli_helpers import build_fake_execution_plan
+from fakes import build_fake_execution_plan
 
 
 def ts(value: str) -> datetime:

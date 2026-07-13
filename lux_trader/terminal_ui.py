@@ -46,6 +46,7 @@ class NullLiveReporter:
         reason: str,
         unrealized_pnl: float,
         equity: float,
+        account_display: Any = None,
     ) -> None:
         return
 
@@ -141,14 +142,15 @@ class LiveTerminalReporter:
         reason: str,
         unrealized_pnl: float,
         equity: float,
+        account_display: Any = None,
     ) -> None:
         time_text = format_time(timestamp, with_seconds=False)
         mid_text = f"mid={format_float(spread_snapshot.mid_spread, digits=2)}"
         mid_z_text = f"z={format_float(spread_snapshot.mid_zscore, digits=2)}"
         state_text = state_value(strategy_state)
         action_text = compact_action(action, reason)
-        pnl_text = f"pnl={format_money(unrealized_pnl)}"
-        equity_text = f"eq={format_money(equity)}"
+        pnl_text = f"pnl={account_pnl_text(account_display)}"
+        margin_text = account_margin_text(account_display)
         short_text = format_spread_block(
             "shortSpread",
             spread_snapshot.short_spread,
@@ -161,7 +163,7 @@ class LiveTerminalReporter:
         )
         plain = (
             f"{time_text} BAR  {mid_text} {mid_z_text} {short_text} {long_text} "
-            f"{state_text} {action_text} {pnl_text} {equity_text}"
+            f"{state_text} {action_text} {pnl_text} {margin_text}"
         )
         colored = " ".join(
             [
@@ -174,7 +176,7 @@ class LiveTerminalReporter:
                 self._paint_state(state_text),
                 self._paint_action(action_text, action),
                 pnl_text,
-                equity_text,
+                margin_text,
             ]
         )
         self._write_permanent(plain, colored)
@@ -370,7 +372,34 @@ def format_money(value: float) -> str:
     return f"{value:,.0f}"
 
 
+def format_pct(value: float | None) -> str:
+    if value is None:
+        return "NA"
+    return f"{value * 100:.0f}%"
+
+
+def account_pnl_text(account_display: Any) -> str:
+    """pnl= token sourced from the real account (combined uPnL); NA when absent."""
+    combined = getattr(account_display, "combined_upnl_twd", None)
+    if combined is None:
+        return "NA"
+    return format_money(combined)
+
+
+def account_margin_text(account_display: Any) -> str:
+    """Replaces the old eq= token: per-venue 保證金水位 (equity/notional ratio)."""
+    binance_ratio = getattr(account_display, "binance_ratio", None)
+    fubon_ratio = getattr(account_display, "fubon_ratio", None)
+    prefix = "~" if getattr(account_display, "stale", False) else ""
+    return (
+        f"margin({prefix}bina={format_pct(binance_ratio)},"
+        f"fubon={format_pct(fubon_ratio)})"
+    )
+
+
 def state_value(value: Any) -> str:
+    # Accepts a StrategyState enum, a full StrategyRuntimeState, or plain text.
+    value = getattr(value, "state", value)
     text = getattr(value, "value", value)
     return str(text).upper()
 

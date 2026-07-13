@@ -1,57 +1,37 @@
 from __future__ import annotations
 
-from .parser import build_parser
-from .commands import (
-    command_binance_exec_smoke,
-    command_binance_manual_close,
-    command_broker_doctor,
-    command_clear_pause,
-    command_doctor,
-    command_dry_run_doctor,
-    command_live_status,
-    command_execution_summary,
-    command_fubon_account_funds,
-    command_fubon_exec_smoke,
-    command_fubon_manual_close,
-    command_fubon_order_records,
-    command_live_doctor,
-    command_live_dry_run,
+from .commands import command_doctor, command_replay, command_summary
+from .commands_execution import (
+    command_broker_status,
+    command_exec_smoke,
     command_live_execute,
-    command_live_order_doctor,
-    command_live_paper,
-    command_qff_warmup_check,
+    command_manual_close,
+)
+from .commands_live import (
+    command_clear_pause,
+    command_live_dry_run,
+    command_live_status,
+    command_margin_check,
     command_reconcile_brokers,
-    command_replay,
-    command_simulate_execution,
-    command_summary,
     command_warmup_live,
 )
+from .parser import build_parser
 
 
 COMMAND_HANDLERS = {
     "replay": command_replay,
     "summary": command_summary,
     "doctor": command_doctor,
-    "broker-doctor": command_broker_doctor,
-    "fubon-account-funds": command_fubon_account_funds,
-    "fubon-order-records": command_fubon_order_records,
-    "fubon-manual-close": command_fubon_manual_close,
-    "binance-manual-close": command_binance_manual_close,
-    "reconcile-brokers": command_reconcile_brokers,
-    "live-status": command_live_status,
-    "clear-pause": command_clear_pause,
-    "dry-run-doctor": command_dry_run_doctor,
-    "execution-summary": command_execution_summary,
     "live-dry-run": command_live_dry_run,
-    "simulate-execution": command_simulate_execution,
-    "live-order-doctor": command_live_order_doctor,
-    "live-execute": command_live_execute,
-    "binance-exec-smoke": command_binance_exec_smoke,
-    "fubon-exec-smoke": command_fubon_exec_smoke,
-    "live-doctor": command_live_doctor,
+    "live-status": command_live_status,
+    "reconcile-brokers": command_reconcile_brokers,
+    "clear-pause": command_clear_pause,
     "warmup-live": command_warmup_live,
-    "qff-warmup-check": command_qff_warmup_check,
-    "live-paper": command_live_paper,
+    "margin-check": command_margin_check,
+    "live-execute": command_live_execute,
+    "exec-smoke": command_exec_smoke,
+    "manual-close": command_manual_close,
+    "broker-status": command_broker_status,
 }
 
 

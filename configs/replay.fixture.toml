@@ -1,0 +1,35 @@
+# Deterministic replay config pinned to the committed fixture snapshot under
+# tests/fixtures/replay/. Run from the repository root:
+#   conda run -n Quant python -m lux_trader replay --config configs/replay.fixture.toml --reset-store
+#   conda run -n Quant python -m lux_trader summary --config configs/replay.fixture.toml
+#
+# This is the frozen M1 reference (post-2026-06-29 PoC data window). Aligned
+# summary: trade_count=66, net_pnl_twd=261507.82918..., total_fee_twd=68317.4968...
+[paths]
+# input_csv is resolved relative to the current working directory (repo root),
+# not the config directory; keep CLI invocations rooted at the repo.
+input_csv = 'tests/fixtures/replay/spread_zscore_w500.csv'
+store_path = 'data/replay_fixture.sqlite3'
+qff_ohlcv_csv = 'tests/fixtures/replay/qff1_1m_open.csv'
+tsm_ohlcv_csv = 'tests/fixtures/replay/binance_tsm_open.csv'
+usdttwd_ohlcv_csv = 'tests/fixtures/replay/bitopro_usdttwd_open.csv'
+
+[strategy]
+entry_z = 2.0
+exit_z = 1.0
+leg_notional_twd = 1000000.0
+initial_capital_twd = 2000000.0
+max_entry_delay_minutes = 15
+zscore_window = 500
+
+[fees]
+tsm_fee_bps = 5.0
+qff_fee_per_contract_twd = 5.0
+qff_tax_rate = 0.00002
+qff_contract_multiplier = 100.0
+tsm_contract_multiplier = 5.0
+
+[safety]
+allow_live_order = false
+validate_expected_zscore = true
+expected_zscore_tolerance = 0.0000001
