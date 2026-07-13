@@ -5,10 +5,6 @@
 *.pem
 *.key
 
-# Local / runtime-generated configs
-configs/*.local.toml
-configs/*.runtime_*.toml
-
 # Runtime artifacts (SQLite stores, logs, caches, generated CSVs)
 data/
 log/
