@@ -85,18 +85,10 @@ class WarmupBuilder:
         ) - timedelta(minutes=1)
         qff_fetch_start = end_minute - QFF_FORWARD_FILL_LOOKBACK
 
+        # Prefer the live Fubon candle API.  TAIFEX/CSV is a true fallback:
+        # do not pay its latency or let it block startup when Fubon alone can
+        # produce a complete, quality-gated warmup window.
         qff_parts: list[tuple[str, pd.DataFrame]] = []
-        if self.qff_fallback_provider is not None:
-            qff_parts.append(
-                (
-                    "fallback",
-                    self.qff_fallback_provider.fetch_1m(
-                        qff_symbol,
-                        qff_fetch_start,
-                        end_minute,
-                    ),
-                )
-            )
         if self.qff_intraday_provider is not None:
             qff_parts.append(
                 (
@@ -108,55 +100,47 @@ class WarmupBuilder:
                     ),
                 )
             )
+        fallback_loaded = False
+        if not qff_parts and self.qff_fallback_provider is not None:
+            qff_parts.append(
+                (
+                    "fallback",
+                    self.qff_fallback_provider.fetch_1m(
+                        qff_symbol,
+                        qff_fetch_start,
+                        end_minute,
+                    ),
+                )
+            )
+            fallback_loaded = True
         if not qff_parts:
             raise RuntimeError("No QFF warmup providers configured")
 
-        combined_qff = prioritized_qff_close_frame(qff_parts)
-        combined_series = (
-            combined_qff["close"]
-            if "close" in combined_qff
-            else pd.Series(dtype=float)
-        )
-        index = build_qff_session_warmup_index(
-            combined_series,
-            end=end_minute,
-            count=self.live_config.warmup_minutes,
-        )
-        start_minute = index[0].to_pydatetime()
-        session_index = build_qff_session_index(
-            combined_series,
-            end=end_minute,
-        )
-        qff_report = build_qff_warmup_source_report(
-            qff_parts,
-            start_minute=start_minute,
-            end_minute=end_minute,
-            qff_fetch_start=qff_fetch_start,
-            warmup_index=index,
-            fill_index=session_index,
-        )
-        if qff_report.null_count:
-            first_missing = qff_report.frame.loc[
-                qff_report.frame["qff_close_filled"].isna(),
-                "timestamp",
-            ].iloc[0]
-            raise RuntimeError(f"QFF warmup cannot forward-fill from {first_missing}")
-
-        # Data-quality gate: too many forward-filled QFF minutes means the feed
-        # was mostly dead during warmup, so the rolling z-score is unreliable.
-        # Refuse to seed the indicator rather than trade on degraded data.
-        total_minutes = len(qff_report.frame)
-        forward_filled = int(qff_report.source_used_counts.get("forward_fill", 0))
-        max_ratio = self.live_config.warmup_forward_fill_max_ratio
-        if total_minutes and max_ratio < 1.0:
-            forward_fill_ratio = forward_filled / total_minutes
-            if forward_fill_ratio > max_ratio:
-                raise RuntimeError(
-                    "QFF warmup forward-fill ratio "
-                    f"{forward_fill_ratio:.3f} exceeds max {max_ratio:.3f} "
-                    f"({forward_filled}/{total_minutes} minutes); refusing to "
-                    "seed the indicator on degraded warmup data"
-                )
+        try:
+            index, qff_report = self._prepare_qff_seed(
+                qff_parts,
+                end_minute=end_minute,
+                qff_fetch_start=qff_fetch_start,
+            )
+        except RuntimeError:
+            if self.qff_fallback_provider is None or fallback_loaded:
+                raise
+            qff_parts.insert(
+                0,
+                (
+                    "fallback",
+                    self.qff_fallback_provider.fetch_1m(
+                        qff_symbol,
+                        qff_fetch_start,
+                        end_minute,
+                    ),
+                ),
+            )
+            index, qff_report = self._prepare_qff_seed(
+                qff_parts,
+                end_minute=end_minute,
+                qff_fetch_start=qff_fetch_start,
+            )
 
         qff = pd.Series(
             qff_report.frame["merged_qff_close"].to_numpy(),
@@ -166,6 +150,7 @@ class WarmupBuilder:
             qff_report.frame["qff_close_filled"].to_numpy(),
             index=pd.DatetimeIndex(qff_report.frame["timestamp"]),
         )
+        start_minute = index[0].to_pydatetime()
         last_timestamp = index[-1].to_pydatetime()
         tsm = close_series(
             self.tsm_provider.fetch_ohlcv_1m(
@@ -213,6 +198,82 @@ class WarmupBuilder:
                 )
             )
         return bars
+
+    def _prepare_qff_seed(
+        self,
+        qff_parts: list[tuple[str, pd.DataFrame]],
+        *,
+        end_minute: datetime,
+        qff_fetch_start: datetime,
+    ) -> tuple[pd.DatetimeIndex, QffWarmupSourceReport]:
+        combined_qff = prioritized_qff_close_frame(qff_parts)
+        combined_series = (
+            combined_qff["close"]
+            if "close" in combined_qff
+            else pd.Series(dtype=float)
+        )
+        index = build_qff_session_warmup_index(
+            combined_series,
+            end=end_minute,
+            count=self.live_config.warmup_minutes,
+        )
+        start_minute = index[0].to_pydatetime()
+        session_index = build_qff_session_index(
+            combined_series,
+            end=end_minute,
+        )
+        qff_report = build_qff_warmup_source_report(
+            qff_parts,
+            start_minute=start_minute,
+            end_minute=end_minute,
+            qff_fetch_start=qff_fetch_start,
+            warmup_index=index,
+            fill_index=session_index,
+        )
+        if qff_report.null_count:
+            first_missing = qff_report.frame.loc[
+                qff_report.frame["qff_close_filled"].isna(),
+                "timestamp",
+            ].iloc[0]
+            raise RuntimeError(f"QFF warmup cannot forward-fill from {first_missing}")
+
+        actual_qff = qff_report.frame["merged_qff_close"].notna()
+        if not actual_qff.any():
+            raise RuntimeError(
+                "QFF warmup latest actual bar is stale: "
+                "no actual QFF bar exists in the warmup window"
+            )
+        last_actual_position = int(actual_qff[actual_qff].index[-1])
+        trailing_filled = len(qff_report.frame) - last_actual_position - 1
+        max_trailing = self.live_config.warmup_qff_max_trailing_fill_minutes
+        if trailing_filled > max_trailing:
+            last_actual_timestamp = qff_report.frame.loc[
+                last_actual_position,
+                "timestamp",
+            ]
+            raise RuntimeError(
+                "QFF warmup latest actual bar is stale: "
+                f"last={last_actual_timestamp}, trailing_fill={trailing_filled} "
+                f"minutes exceeds max {max_trailing}"
+            )
+
+        # Data-quality gate: too many forward-filled QFF minutes means the feed
+        # was mostly dead during warmup, so the rolling z-score is unreliable.
+        # Refuse to seed the indicator rather than trade on degraded data.
+        total_minutes = len(qff_report.frame)
+        forward_filled = int(qff_report.source_used_counts.get("forward_fill", 0))
+        max_ratio = self.live_config.warmup_forward_fill_max_ratio
+        if total_minutes and max_ratio < 1.0:
+            forward_fill_ratio = forward_filled / total_minutes
+            if forward_fill_ratio > max_ratio:
+                raise RuntimeError(
+                    "QFF warmup forward-fill ratio "
+                    f"{forward_fill_ratio:.3f} exceeds max {max_ratio:.3f} "
+                    f"({forward_filled}/{total_minutes} minutes); refusing to "
+                    "seed the indicator on degraded warmup data"
+            )
+
+        return index, qff_report
 
 
 def build_qff_warmup_source_report(

@@ -199,3 +199,26 @@ def test_reconcile_brokers_without_readonly_refuses_real_brokers(
         assert "--readonly" in str(exc)
     else:
         raise AssertionError("Expected SystemExit without --readonly")
+
+
+def test_reconcile_brokers_allows_live_order_config_for_readonly_check(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = write_config(tmp_path)
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + "\n[safety]\nallow_live_order = true\n",
+        encoding="utf-8",
+    )
+    use_fake_brokers(monkeypatch, "matched")
+    args = build_parser().parse_args(
+        [
+            "reconcile-brokers",
+            "--config",
+            str(config_path),
+            "--readonly",
+        ]
+    )
+
+    assert command_reconcile_brokers(args) == 0

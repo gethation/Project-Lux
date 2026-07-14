@@ -139,38 +139,15 @@ def command_live_status(args: argparse.Namespace) -> int:
 
 def command_reconcile_brokers(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    if config.safety.allow_live_order:
-        raise SystemExit("allow_live_order must remain false for reconcile-brokers")
-
     store = SQLiteStore(config.store_path)
-    brokers: tuple[ReadOnlyBroker, ...] = ()
     try:
         store.initialize()
-        resume_state = store.load_resume_state()
-        strategy_state = resume_state.strategy if resume_state is not None else None
-        timestamp = datetime.now().astimezone()
-        brokers = build_reconciliation_brokers(
+        run_id, report = reconcile_brokers_to_store(
             config,
-            strategy_state,
+            store,
             readonly=bool(args.readonly),
         )
-        report = BrokerReconciler(
-            tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
-            qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
-        ).reconcile(
-            strategy_state=strategy_state,
-            brokers=brokers,
-            tsm_symbol=config.live.binance_symbol,
-            qff_symbol=helpers.reconciliation_qff_symbol(config, strategy_state),
-            timestamp=timestamp,
-        )
-        run_id = store.record_reconciliation_report(report)
-        store.commit()
-    except Exception:
-        store.rollback()
-        raise
     finally:
-        helpers.close_brokers(brokers)
         store.close()
 
     print(
@@ -183,6 +160,48 @@ def command_reconcile_brokers(args: argparse.Namespace) -> int:
             f"{issue.broker.value} {issue.symbol or '-'} {issue.message}"
         )
     return 1 if report.status == ReconciliationStatus.ERROR else 0
+
+
+def reconcile_brokers_to_store(
+    config: object,
+    store: SQLiteStore,
+    *,
+    readonly: bool,
+    timestamp: datetime | None = None,
+):
+    """Fetch read-only broker state, reconcile it, and persist one report.
+
+    The caller owns ``store``. Real broker construction remains guarded by both
+    the explicit ``readonly`` argument and ``LUX_READONLY_BROKER=1``.
+    """
+    brokers: tuple[ReadOnlyBroker, ...] = ()
+    try:
+        resume_state = store.load_resume_state()
+        strategy_state = resume_state.strategy if resume_state is not None else None
+        observed_at = timestamp or datetime.now().astimezone()
+        brokers = build_reconciliation_brokers(
+            config,
+            strategy_state,
+            readonly=readonly,
+        )
+        report = BrokerReconciler(
+            tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
+            qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
+        ).reconcile(
+            strategy_state=strategy_state,
+            brokers=brokers,
+            tsm_symbol=config.live.binance_symbol,
+            qff_symbol=helpers.reconciliation_qff_symbol(config, strategy_state),
+            timestamp=observed_at,
+        )
+        run_id = store.record_reconciliation_report(report)
+        store.commit()
+        return run_id, report
+    except Exception:
+        store.rollback()
+        raise
+    finally:
+        helpers.close_brokers(brokers)
 
 
 def command_clear_pause(args: argparse.Namespace) -> int:

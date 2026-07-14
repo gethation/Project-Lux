@@ -72,6 +72,10 @@ class LiveMarketDataConfig:
     # Max share of warmup minutes allowed to be QFF forward-filled before the
     # warmup is treated as too degraded to trade on. 1.0 disables the gate.
     warmup_forward_fill_max_ratio: float = 0.9
+    # Max consecutive QFF trading minutes that may be forward-filled at the
+    # end of the warmup window.  This independently prevents a long-stale feed
+    # from passing merely because the other historical minutes are complete.
+    warmup_qff_max_trailing_fill_minutes: int = 5
 
 
 @dataclass(frozen=True)
@@ -265,6 +269,9 @@ def load_config(path: Path) -> AppConfig:
             taifex_cache_dir=taifex_cache_dir,
             warmup_forward_fill_max_ratio=float(
                 live.get("warmup_forward_fill_max_ratio", 0.9)
+            ),
+            warmup_qff_max_trailing_fill_minutes=int(
+                live.get("warmup_qff_max_trailing_fill_minutes", 5)
             ),
         ),
         broker_reconciliation=BrokerReconciliationConfig(

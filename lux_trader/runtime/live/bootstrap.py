@@ -394,6 +394,11 @@ def prepare_live_runtime(
         tsm_provider=tsm_provider,
         usdttwd_provider=usdttwd_provider,
         end=started_at,
+        # A resumed strategy keeps its persisted position/open-trade/PnL state,
+        # but its rolling indicator must reflect the latest completed market
+        # data.  Do not accept an old cached seed merely because it has enough
+        # rows; rebuild the same fresh warmup snapshot used on first startup.
+        force_rebuild=resume,
         allow_rebuild=not skip_warmup,
         reporter=reporter,
         auto_warmup_context=auto_warmup_context,

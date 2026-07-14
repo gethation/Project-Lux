@@ -72,12 +72,13 @@ windows_time_sync_timeout_seconds = 15.0
 max_leg_timestamp_skew_seconds = 10.0
 warmup_minutes = 500
 warmup_forward_fill_max_ratio = 0.9
+warmup_qff_max_trailing_fill_minutes = 5
 qff_product = 'QFF'
 qff_symbol = 'auto'
 binance_symbol = 'TSM/USDT:USDT'
 bitopro_symbol = 'USDT/TWD'
-fubon_env_path = '.env'
-taifex_use_network = false
+fubon_env_path = 'env'
+taifex_use_network = true
 taifex_cache_dir = 'data\taifex_cache'
 taifex_qff_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
 

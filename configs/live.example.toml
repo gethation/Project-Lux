@@ -63,6 +63,7 @@ clock_skew_fail_seconds = 60.0
 windows_time_sync_timeout_seconds = 15.0
 max_leg_timestamp_skew_seconds = 10.0
 warmup_minutes = 500
+warmup_qff_max_trailing_fill_minutes = 5
 qff_product = 'QFF'
 qff_symbol = 'auto'
 binance_symbol = 'TSM/USDT:USDT'

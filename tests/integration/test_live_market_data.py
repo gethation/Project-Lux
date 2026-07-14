@@ -724,7 +724,10 @@ def dry_run_clock(values: list[str]):
     return lambda: next(clocks)
 
 
-def test_live_dry_run_closed_calendar_skips_market_data_and_bars(tmp_path) -> None:
+def test_live_dry_run_closed_calendar_skips_market_data_bars_and_margin_checks(
+    tmp_path,
+    monkeypatch,
+) -> None:
     config = small_live_config(tmp_path)
     config = replace(
         config,
@@ -738,6 +741,19 @@ def test_live_dry_run_closed_calendar_skips_market_data_and_bars(tmp_path) -> No
     tsm = FakeOhlcvProvider(pd.DataFrame())
     usd = FakeOhlcvProvider(pd.DataFrame())
     terminal_output = io.StringIO()
+    margin_check_calls: list[datetime] = []
+
+    class RecordingMarginMonitor:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def maybe_run(self, observed_at, **kwargs) -> None:
+            margin_check_calls.append(observed_at)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(live_engine, "MarginMonitor", RecordingMarginMonitor)
 
     result = LiveDryRunRunner(
         config,
@@ -763,6 +779,7 @@ def test_live_dry_run_closed_calendar_skips_market_data_and_bars(tmp_path) -> No
     assert qff.quote_calls == []
     assert tsm.quote_calls == []
     assert usd.quote_calls == []
+    assert margin_check_calls == []
     output = terminal_output.getvalue()
     assert "LIVE non-trading session next=06/22 08:45" in output
     assert "BAR" not in output
@@ -1430,6 +1447,43 @@ def test_warmup_builder_combines_qff_sources_and_forward_fills(tmp_path) -> None
     assert bars[2].spread == pytest.approx((bars[2].tsm_twd_fair - 103.0) / (bars[2].tsm_twd_fair + 103.0) * 200.0)
 
 
+def test_warmup_builder_does_not_fetch_fallback_when_intraday_is_sufficient(
+    tmp_path,
+) -> None:
+    config = small_live_config(tmp_path)
+    intraday_rows = rows(
+        [
+            ("2026-06-18T08:45:00+08:00", 100.0),
+            ("2026-06-18T08:46:00+08:00", 101.0),
+            ("2026-06-18T08:47:00+08:00", 102.0),
+        ]
+    )
+    intraday = FakeQffProvider(intraday_rows)
+    fallback = FakeQffProvider(intraday_rows)
+    tsm = FakeOhlcvProvider(intraday_rows)
+    usd = FakeOhlcvProvider(
+        rows(
+            [
+                ("2026-06-18T08:45:00+08:00", 30.0),
+                ("2026-06-18T08:46:00+08:00", 30.0),
+                ("2026-06-18T08:47:00+08:00", 30.0),
+            ]
+        )
+    )
+
+    bars = WarmupBuilder(
+        live_config=config.live,
+        qff_intraday_provider=intraday,
+        qff_fallback_provider=fallback,
+        tsm_provider=tsm,
+        usdttwd_provider=usd,
+    ).build(qff_symbol="QFF202607", end=ts("2026-06-18T08:48:42+08:00"))
+
+    assert len(bars) == 3
+    assert intraday.fetch_1m_calls
+    assert fallback.fetch_1m_calls == []
+
+
 def test_warmup_builder_refuses_when_forward_fill_ratio_too_high(tmp_path) -> None:
     config = small_live_config(tmp_path)
     config = replace(
@@ -1473,6 +1527,39 @@ def test_warmup_builder_refuses_when_forward_fill_ratio_too_high(tmp_path) -> No
             tsm_provider=tsm,
             usdttwd_provider=usd,
         ).build(qff_symbol="QFF202607", end=ts("2026-06-18T08:48:42+08:00"))
+
+
+def test_warmup_builder_refuses_stale_trailing_qff_data(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    stale_qff = FakeQffProvider(
+        rows(
+            [
+                ("2026-06-18T08:45:00+08:00", 100.0),
+                ("2026-06-18T08:46:00+08:00", 101.0),
+            ]
+        )
+    )
+    current_rows = rows(
+        [
+            ("2026-06-18T08:45:00+08:00", 20.0),
+            ("2026-06-18T08:46:00+08:00", 20.0),
+            ("2026-06-18T08:47:00+08:00", 20.0),
+            ("2026-06-18T08:48:00+08:00", 20.0),
+            ("2026-06-18T08:49:00+08:00", 20.0),
+            ("2026-06-18T08:50:00+08:00", 20.0),
+            ("2026-06-18T08:51:00+08:00", 20.0),
+            ("2026-06-18T08:52:00+08:00", 20.0),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="latest actual bar is stale"):
+        WarmupBuilder(
+            live_config=config.live,
+            qff_intraday_provider=stale_qff,
+            qff_fallback_provider=None,
+            tsm_provider=FakeOhlcvProvider(current_rows),
+            usdttwd_provider=FakeOhlcvProvider(current_rows),
+        ).build(qff_symbol="QFF202607", end=ts("2026-06-18T08:53:00+08:00"))
 
 
 def test_qff_warmup_source_report_tracks_precedence_and_quality() -> None:
@@ -1707,6 +1794,13 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
         ]
     )
     qff = FakeQffProvider(
+        rows(
+            [
+                ("2026-06-18T04:58:00+08:00", 100.0),
+                ("2026-06-18T04:59:00+08:00", 100.0),
+                ("2026-06-18T05:00:00+08:00", 100.0),
+            ]
+        ),
         quotes=[
             quote("qff", "2026-06-18T08:45:59+08:00", 100.0, bid=99.9, ask=100.1),
             quote("qff", "2026-06-18T08:46:00+08:00", 100.0, bid=99.9, ask=100.1),
@@ -1714,7 +1808,13 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
         ]
     )
     tsm = FakeOhlcvProvider(
-        pd.DataFrame(),
+        rows(
+            [
+                ("2026-06-18T04:58:00+08:00", 20.0),
+                ("2026-06-18T04:59:00+08:00", 20.0),
+                ("2026-06-18T05:00:00+08:00", 20.0),
+            ]
+        ),
         quotes=[
             quote("tsm", "2026-06-18T08:45:59+08:00", 20.0, bid=19.99, ask=20.01),
             quote("tsm", "2026-06-18T08:46:00+08:00", 20.0, bid=19.99, ask=20.01),
@@ -1722,7 +1822,13 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
         ],
     )
     usd = FakeOhlcvProvider(
-        pd.DataFrame(),
+        rows(
+            [
+                ("2026-06-18T04:58:00+08:00", 30.0),
+                ("2026-06-18T04:59:00+08:00", 30.0),
+                ("2026-06-18T05:00:00+08:00", 30.0),
+            ]
+        ),
         quotes=[
             quote("usd", "2026-06-18T08:45:59+08:00", 30.0, bid=29.99, ask=30.01),
             quote("usd", "2026-06-18T08:46:00+08:00", 30.0, bid=29.99, ask=30.01),
@@ -1816,20 +1922,39 @@ def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
         ]
     )
     qff = FakeQffProvider(
+        rows(
+            [
+                ("2026-06-18T04:58:00+08:00", 100.0),
+                ("2026-06-18T04:59:00+08:00", 100.0),
+                ("2026-06-18T05:00:00+08:00", 100.0),
+            ]
+        ),
         quotes=[
             quote("qff", "2026-06-18T08:45:59+08:00", 100.0),
             quote("qff", "2026-06-18T08:46:01+08:00", 100.0),
         ]
     )
     tsm = FakeOhlcvProvider(
-        pd.DataFrame(),
+        rows(
+            [
+                ("2026-06-18T04:58:00+08:00", 20.0),
+                ("2026-06-18T04:59:00+08:00", 20.0),
+                ("2026-06-18T05:00:00+08:00", 20.0),
+            ]
+        ),
         quotes=[
             quote("tsm", "2026-06-18T08:45:40+08:00", 20.0),
             quote("tsm", "2026-06-18T08:46:01+08:00", 20.0),
         ],
     )
     usd = FakeOhlcvProvider(
-        pd.DataFrame(),
+        rows(
+            [
+                ("2026-06-18T04:58:00+08:00", 30.0),
+                ("2026-06-18T04:59:00+08:00", 30.0),
+                ("2026-06-18T05:00:00+08:00", 30.0),
+            ]
+        ),
         quotes=[
             quote("usd", "2026-06-18T08:45:59+08:00", 30.0),
             quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
@@ -1889,7 +2014,7 @@ def test_live_dry_run_records_simulated_entry_and_opens_position(tmp_path) -> No
     assert result.bars_processed == 2
     assert result.plans_recorded == 1
     output = terminal_output.getvalue()
-    assert "OPEN entry_fill" in output
+    assert "SHORT entry_fill" in output
     assert "ENTRY_PENDING entry_signal" not in output
     assert "EVENT entry_signal zscore_crossed" in output
     assert "EVENT entry_fill dry_run_filled" in output
@@ -2012,7 +2137,7 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
     assert "EVENT warmup_auto start" in output
     assert "EVENT live_execution filled" in output
     assert "EVENT post_trade_reconciliation matched" in output
-    assert "OPEN entry_fill" in output
+    assert "SHORT entry_fill" in output
 
     store = SQLiteStore(config.store_path)
     try:
@@ -2097,15 +2222,36 @@ def _run_live_execute_entry_to_open(config) -> None:
 
 
 def _resume_live_execute(config, *, readonly):
+    fresh_qff = rows(
+        [
+            ("2026-06-18T05:00:00+08:00", 100.0),
+            ("2026-06-18T08:45:00+08:00", 100.0),
+            ("2026-06-18T08:46:00+08:00", 100.0),
+        ]
+    )
+    fresh_tsm = rows(
+        [
+            ("2026-06-18T05:00:00+08:00", 20.0),
+            ("2026-06-18T08:45:00+08:00", 20.0),
+            ("2026-06-18T08:46:00+08:00", 20.0),
+        ]
+    )
+    fresh_usd = rows(
+        [
+            ("2026-06-18T05:00:00+08:00", 30.0),
+            ("2026-06-18T08:45:00+08:00", 30.0),
+            ("2026-06-18T08:46:00+08:00", 30.0),
+        ]
+    )
     qff, tsm, usd = dry_run_quote_providers(
         [
             "2026-06-18T08:47:30+08:00",
             "2026-06-18T08:47:59+08:00",
             "2026-06-18T08:48:01+08:00",
         ],
-        qff_rows=pd.DataFrame(),
-        tsm_rows=pd.DataFrame(),
-        usd_rows=pd.DataFrame(),
+        qff_rows=fresh_qff,
+        tsm_rows=fresh_tsm,
+        usd_rows=fresh_usd,
     )
     terminal = io.StringIO()
     LiveExecuteRunner(
@@ -2279,15 +2425,36 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
 
     assert first_result.plans_recorded == 1
 
+    resume_qff = rows(
+        [
+            ("2026-06-18T05:00:00+08:00", 100.0),
+            ("2026-06-18T08:45:00+08:00", 100.0),
+            ("2026-06-18T08:46:00+08:00", 100.0),
+        ]
+    )
+    resume_tsm = rows(
+        [
+            ("2026-06-18T05:00:00+08:00", 20.0),
+            ("2026-06-18T08:45:00+08:00", 20.0),
+            ("2026-06-18T08:46:00+08:00", 20.0),
+        ]
+    )
+    resume_usd = rows(
+        [
+            ("2026-06-18T05:00:00+08:00", 30.0),
+            ("2026-06-18T08:45:00+08:00", 30.0),
+            ("2026-06-18T08:46:00+08:00", 30.0),
+        ]
+    )
     second_qff, second_tsm, second_usd = dry_run_quote_providers(
         [
             "2026-06-18T08:47:30+08:00",
             "2026-06-18T08:47:59+08:00",
             "2026-06-18T08:48:01+08:00",
         ],
-        qff_rows=pd.DataFrame(),
-        tsm_rows=pd.DataFrame(),
-        usd_rows=pd.DataFrame(),
+        qff_rows=resume_qff,
+        tsm_rows=resume_tsm,
+        usd_rows=resume_usd,
     )
     second_result = LiveDryRunRunner(
         config,
@@ -2697,7 +2864,7 @@ def test_live_runtime_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
         store.close()
 
 
-def test_live_runtime_uses_existing_seed_without_rebuilding(tmp_path) -> None:
+def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path) -> None:
     config = small_live_config(tmp_path)
     warmup_qff = FakeQffProvider(
         rows(
@@ -2734,9 +2901,24 @@ def test_live_runtime_uses_existing_seed_without_rebuilding(tmp_path) -> None:
         usdttwd_provider=warmup_usd,
     ).run(reset_store=True, end=ts("2026-06-18T08:45:00+08:00"))
 
-    live_qff = FakeQffProvider(pd.DataFrame())
-    live_tsm = FakeOhlcvProvider(pd.DataFrame())
-    live_usd = FakeOhlcvProvider(pd.DataFrame())
+    fresh_rows = rows(
+        [
+            ("2026-06-18T08:45:00+08:00", 110.0),
+            ("2026-06-18T08:46:00+08:00", 111.0),
+            ("2026-06-18T08:47:00+08:00", 112.0),
+        ]
+    )
+    live_qff = FakeQffProvider(fresh_rows)
+    live_tsm = FakeOhlcvProvider(fresh_rows)
+    live_usd = FakeOhlcvProvider(
+        rows(
+            [
+                ("2026-06-18T08:45:00+08:00", 30.0),
+                ("2026-06-18T08:46:00+08:00", 30.0),
+                ("2026-06-18T08:47:00+08:00", 30.0),
+            ]
+        )
+    )
     terminal_output = io.StringIO()
 
     LiveDryRunRunner(
@@ -2744,15 +2926,68 @@ def test_live_runtime_uses_existing_seed_without_rebuilding(tmp_path) -> None:
         qff_provider=live_qff,
         tsm_provider=live_tsm,
         usdttwd_provider=live_usd,
-        clock=lambda: ts("2026-06-18T08:45:00+08:00"),
+        clock=lambda: ts("2026-06-18T08:48:00+08:00"),
         sleeper=lambda _: None,
         reporter=LiveTerminalReporter(terminal_output, color=False),
     ).run(resume=True, max_iterations=0)
 
-    assert live_qff.fetch_1m_calls == []
-    assert live_tsm.fetch_ohlcv_calls == []
-    assert live_usd.fetch_ohlcv_calls == []
-    assert "warmup_auto" not in terminal_output.getvalue()
+    assert live_qff.fetch_1m_calls
+    assert live_tsm.fetch_ohlcv_calls
+    assert live_usd.fetch_ohlcv_calls
+    assert "EVENT warmup_auto start" in terminal_output.getvalue()
+    assert "EVENT warmup_auto done_3" in terminal_output.getvalue()
+
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        refreshed = store.load_indicator_seed_bars(3, qff_symbol="QFFG6")
+        assert [bar.timestamp for bar in refreshed] == [
+            ts("2026-06-18T08:45:00+08:00"),
+            ts("2026-06-18T08:46:00+08:00"),
+            ts("2026-06-18T08:47:00+08:00"),
+        ]
+        # Fresh resume warmup replaces only the seed snapshot.  Downtime is
+        # never backfilled into the strategy's formal live-bar history.
+        assert count_table(store, "bars") == 0
+    finally:
+        store.close()
+
+
+def test_live_runtime_resume_refuses_cached_seed_when_refresh_fails(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    seed_warmup_bars(config)
+    qff = FakeQffProvider(pd.DataFrame())
+    tsm = FakeOhlcvProvider(pd.DataFrame())
+    usd = FakeOhlcvProvider(pd.DataFrame())
+
+    with pytest.raises(RuntimeError):
+        LiveDryRunRunner(
+            config,
+            qff_provider=qff,
+            tsm_provider=tsm,
+            usdttwd_provider=usd,
+            clock=lambda: ts("2026-06-18T08:48:00+08:00"),
+            sleeper=lambda _: None,
+        ).run(resume=True, max_iterations=0)
+
+    assert qff.fetch_1m_calls
+    assert tsm.fetch_ohlcv_calls == []
+    assert usd.fetch_ohlcv_calls == []
+
+
+def test_live_runtime_resume_rejects_skip_warmup(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    seed_warmup_bars(config)
+
+    with pytest.raises(RuntimeError, match="requires a fresh warmup rebuild"):
+        LiveDryRunRunner(
+            config,
+            qff_provider=FakeQffProvider(pd.DataFrame()),
+            tsm_provider=FakeOhlcvProvider(pd.DataFrame()),
+            usdttwd_provider=FakeOhlcvProvider(pd.DataFrame()),
+            clock=lambda: ts("2026-06-18T08:48:00+08:00"),
+            sleeper=lambda _: None,
+        ).run(resume=True, max_iterations=0, skip_warmup=True)
 
 
 def test_live_runtime_skip_warmup_requires_existing_seed(tmp_path) -> None:

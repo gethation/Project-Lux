@@ -83,17 +83,36 @@ def run_order_doctor_checks(config: object) -> tuple[bool, list[str]]:
 
 
 def command_live_execute(args: argparse.Namespace) -> int:
-    from lux_trader.cli.commands_live import build_live_reporter
+    from lux_trader.cli.commands_live import (
+        build_live_reporter,
+        reconcile_brokers_to_store,
+    )
 
     config = load_config(args.config)
     reporter = build_live_reporter(args, config, mode="live-execute")
     try:
         store = SQLiteStore(config.store_path)
         try:
+            if args.reset_store:
+                store.reset()
             store.initialize()
+            if config.live_execution.require_readonly_reconciliation:
+                run_id, reconciliation_report = reconcile_brokers_to_store(
+                    config,
+                    store,
+                    readonly=True,
+                )
+                reporter.event(
+                    datetime.now().astimezone(),
+                    "startup",
+                    "readonly_reconciliation "
+                    f"run_id={run_id} status={reconciliation_report.status.value}",
+                )
+            else:
+                reconciliation_report = store.load_latest_reconciliation_report()
             gate_report = evaluate_live_execution_gate(
                 config,
-                reconciliation_report=store.load_latest_reconciliation_report(),
+                reconciliation_report=reconciliation_report,
                 include_plan_checks=False,
             )
         finally:
@@ -101,7 +120,9 @@ def command_live_execute(args: argparse.Namespace) -> int:
         assert_live_execution_gate_open(gate_report)
         LiveExecuteRunner(config, reporter=reporter).run(
             resume=args.resume,
-            reset_store=args.reset_store,
+            # A requested reset must happen before reconciliation so the fresh
+            # report remains in the same store used by the live runtime.
+            reset_store=False,
             max_iterations=args.max_iterations,
             skip_warmup=args.skip_warmup,
         )

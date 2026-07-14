@@ -157,6 +157,10 @@ class LiveRuntime:
         skip_warmup: bool = False,
     ) -> LiveRuntimeResult:
         self.handler.validate_config(self.config)
+        if resume and skip_warmup:
+            raise RuntimeError(
+                "--resume requires a fresh warmup rebuild; remove --skip-warmup"
+            )
         if self._uses_default_clock:
             run_live_startup_preflight(
                 self.config,
@@ -274,12 +278,6 @@ class LiveRuntime:
                     observed_at,
                     self.config.trading_calendar.closed_dates,
                 )
-                margin_monitor.maybe_run(
-                    observed_at,
-                    strategy_state=strategy.state,
-                    store=store,
-                    reporter=self.reporter,
-                )
                 if not session_status.is_trading:
                     if not qff_books_torn_down_for_non_trading:
                         teardown_qff_books_if_supported(qff_provider)
@@ -312,6 +310,16 @@ class LiveRuntime:
                     stats.iterations += 1
                     self._sleep_if_needed(stats.iterations, max_iterations)
                     continue
+
+                # Broker accounting endpoints can be unavailable during the
+                # post-session settlement window. Defer due checks until the
+                # first trading iteration instead of querying while closed.
+                margin_monitor.maybe_run(
+                    observed_at,
+                    strategy_state=strategy.state,
+                    store=store,
+                    reporter=self.reporter,
+                )
 
                 if qff_books_torn_down_for_non_trading:
                     # Re-login first so the session starts on a fresh marketdata

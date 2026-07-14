@@ -84,11 +84,15 @@ APIs (gated smoke tests skip).
 
 `live-execute` is the only real-order entrypoint. It requires
 `safety.allow_live_order=true`, `[live_execution] enabled=true`, the three
-`*_ALLOW_LIVE_ORDER=1` env gates, and a matched read-only reconciliation —
-check the gate report offline first:
+`*_ALLOW_LIVE_ORDER=1` env gates, and a matched read-only reconciliation.
+At every startup (including resume), it refreshes reconciliation through the
+read-only Fubon and Binance adapters before evaluating the order gate or
+creating the real execution runner. A manual read-only preview remains
+available:
 
 ```powershell
-& conda run -n Quant python -m lux_trader doctor --config <cfg> --mode order
+$env:LUX_READONLY_BROKER='1'
+& conda run -n Quant python -m lux_trader reconcile-brokers --config <cfg> --readonly
 ```
 
 Single-venue tools (real orders, extra env gates required):

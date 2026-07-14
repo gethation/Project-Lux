@@ -1,0 +1,47 @@
+[paths]
+store_path = 'data\warmup_smoke.sqlite3'
+input_csv = ''
+
+[strategy]
+entry_z = 2.0
+exit_z = 0.0
+leg_notional_twd = 1000000.0
+initial_capital_twd = 2000000.0
+max_entry_delay_minutes = 15
+zscore_window = 1440
+
+[fees]
+tsm_fee_bps = 5.0
+qff_fee_per_contract_twd = 5.0
+qff_tax_rate = 0.00002
+qff_contract_multiplier = 100.0
+
+[safety]
+allow_live_order = false
+validate_expected_zscore = false
+expected_zscore_tolerance = 0.0000001
+
+[contract_policy]
+enabled = true
+min_business_days_to_expiry = 5
+force_exit_business_days_before_expiry = 1
+force_exit_time = '13:35'
+holidays = []
+
+[trading_calendar]
+closed_dates = ['2026-06-19']
+
+[live_market_data]
+polling_seconds = 1.0
+minute_finalize_delay_seconds = 1.0
+stale_seconds = 10.0
+max_leg_timestamp_skew_seconds = 10.0
+warmup_minutes = 1440
+qff_product = 'QFF'
+qff_symbol = 'auto'
+binance_symbol = 'TSM/USDT:USDT'
+bitopro_symbol = 'USDT/TWD'
+fubon_env_path = 'env'
+taifex_use_network = true
+taifex_cache_dir = 'data\taifex_cache'
+taifex_qff_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'

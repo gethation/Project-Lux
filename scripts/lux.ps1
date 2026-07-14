@@ -7,7 +7,21 @@
 #   .\scripts\lux.ps1 replay --config configs/replay.fixture.toml --reset-store
 
 $ErrorActionPreference = 'Stop'
-$conda = 'D:\Users\miniconda3\condabin\conda.bat'
+$condaCommand = Get-Command conda -ErrorAction SilentlyContinue
+$conda = if ($condaCommand) {
+    $condaCommand.Source
+}
+else {
+    $candidates = @(
+        (Join-Path $env:USERPROFILE 'anaconda3\condabin\conda.bat'),
+        (Join-Path $env:USERPROFILE 'miniconda3\condabin\conda.bat'),
+        'D:\Users\miniconda3\condabin\conda.bat'
+    )
+    $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if (-not $conda) {
+    throw 'Unable to find conda. Add conda to PATH or install Anaconda/Miniconda.'
+}
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $liveExecuteEnvGates = @(
     'LUX_READONLY_BROKER',
@@ -16,24 +30,29 @@ $liveExecuteEnvGates = @(
     'BINANCE_ALLOW_LIVE_ORDER'
 )
 $restoreEnv = @{}
-$autoLiveExecuteEnv = $args.Count -gt 0 -and $args[0] -eq 'live-execute'
+$command = if ($args.Count -gt 0) { $args[0] } else { '' }
+$autoEnvGates = if ($command -eq 'live-execute') {
+    $liveExecuteEnvGates
+}
+elseif ($command -eq 'live-dry-run') {
+    @('LUX_READONLY_BROKER')
+}
+else {
+    @()
+}
 
 Push-Location $projectRoot
 try {
-    if ($autoLiveExecuteEnv) {
-        foreach ($name in $liveExecuteEnvGates) {
-            $restoreEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
-            [Environment]::SetEnvironmentVariable($name, '1', 'Process')
-        }
+    foreach ($name in $autoEnvGates) {
+        $restoreEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        [Environment]::SetEnvironmentVariable($name, '1', 'Process')
     }
     & $conda run -n Quant --no-capture-output python -m lux_trader @args
     exit $LASTEXITCODE
 }
 finally {
-    if ($autoLiveExecuteEnv) {
-        foreach ($name in $liveExecuteEnvGates) {
-            [Environment]::SetEnvironmentVariable($name, $restoreEnv[$name], 'Process')
-        }
+    foreach ($name in $autoEnvGates) {
+        [Environment]::SetEnvironmentVariable($name, $restoreEnv[$name], 'Process')
     }
     Pop-Location
 }
