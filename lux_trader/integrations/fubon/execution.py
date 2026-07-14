@@ -193,13 +193,22 @@ class FubonFutureExecutionAdapter:
         submit_started_at: datetime,
         submit_finished_at: datetime,
     ) -> ExecutionOutcome:
-        order_id = fubon_order_id(place_row) or "UNKNOWN"
+        order_keys = tuple(
+            dict.fromkeys(
+                key
+                for key in (
+                    fubon_order_id(place_row),
+                    fubon_seq_no(place_row),
+                )
+                if key
+            )
+        )
         wait_result = self._await_order_completion(
             sdk=sdk,
             account=account,
             plan=plan,
             leg=leg,
-            order_id=None if order_id == "UNKNOWN" else order_id,
+            order_keys=order_keys,
             place_row=place_row,
             waiter=waiter,
         )
@@ -402,7 +411,7 @@ class FubonFutureExecutionAdapter:
         account: Any,
         plan: PairExecutionPlan,
         leg: ExecutionLeg,
-        order_id: str | None,
+        order_keys: tuple[str, ...],
         place_row: Any,
         waiter: "FillWaiter | None",
     ) -> FubonFillWaitResult:
@@ -478,7 +487,7 @@ class FubonFutureExecutionAdapter:
                     }
                 )
                 rows = []
-            matched = self._match_order_row(rows, order_id, leg)
+            matched = self._match_order_row(rows, order_keys, leg)
             if matched is not None:
                 best_row = matched
                 if is_fubon_final_order(best_row):
@@ -498,16 +507,27 @@ class FubonFutureExecutionAdapter:
     def _match_order_row(
         self,
         rows: list[Any],
-        order_id: str | None,
+        order_keys: tuple[str, ...],
         leg: ExecutionLeg,
     ) -> dict[str, Any] | None:
         candidates = [fubon_raw_row(row) for row in rows]
-        if order_id:
+        if order_keys:
+            known_keys = set(order_keys)
             for row in candidates:
-                if fubon_order_id(row) == order_id:
+                candidate_keys = {
+                    key
+                    for key in (fubon_order_id(row), fubon_seq_no(row))
+                    if key
+                }
+                if known_keys.intersection(candidate_keys):
                     return row
-                if fubon_seq_no(row) == order_id:
-                    return row
+            # ``place_order`` gave us a broker identifier, so a row with only
+            # the same contract/side/lot is not evidence that it is this
+            # order.  The broker history can still contain an older terminal
+            # order with the same shape while the new IOC order has not become
+            # queryable yet.  Falling through here would treat that stale row
+            # as the new fill and can reuse its order/fill IDs in the ledger.
+            return None
         for row in candidates:
             if self.identity.matches(row, side=leg.side, lot=leg.quantity):
                 return row

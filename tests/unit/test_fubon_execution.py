@@ -309,7 +309,18 @@ def test_adapter_places_entry_market_auto_order_fields() -> None:
 
 
 def test_adapter_matches_fubon_repr_order_result_symbol_and_expiry() -> None:
-    fake_sdk = FakeSdk(order_results=[fubon_repr_order_result()])
+    fake_sdk = FakeSdk(
+        place_result=FakeResult(
+            {
+                "order_no": "s0E1X",
+                "seq_no": "00110342383",
+                "symbol": SYMBOL,
+                "lot": 1,
+                "status": "submitted",
+            }
+        ),
+        order_results=[fubon_repr_order_result()],
+    )
 
     outcome = adapter_for(fake_sdk).execute(execution_plan())
 
@@ -548,6 +559,56 @@ def test_adapter_uses_position_delta_when_order_result_stays_active() -> None:
     assert outcome.payload["position_delta"]["after"] == 1.0
     assert outcome.payload["position_delta"]["confirmed_fill_lot"] == 1.0
     assert "position_delta_confirmed" in outcome.message
+
+
+def test_adapter_does_not_match_stale_filled_order_when_place_id_is_known() -> None:
+    fake_sdk = FakeSdk(
+        place_result=FakeResult(
+            {
+                "order_no": "a05fU",
+                "seq_no": "03117285889",
+                "symbol": SYMBOL,
+                "buy_sell": "Sell",
+                "lot": 1,
+                "filled_lot": 0,
+                "status": "submitted",
+            }
+        ),
+        order_results=[
+            {
+                "order_no": "a05Nj",
+                "seq_no": "03117284542",
+                "symbol": SYMBOL,
+                "buy_sell": "Sell",
+                "lot": 1,
+                "filled_lot": 1,
+                "average_price": 2447.0,
+                "status": "filled",
+            }
+        ],
+        position_results=[
+            [],
+            [
+                {
+                    "symbol": SYMBOL,
+                    "buy_sell": "Sell",
+                    "orig_lots": 1,
+                    "tradable_lot": 1,
+                }
+            ],
+        ],
+    )
+
+    outcome = adapter_for(fake_sdk).execute(
+        execution_plan(side=OrderSide.SELL)
+    )
+
+    assert outcome.status == ExecutionOutcomeStatus.FILLED
+    assert outcome.orders[0].order_id == "a05fU"
+    assert outcome.fills[0].fill_id == "FUBON-FILL-a05fU"
+    assert outcome.payload["fill_source"] == "position_delta"
+    assert outcome.payload["position_delta"]["before"] == 0.0
+    assert outcome.payload["position_delta"]["after"] == -1.0
 
 
 def test_adapter_records_order_poll_errors_in_payload() -> None:
