@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any, TextIO
+from typing import Any, Callable, TextIO
 
 from .core.time import ensure_taipei
 from .core.tradable_spread import TradableSpreadSnapshot
@@ -18,6 +18,7 @@ ANSI = {
     "magenta": "\033[35m",
     "bright_white": "\033[97m",
 }
+ANSI_ERASE_LINE = "\033[2K"
 
 
 class NullLiveReporter:
@@ -69,14 +70,17 @@ class LiveTerminalReporter:
         stream: TextIO | None = None,
         *,
         color: bool | None = None,
+        interactive: bool | None = None,
+        terminal_width: Callable[[], int | None] | None = None,
     ) -> None:
         self.stream = stream or sys.stdout
+        is_tty = bool(getattr(self.stream, "isatty", lambda: False)())
         if color is None:
-            is_tty = bool(getattr(self.stream, "isatty", lambda: False)())
             color = is_tty and os.getenv("NO_COLOR") is None
         self.color = color
+        self.interactive = is_tty if interactive is None else bool(interactive)
+        self._terminal_width = terminal_width or self._detect_terminal_width
         self._live_active = False
-        self._last_plain_len = 0
 
     def live(
         self,
@@ -108,7 +112,43 @@ class LiveTerminalReporter:
                 self._paint_state(state_text),
             ]
         )
-        self._write_live(plain, colored)
+        compact_plain = (
+            f"{time_text} LIVE {mid_text} "
+            f"zS={format_float(spread_snapshot.short_zscore, digits=2)} "
+            f"zL={format_float(spread_snapshot.long_zscore, digits=2)} {state_text}"
+        )
+        compact_colored = " ".join(
+            [
+                self._paint(time_text, "dim"),
+                self._paint("LIVE", "cyan", "dim"),
+                mid_text,
+                self._paint_z(
+                    f"zS={format_float(spread_snapshot.short_zscore, digits=2)}",
+                    spread_snapshot.short_zscore,
+                ),
+                self._paint_z(
+                    f"zL={format_float(spread_snapshot.long_zscore, digits=2)}",
+                    spread_snapshot.long_zscore,
+                ),
+                self._paint_state(state_text),
+            ]
+        )
+        minimal_plain = f"{time_text} LIVE {mid_text} {state_text}"
+        minimal_colored = " ".join(
+            [
+                self._paint(time_text, "dim"),
+                self._paint("LIVE", "cyan", "dim"),
+                mid_text,
+                self._paint_state(state_text),
+            ]
+        )
+        self._write_live(
+            (
+                (plain, colored),
+                (compact_plain, compact_colored),
+                (minimal_plain, minimal_colored),
+            )
+        )
 
     def live_non_trading(
         self,
@@ -131,7 +171,30 @@ class LiveTerminalReporter:
                 f"in={countdown}",
             ]
         )
-        self._write_live(plain, colored)
+        compact_plain = f"{time_text} CLOSED next={next_text} in={countdown}"
+        compact_colored = " ".join(
+            [
+                self._paint(time_text, "dim"),
+                self._paint("CLOSED", "yellow"),
+                f"next={next_text}",
+                f"in={countdown}",
+            ]
+        )
+        minimal_plain = f"{time_text} CLOSED in={countdown}"
+        minimal_colored = " ".join(
+            [
+                self._paint(time_text, "dim"),
+                self._paint("CLOSED", "yellow"),
+                f"in={countdown}",
+            ]
+        )
+        self._write_live(
+            (
+                (plain, colored),
+                (compact_plain, compact_colored),
+                (minimal_plain, minimal_colored),
+            )
+        )
 
     def bar(
         self,
@@ -210,26 +273,64 @@ class LiveTerminalReporter:
         )
         self._write_permanent(plain, colored)
 
-    def _write_live(self, plain: str, colored: str) -> None:
-        padding = " " * max(0, self._last_plain_len - len(plain))
-        self.stream.write(f"\r{colored}{padding}")
+    def _write_live(self, variants: tuple[tuple[str, str], ...]) -> None:
+        plain, colored = variants[0]
+        if not self.interactive:
+            self.stream.write(f"{colored}\n")
+            self.stream.flush()
+            return
+
+        width = self._current_terminal_width()
+        if width is None:
+            # A TTY whose width cannot be determined cannot safely use carriage-
+            # return refreshes: the rendered text may wrap and leave stale rows.
+            self.stream.write(f"{colored}\n")
+            self.stream.flush()
+            return
+
+        # Keep one column unused. Writing into the final terminal column can set
+        # the pending-wrap flag even when the text visually appears to fit.
+        available = max(width - 1, 1)
+        for candidate_plain, candidate_colored in variants:
+            if len(candidate_plain) <= available:
+                plain, colored = candidate_plain, candidate_colored
+                break
+        else:
+            plain = truncate_line(variants[-1][0], available)
+            colored = plain
+
+        self.stream.write(f"\r{ANSI_ERASE_LINE}{colored}")
         self.stream.flush()
         self._live_active = True
-        self._last_plain_len = len(plain)
 
     def _write_permanent(self, plain: str, colored: str) -> None:
         self._clear_live_line()
         self.stream.write(f"{colored}\n")
         self.stream.flush()
-        self._last_plain_len = 0
 
     def _clear_live_line(self) -> None:
         if not self._live_active:
             return
-        self.stream.write(f"\r{' ' * self._last_plain_len}\r")
+        self.stream.write(f"\r{ANSI_ERASE_LINE}")
         self.stream.flush()
         self._live_active = False
-        self._last_plain_len = 0
+
+    def _current_terminal_width(self) -> int | None:
+        try:
+            width = self._terminal_width()
+        except (OSError, ValueError, TypeError):
+            return None
+        if width is None:
+            return None
+        parsed = int(width)
+        return parsed if parsed > 0 else None
+
+    def _detect_terminal_width(self) -> int | None:
+        try:
+            fileno = self.stream.fileno()
+            return os.get_terminal_size(fileno).columns
+        except (AttributeError, OSError, ValueError):
+            return None
 
     def _paint(self, text: str, *styles: str) -> str:
         if not self.color:
@@ -252,7 +353,7 @@ class LiveTerminalReporter:
             return self._paint(text, "green")
         if text in {"ENTRY_PENDING", "EXIT_PENDING"}:
             return self._paint(text, "yellow")
-        if text == "OPEN":
+        if text in {"OPEN", "LONG", "SHORT"}:
             return self._paint(text, "cyan")
         if text in {"PAUSED", "ERROR"}:
             return self._paint(text, "red")
@@ -357,6 +458,16 @@ def format_float(value: float | None, *, digits: int) -> str:
     return f"{value:.{digits}f}"
 
 
+def truncate_line(value: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    if len(value) <= width:
+        return value
+    if width <= 3:
+        return value[:width]
+    return f"{value[: width - 3]}..."
+
+
 def format_spread_block(
     name: str,
     spread: float | None,
@@ -399,9 +510,19 @@ def account_margin_text(account_display: Any) -> str:
 
 def state_value(value: Any) -> str:
     # Accepts a StrategyState enum, a full StrategyRuntimeState, or plain text.
-    value = getattr(value, "state", value)
-    text = getattr(value, "value", value)
-    return str(text).upper()
+    runtime_state = value
+    state = getattr(runtime_state, "state", runtime_state)
+    text = str(getattr(state, "value", state)).upper()
+    if text != "OPEN":
+        return text
+
+    direction = getattr(runtime_state, "position_direction", None)
+    direction_text = str(getattr(direction, "value", direction) or "").lower()
+    if direction_text == "long_tsm_short_qff":
+        return "LONG"
+    if direction_text == "short_tsm_long_qff":
+        return "SHORT"
+    return text
 
 
 def action_value(value: Any) -> str:

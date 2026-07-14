@@ -43,6 +43,8 @@ STATE_STYLES = {
     "ENTRY_PENDING": "yellow",
     "EXIT_PENDING": "yellow",
     "OPEN": "cyan",
+    "LONG": "cyan",
+    "SHORT": "cyan",
     "PAUSED": "bold red",
     "ERROR": "bold red",
 }

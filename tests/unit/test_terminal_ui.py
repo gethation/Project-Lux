@@ -8,9 +8,11 @@ import pytest
 from lux_trader.cli import build_parser
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.market_data import LiveQuote, LiveQuoteSet
-from lux_trader.core.models import MarketBar, StrategyAction, StrategyState
+from lux_trader.core.models import Direction, MarketBar, StrategyAction, StrategyState
+from lux_trader.core.strategy import StrategyRuntimeState
 from lux_trader.margin.display import AccountDisplay
 from lux_trader.terminal_ui import (
+    ANSI_ERASE_LINE,
     LiveTerminalReporter,
     format_countdown,
 )
@@ -52,7 +54,12 @@ def bar(spread: float) -> MarketBar:
 
 def test_live_terminal_reporter_refreshes_live_line_without_newlines() -> None:
     stream = io.StringIO()
-    reporter = LiveTerminalReporter(stream, color=False)
+    reporter = LiveTerminalReporter(
+        stream,
+        color=False,
+        interactive=True,
+        terminal_width=lambda: 120,
+    )
 
     reporter.live(
         ts("2026-06-18T09:12:04+08:00"),
@@ -91,7 +98,12 @@ def test_live_terminal_reporter_refreshes_live_line_without_newlines() -> None:
 
 def test_live_terminal_reporter_refreshes_non_trading_line() -> None:
     stream = io.StringIO()
-    reporter = LiveTerminalReporter(stream, color=False)
+    reporter = LiveTerminalReporter(
+        stream,
+        color=False,
+        interactive=True,
+        terminal_width=lambda: 120,
+    )
 
     reporter.live_non_trading(
         ts("2026-06-20T02:31:04+08:00"),
@@ -110,6 +122,117 @@ def test_live_terminal_reporter_refreshes_non_trading_line() -> None:
     assert (
         "02:31:05 LIVE non-trading session next=06/22 08:45 in=54:13:55"
     ) in output
+
+
+def test_live_terminal_reporter_uses_lines_for_noninteractive_output() -> None:
+    stream = io.StringIO()
+    reporter = LiveTerminalReporter(stream, color=False)
+    snapshot = TradableSpreadSnapshot(
+        mid_spread=1.84,
+        mid_zscore=1.73,
+        short_spread=1.62,
+        short_zscore=1.51,
+        long_spread=2.06,
+        long_zscore=1.93,
+    )
+
+    reporter.live(ts("2026-06-18T09:12:04+08:00"), snapshot, StrategyState.FLAT)
+    reporter.live(ts("2026-06-18T09:12:05+08:00"), snapshot, StrategyState.FLAT)
+
+    output = stream.getvalue()
+    assert output.count("\n") == 2
+    assert "\r" not in output
+    assert ANSI_ERASE_LINE not in output
+
+
+def test_live_terminal_reporter_uses_lines_when_width_is_unavailable() -> None:
+    stream = io.StringIO()
+    reporter = LiveTerminalReporter(
+        stream,
+        color=False,
+        interactive=True,
+        terminal_width=lambda: None,
+    )
+    snapshot = TradableSpreadSnapshot(
+        mid_spread=1.84,
+        mid_zscore=1.73,
+        short_spread=1.62,
+        short_zscore=1.51,
+        long_spread=2.06,
+        long_zscore=1.93,
+    )
+
+    reporter.live(ts("2026-06-18T09:12:04+08:00"), snapshot, StrategyState.FLAT)
+    reporter.live(ts("2026-06-18T09:12:05+08:00"), snapshot, StrategyState.FLAT)
+
+    output = stream.getvalue()
+    assert output.count("\n") == 2
+    assert "\r" not in output
+    assert ANSI_ERASE_LINE not in output
+
+
+def test_live_terminal_reporter_reflows_when_terminal_width_changes() -> None:
+    stream = io.StringIO()
+    width = [120]
+    reporter = LiveTerminalReporter(
+        stream,
+        color=False,
+        interactive=True,
+        terminal_width=lambda: width[0],
+    )
+    snapshot = TradableSpreadSnapshot(
+        mid_spread=11.08,
+        mid_zscore=-2.78,
+        short_spread=11.02,
+        short_zscore=-2.78,
+        long_spread=11.15,
+        long_zscore=-2.81,
+    )
+
+    reporter.live(ts("2026-06-18T21:52:03+08:00"), snapshot, StrategyState.OPEN)
+    width[0] = 48
+    reporter.live(ts("2026-06-18T21:52:04+08:00"), snapshot, StrategyState.OPEN)
+
+    rendered = stream.getvalue().split(ANSI_ERASE_LINE)
+    assert len(rendered[-1]) <= 47
+    assert "shortSpread" not in rendered[-1]
+    assert "zS=-2.78" in rendered[-1]
+
+
+@pytest.mark.parametrize(
+    ("direction", "label"),
+    [
+        (Direction.LONG_TSM_SHORT_QFF, "LONG"),
+        (Direction.SHORT_TSM_LONG_QFF, "SHORT"),
+    ],
+)
+def test_live_terminal_reporter_labels_open_state_by_tsm_direction(
+    direction: Direction,
+    label: str,
+) -> None:
+    stream = io.StringIO()
+    reporter = LiveTerminalReporter(stream, color=True)
+    state = StrategyRuntimeState(
+        state=StrategyState.OPEN,
+        position_direction=direction,
+    )
+
+    reporter.live(
+        ts("2026-06-18T09:12:04+08:00"),
+        TradableSpreadSnapshot(
+            mid_spread=1.84,
+            mid_zscore=1.73,
+            short_spread=1.62,
+            short_zscore=1.51,
+            long_spread=2.06,
+            long_zscore=1.93,
+        ),
+        state,
+    )
+
+    output = stream.getvalue()
+    assert f"\x1b[36m{label}\x1b[0m" in output
+    assert "\x1b[36mOPEN\x1b[0m" not in output
 
 
 def test_live_terminal_reporter_non_trading_color_and_countdown_over_24h() -> None:

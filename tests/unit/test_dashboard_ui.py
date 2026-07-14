@@ -68,7 +68,7 @@ def test_dashboard_absorbs_live_quote_bar_and_position() -> None:
 
     state = reporter.state
     assert state.session == "trading"
-    assert state.state_text == "OPEN"
+    assert state.state_text == "SHORT"
     assert state.position_direction == "short_tsm_long_qff"
     assert state.tsm_units == -100.0
     assert state.qff_contracts == 2
@@ -167,7 +167,7 @@ def test_dashboard_renders_all_acceptance_fields_to_output() -> None:
         "shortSpread",
         "longSpread",
         "State",
-        "OPEN",
+        "SHORT",
         "Position",
         "short_tsm_long_qff",
         "Decision",
