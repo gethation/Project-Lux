@@ -126,11 +126,13 @@ def command_live_execute(args: argparse.Namespace) -> int:
             max_iterations=args.max_iterations,
             skip_warmup=args.skip_warmup,
         )
-    except RuntimeError as exc:
+    except Exception as exc:
         reporter.error(
             datetime.now().astimezone(), f"{type(exc).__name__}: {exc}"
         )
-        raise SystemExit(str(exc))
+        if isinstance(exc, RuntimeError):
+            raise SystemExit(str(exc))
+        raise
     finally:
         reporter.finish()
     return 0

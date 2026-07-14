@@ -18,6 +18,7 @@ from lux_trader.core.calendar import live_session_status
 from lux_trader.core.models import StrategyState
 from lux_trader.core.time import ensure_taipei
 from lux_trader.dashboard_ui import DashboardReporter
+from lux_trader.ntfy import NtfyLiveReporter
 from lux_trader.reconciliation import (
     BrokerReconciler,
     ReadOnlyBroker,
@@ -28,10 +29,16 @@ from lux_trader.store import SQLiteStore
 from lux_trader.terminal_ui import LiveTerminalReporter, NullLiveReporter
 
 
+def with_ntfy(reporter: object, config: object, *, mode: str):
+    if config.ntfy.enabled:
+        return NtfyLiveReporter(reporter, config.ntfy, mode=mode)
+    return reporter
+
+
 def build_live_reporter(args: argparse.Namespace, config: object, *, mode: str):
     """Reporter factory shared by live modes: compact (default), dashboard, quiet."""
     if getattr(args, "quiet_ui", False):
-        return NullLiveReporter()
+        return with_ntfy(NullLiveReporter(), config, mode=mode)
     color = False if getattr(args, "no_color", False) else None
     ui = getattr(args, "ui", "compact")
     if ui == "dashboard" and not sys.stdout.isatty():
@@ -41,19 +48,23 @@ def build_live_reporter(args: argparse.Namespace, config: object, *, mode: str):
         )
         ui = "compact"
     if ui == "compact":
-        return LiveTerminalReporter(color=color)
+        return with_ntfy(LiveTerminalReporter(color=color), config, mode=mode)
     gate_text = (
         "allow_live_order=false · simulated adapter (DRYRUN-*)"
         if mode == "live-dry-run"
         else None
     )
-    return DashboardReporter(
+    return with_ntfy(
+        DashboardReporter(
+            mode=mode,
+            qff_symbol=config.live.qff_symbol,
+            binance_symbol=config.live.binance_symbol,
+            bitopro_symbol=config.live.bitopro_symbol,
+            gate_text=gate_text,
+            color=color,
+        ),
+        config,
         mode=mode,
-        qff_symbol=config.live.qff_symbol,
-        binance_symbol=config.live.binance_symbol,
-        bitopro_symbol=config.live.bitopro_symbol,
-        gate_text=gate_text,
-        color=color,
     )
 
 

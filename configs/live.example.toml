@@ -105,3 +105,13 @@ target_ratio = 0.30
 red_line_maint_multiplier = 1.3
 # 0 falls back to strategy.leg_notional_twd
 leg_notional_twd = 0.0
+
+[ntfy]
+# Best-effort live notifications. Public ntfy.sh topic names should be hard to
+# guess. --quiet-ui only hides terminal output and does not disable ntfy.
+enabled = false
+server_url = 'https://ntfy.sh'
+status_topic = ''
+trades_topic = ''
+errors_topic = ''
+request_timeout_seconds = 3.0

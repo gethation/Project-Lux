@@ -78,6 +78,7 @@ from lux_trader.terminal_ui import (
 )
 from lux_trader.core.tradable_spread import TradableSpreadSnapshot, estimate_tradable_spreads
 from lux_trader.core.time import ensure_taipei
+from lux_trader.ntfy import notify_execution, notify_operational_error
 
 
 # Force-exit reasons that are routed through the coordinator exit path (as opposed
@@ -328,6 +329,7 @@ class DryRunLiveModeHandler(LiveModeHandler):
             plans_recorded = 1
             if outcome is None:
                 raise RuntimeError("dry-run execution outcome is missing")
+            notify_execution(reporter, bar.timestamp, plan, outcome, result)
             event_type = dry_run_execution_event_type(outcome)
             reporter.event(
                 bar.timestamp,
@@ -518,6 +520,12 @@ class LiveExecuteModeHandler(LiveModeHandler):
         store.save_state(row_index, timestamp, state, indicator)
         reporter.warn(timestamp, "resume_reconciliation", report.status.value)
         reporter.event(timestamp, "resume_reconciliation", "paused")
+        notify_operational_error(
+            reporter,
+            timestamp,
+            "resume_reconciliation_mismatch",
+            report.status.value,
+        )
 
     def close(self) -> None:
         for adapter in (self.binance_adapter, self.fubon_adapter):
@@ -634,6 +642,14 @@ class LiveExecuteModeHandler(LiveModeHandler):
             if outcome is None:
                 raise RuntimeError("live execution outcome is missing")
             report_live_execution_events(reporter, bar.timestamp, outcome)
+            notify_execution(reporter, bar.timestamp, plan, outcome, result)
+            if result.reason == "live_entry_fill_mismatch":
+                notify_operational_error(
+                    reporter,
+                    bar.timestamp,
+                    "live_entry_fill_mismatch",
+                    "filled legs could not form a valid pair position",
+                )
             event_type = live_execution_event_type(outcome)
             reporter.event(
                 bar.timestamp,
@@ -733,6 +749,12 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 bar.timestamp,
                 "post_trade_reconciliation",
                 "paused",
+            )
+            notify_operational_error(
+                reporter,
+                bar.timestamp,
+                "post_trade_reconciliation_mismatch",
+                report.status.value,
             )
         return report
 

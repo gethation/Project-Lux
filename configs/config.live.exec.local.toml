@@ -115,3 +115,11 @@ red_line_maint_multiplier = 1.3
 # 0 lets live margin checks derive the denominator from strategy.qff_lots and
 # the latest QFF price. Set a positive value only to force a fixed denominator.
 leg_notional_twd = 0.0
+
+[ntfy]
+enabled = true
+server_url = 'https://ntfy.sh'
+status_topic = 'status-43cc9'
+trades_topic = 'trades-91c91'
+errors_topic = 'errors-1836f'
+request_timeout_seconds = 3.0

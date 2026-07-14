@@ -131,6 +131,16 @@ class MarginManagementConfig:
 
 
 @dataclass(frozen=True)
+class NtfyConfig:
+    enabled: bool = False
+    server_url: str = "https://ntfy.sh"
+    status_topic: str = ""
+    trades_topic: str = ""
+    errors_topic: str = ""
+    request_timeout_seconds: float = 3.0
+
+
+@dataclass(frozen=True)
 class AppConfig:
     input_csv: Path
     store_path: Path
@@ -156,6 +166,7 @@ class AppConfig:
     margin_management: MarginManagementConfig = field(
         default_factory=MarginManagementConfig
     )
+    ntfy: NtfyConfig = field(default_factory=NtfyConfig)
 
 
 def load_config(path: Path) -> AppConfig:
@@ -175,6 +186,7 @@ def load_config(path: Path) -> AppConfig:
     live_execution_smoke = raw.get("live_execution_smoke", {})
     binance_execution = raw.get("binance_execution", {})
     margin_management = raw.get("margin_management", {})
+    ntfy = raw.get("ntfy", {})
 
     input_csv = Path(paths.get("input_csv", "")).expanduser()
     store_path = Path(paths["store_path"]).expanduser()
@@ -355,6 +367,42 @@ def load_config(path: Path) -> AppConfig:
             ),
             leg_notional_twd=float(margin_management.get("leg_notional_twd", 0.0)),
         ),
+        ntfy=load_ntfy_config(ntfy),
+    )
+
+
+def load_ntfy_config(raw: dict[str, object]) -> NtfyConfig:
+    enabled = bool(raw.get("enabled", False))
+    server_url = str(raw.get("server_url", "https://ntfy.sh")).strip().rstrip("/")
+    status_topic = str(raw.get("status_topic", "")).strip().strip("/")
+    trades_topic = str(raw.get("trades_topic", "")).strip().strip("/")
+    errors_topic = str(raw.get("errors_topic", "")).strip().strip("/")
+    timeout = float(raw.get("request_timeout_seconds", 3.0))
+    if enabled:
+        if not server_url.startswith(("https://", "http://")):
+            raise ValueError("ntfy.server_url must start with http:// or https://")
+        missing = [
+            name
+            for name, value in (
+                ("status_topic", status_topic),
+                ("trades_topic", trades_topic),
+                ("errors_topic", errors_topic),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(
+                "ntfy is enabled but topic names are missing: " + ", ".join(missing)
+            )
+        if timeout <= 0:
+            raise ValueError("ntfy.request_timeout_seconds must be positive")
+    return NtfyConfig(
+        enabled=enabled,
+        server_url=server_url,
+        status_topic=status_topic,
+        trades_topic=trades_topic,
+        errors_topic=errors_topic,
+        request_timeout_seconds=timeout,
     )
 
 
