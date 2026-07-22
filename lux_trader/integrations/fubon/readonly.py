@@ -162,7 +162,11 @@ class FubonReadOnlyBroker:
 
             self.sdk = self.sdk_factory() if self.sdk_factory else FubonSDK()
         if self.accounts is None:
-            self.accounts = login_fubon_sdk(self.sdk, self.env_path)
+            self.accounts = login_fubon_sdk(
+                self.sdk,
+                self.env_path,
+                api_key_env="FUBON_TRADING_API_KEY",
+            )
         self.account = select_futopt_account(self.accounts)
         return self.sdk, self.account
 

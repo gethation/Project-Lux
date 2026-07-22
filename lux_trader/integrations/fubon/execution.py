@@ -126,16 +126,35 @@ class FubonFutureExecutionAdapter:
         self.poll_interval_seconds = float(poll_interval_seconds)
         self.unblock = bool(unblock)
         self.fill_listener: FubonFillReportListener | None = None
+        self.session_generation = 0
+        self.last_login_at: datetime | None = None
+        self.last_success_at: datetime | None = None
+        self.last_invalid_reason: str | None = None
+        self.relogin_count = 0
+        self.session_event_callback_attached = False
 
     def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
         leg, reject_reason = self._select_leg(plan)
         if reject_reason is not None or leg is None:
             return self._rejected(plan, reject_reason or "invalid_fubon_leg")
 
+        try:
+            position_before = self.fetch_position_quantity()
+            position_errors: list[dict[str, Any]] = []
+        except Exception as exc:
+            if not is_fubon_session_invalid_error(exc):
+                return self._failed_from_exception(
+                    plan, leg, exc, stage="pre_submit_health"
+                )
+            self._reset_session(str(exc))
+            try:
+                position_before = self.fetch_position_quantity()
+                position_errors = []
+            except Exception as retry_exc:
+                return self._failed_from_exception(
+                    plan, leg, retry_exc, stage="pre_submit_reauth"
+                )
         sdk, account = self._ensure_connected()
-        position_before, position_errors = self._safe_fetch_position_quantity(
-            stage="before_order"
-        )
         try:
             order = self._build_order(plan, leg)
         except Exception as exc:
@@ -153,9 +172,20 @@ class FubonFutureExecutionAdapter:
                 submit_started_at = self.clock()
                 place_result = sdk.futopt.place_order(account, order, self.unblock)
                 submit_finished_at = self.clock()
+            except Exception as exc:
+                return self._unknown_from_exception(
+                    plan, leg, exc, stage="place_order"
+                )
+            try:
                 place_rows = checked_result_data(place_result, "Fubon place_order")
             except Exception as exc:
-                return self._failed_from_exception(plan, leg, exc, stage="place_order")
+                if is_fubon_session_invalid_error(exc):
+                    return self._unknown_from_exception(
+                        plan, leg, exc, stage="place_order_result"
+                    )
+                return self._failed_from_exception(
+                    plan, leg, exc, stage="place_order_rejected"
+                )
 
             place_row = place_rows[0] if place_rows else {}
             if waiter is not None:
@@ -311,6 +341,7 @@ class FubonFutureExecutionAdapter:
             quantity = fubon_position_quantity(raw)
             if quantity is not None:
                 total += quantity
+        self.last_success_at = self.clock()
         return total
 
     def preflight(self) -> FubonExecutionPreflight:
@@ -319,13 +350,44 @@ class FubonFutureExecutionAdapter:
             position_quantity=self.fetch_position_quantity(),
         )
 
+    def session_health(self) -> dict[str, Any]:
+        return {
+            "role": "trading",
+            "generation": self.session_generation,
+            "status": "invalid" if self.last_invalid_reason else "ready",
+            "last_login_at": self.last_login_at,
+            "last_success_at": self.last_success_at,
+            "invalid_reason": self.last_invalid_reason,
+            "relogin_count": self.relogin_count,
+        }
+
     def close(self) -> None:
         if self.sdk is not None:
             logout = getattr(self.sdk, "logout", None)
             if callable(logout):
                 logout()
 
+    def _reset_session(self, reason: str) -> None:
+        if self.fill_listener is not None:
+            self.fill_listener.close()
+            self.fill_listener = None
+        if self.sdk is not None:
+            logout = getattr(self.sdk, "logout", None)
+            if callable(logout):
+                try:
+                    logout()
+                except Exception:
+                    pass
+        self.sdk = None
+        self.accounts = None
+        self.account = None
+        self.session_event_callback_attached = False
+        self.last_invalid_reason = reason
+        self.relogin_count += 1
+
     def _ensure_connected(self) -> tuple[Any, Any]:
+        if self.sdk is not None and self.account is not None and self.last_invalid_reason:
+            self._reset_session(self.last_invalid_reason)
         if self.sdk is not None and self.account is not None:
             self._ensure_fill_listener()
             return self.sdk, self.account
@@ -336,15 +398,40 @@ class FubonFutureExecutionAdapter:
         if self.accounts is None:
             self.accounts = self._login(self.sdk)
         self.account = select_futopt_account(self.accounts)
+        self.session_generation += 1
+        self.last_login_at = self.clock()
+        self.last_invalid_reason = None
+        self._ensure_session_event_callback()
         self._ensure_fill_listener()
         return self.sdk, self.account
+
+    def _ensure_session_event_callback(self) -> None:
+        if self.session_event_callback_attached or self.sdk is None:
+            return
+        setter = getattr(self.sdk, "set_on_event", None)
+        if not callable(setter):
+            return
+        setter(self._handle_session_event)
+        self.session_event_callback_attached = True
+
+    def _handle_session_event(self, *args: Any, **kwargs: Any) -> None:
+        text = " ".join(str(item) for item in args)
+        if kwargs:
+            text = f"{text} {kwargs}"
+        normalized = text.lower()
+        if any(code in normalized for code in ("300", "301", "302", "304")):
+            self.last_invalid_reason = f"Fubon session event {text.strip()}"
 
     def _ensure_fill_listener(self) -> None:
         if self.fill_listener is None and self.sdk is not None:
             self.fill_listener = FubonFillReportListener.attach(self.sdk)
 
     def _login(self, sdk: Any) -> list[Any]:
-        return login_fubon_sdk(sdk, self.env_path)
+        return login_fubon_sdk(
+            sdk,
+            self.env_path,
+            api_key_env="FUBON_TRADING_API_KEY",
+        )
 
     def _select_leg(
         self,
@@ -729,9 +816,52 @@ class FubonFutureExecutionAdapter:
             },
         )
 
+    def _unknown_from_exception(
+        self,
+        plan: PairExecutionPlan,
+        leg: ExecutionLeg,
+        exc: Exception,
+        *,
+        stage: str,
+    ) -> ExecutionOutcome:
+        if is_fubon_session_invalid_error(exc):
+            self.last_invalid_reason = str(exc)
+        return ExecutionOutcome(
+            plan_id=plan.plan_id,
+            timestamp=self.clock(),
+            status=ExecutionOutcomeStatus.UNKNOWN,
+            message=(
+                f"Fubon {stage} outcome unknown: {type(exc).__name__}: {exc}"
+            ),
+            recommended_state=StrategyState.PAUSED,
+            payload={
+                "adapter": "fubon_future_execution",
+                "stage": stage,
+                "submission_started": True,
+                "do_not_retry": True,
+                "symbol": self.symbol,
+                "side": leg.side.value,
+                "quantity": leg.quantity,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
+
 
 def normalized_fubon_status(status_text: str | None) -> str:
     return str(status_text or "").strip().lower()
+
+
+def is_fubon_session_invalid_error(exc: BaseException | str) -> bool:
+    text = str(exc).strip().lower()
+    return (
+        "not login" in text
+        or "not logged" in text
+        or "event 300" in text
+        or "event 301" in text
+        or "event 302" in text
+        or "event 304" in text
+    )
 
 
 def map_fubon_order_status(

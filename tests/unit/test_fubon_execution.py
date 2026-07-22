@@ -509,6 +509,20 @@ def test_adapter_maps_failed_place_order_to_failed() -> None:
     assert "place_order failed" in outcome.message
 
 
+def test_adapter_maps_not_login_place_result_to_unknown_without_retry() -> None:
+    fake_sdk = FakeSdk(
+        place_result=FakeResult(None, is_success=False, message="Not Login Error")
+    )
+
+    outcome = adapter_for(fake_sdk).execute(execution_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.UNKNOWN
+    assert outcome.recommended_state == StrategyState.PAUSED
+    assert outcome.payload is not None
+    assert outcome.payload["do_not_retry"] is True
+    assert outcome.payload["submission_started"] is True
+
+
 def test_adapter_maps_pending_timeout_to_unknown() -> None:
     fake_sdk = FakeSdk(
         order_results=[

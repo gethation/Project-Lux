@@ -106,7 +106,12 @@ class FubonQffMarketData:
         from fubon_neo.sdk import FubonSDK, Mode
 
         sdk = FubonSDK()
-        login_fubon_sdk(sdk, self.env_path, label="Fubon market data login")
+        login_fubon_sdk(
+            sdk,
+            self.env_path,
+            label="Fubon market data login",
+            api_key_env="FUBON_MARKETDATA_API_KEY",
+        )
         mode = getattr(Mode, "Normal", None)
         if mode is None:
             sdk.init_realtime()

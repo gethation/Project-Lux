@@ -13,12 +13,15 @@ def login_fubon_sdk(
     env_path: Path | None,
     *,
     label: str = "Fubon login",
+    api_key_env: str = "FUBON_TRADING_API_KEY",
 ) -> list[Any]:
     load_dotenv(env_path)
     personal_id = require_env("FUBON_PERSONAL_ID")
     cert_path = resolve_cert_path(env_path)
     cert_password = os.getenv("FUBON_CERT_PASSWORD", "").strip() or None
-    api_key = os.getenv("FUBON_API_KEY", "").strip()
+    api_key = os.getenv(api_key_env, "").strip()
+    if not api_key:
+        api_key = os.getenv("FUBON_API_KEY", "").strip()
     password = os.getenv("FUBON_PASSWORD", "").strip()
 
     if api_key:
@@ -40,9 +43,25 @@ def login_fubon_sdk(
             result = sdk.login(personal_id, password, str(cert_path))
     else:
         raise RuntimeError(
-            "Set FUBON_API_KEY or FUBON_PASSWORD for Fubon login"
+            f"Set {api_key_env}, FUBON_API_KEY, or FUBON_PASSWORD for Fubon login"
         )
     return checked_result_data(result, label)
+
+
+def validate_distinct_live_api_keys(env_path: Path | None) -> None:
+    """Require isolated market-data/trading keys when both roles are enabled."""
+    load_dotenv(env_path)
+    market_data_key = os.getenv("FUBON_MARKETDATA_API_KEY", "").strip()
+    trading_key = os.getenv("FUBON_TRADING_API_KEY", "").strip()
+    if not market_data_key or not trading_key:
+        raise RuntimeError(
+            "Set both FUBON_MARKETDATA_API_KEY and FUBON_TRADING_API_KEY "
+            "for live-execute"
+        )
+    if market_data_key == trading_key:
+        raise RuntimeError(
+            "FUBON_MARKETDATA_API_KEY and FUBON_TRADING_API_KEY must be different"
+        )
 
 
 def checked_result_data(
