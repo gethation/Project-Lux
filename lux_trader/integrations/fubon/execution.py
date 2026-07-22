@@ -21,6 +21,7 @@ from ...core.models import (
 from ...execution import (
     ExecutionOutcome,
     ExecutionOutcomeStatus,
+    ExecutionPreflight,
     order_request_from_execution_leg,
 )
 from ...execution.intent import (
@@ -66,10 +67,7 @@ FUBON_MANUAL_CLOSE_ENV_GATES = (
 )
 
 
-@dataclass(frozen=True)
-class FubonExecutionPreflight:
-    open_orders: tuple[dict[str, Any], ...]
-    position_quantity: float
+FubonExecutionPreflight = ExecutionPreflight
 
 
 @dataclass(frozen=True)

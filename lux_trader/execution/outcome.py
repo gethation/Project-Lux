@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from .intent import ExecutionLeg, PairExecutionPlan
 from .recorder import DryRunExecutionRecorder
@@ -44,8 +44,44 @@ class ExecutionOutcome:
         return dataclass_to_jsonable(self)
 
 
+@dataclass(frozen=True)
+class ExecutionPreflight:
+    open_orders: tuple[dict[str, Any], ...]
+    position_quantity: float
+
+
+class PlanExecutor(Protocol):
+    def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
+        ...
+
+
+@runtime_checkable
 class ExecutionAdapter(Protocol):
     def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
+        ...
+
+    def fetch_open_orders(self) -> tuple[dict[str, Any], ...]:
+        ...
+
+    def fetch_position_quantity(self) -> float:
+        ...
+
+    def preflight(self) -> ExecutionPreflight:
+        ...
+
+    def close(self) -> None:
+        ...
+
+
+@runtime_checkable
+class OrderRecordsProvider(Protocol):
+    def fetch_order_records(self) -> tuple[dict[str, Any], ...]:
+        ...
+
+
+@runtime_checkable
+class SessionHealthProvider(Protocol):
+    def session_health(self) -> dict[str, Any]:
         ...
 
 
@@ -95,7 +131,7 @@ class ExecutionCoordinator:
         self,
         store: Any,
         recorder: DryRunExecutionRecorder,
-        adapter: ExecutionAdapter,
+        adapter: PlanExecutor,
     ) -> None:
         self.store = store
         self.recorder = recorder

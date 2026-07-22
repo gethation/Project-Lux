@@ -13,3 +13,10 @@
 - **The ambiguity:** The spec requires deletion, but this session lacks filesystem authority to inspect or remove these directories and does not define an escalation procedure.
 - **Options I see:** Have the owner remove the three directories from an elevated shell (completes the cleanup); grant the current account access and rerun cleanup (changes ACLs); leave the ignored directories in place (no repository impact, but task 4.1 remains operationally incomplete).
 - **My recommendation:** Remove exactly `.tmp_pytest`, `.tmp_pytest_live_execute`, and `.tmp_pytest_live_execute_core` from an elevated PowerShell session; do not change broader workspace ACLs.
+
+## Q3 — Resolve the readonly subprocess timeout contradiction
+- **Blocking:** 4.2 reusable subprocess transport extraction only
+- **Context:** `execution_process.py` defaults execution/query/terminate timeouts to 30/15/3 seconds, while `readonly_process.py` defaults its query timeout to 20 seconds.
+- **The ambiguity:** Section 4.2 requires the extraction to remain functionally identical and also names the shared timeouts as 30/15/3 seconds. Changing readonly from 20 to 15 changes behavior; retaining 20 does not match the listed shared timeout.
+- **Options I see:** Preserve the readonly 20-second default as an adapter-level override (behavior-preserving, but the extracted transport has more than the three listed defaults); change readonly to 15 seconds (matches the list, but changes a broker query timeout); leave both process implementations unextracted (no behavior change, but 4.2 remains incomplete).
+- **My recommendation:** Preserve the readonly 20-second adapter override and extract only the transport mechanics; this honors the stronger no-live-behavior-change invariant, but requires reviewer confirmation before implementation.

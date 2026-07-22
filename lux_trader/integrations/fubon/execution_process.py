@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ...core.models import StrategyState
-from ...execution import ExecutionOutcome, ExecutionOutcomeStatus
+from ...execution import ExecutionOutcome, ExecutionOutcomeStatus, ExecutionPreflight
 from ...execution.intent import PairExecutionPlan
 from ...reconciliation import BrokerAccountSnapshot
 from .execution import FubonFutureExecutionAdapter, fubon_attempt_id
@@ -162,8 +162,13 @@ class FubonFutureExecutionProcess:
             )
         return result
 
-    def preflight(self) -> Any:
-        return self._query("preflight")
+    def preflight(self) -> ExecutionPreflight:
+        result = self._query("preflight")
+        if not isinstance(result, ExecutionPreflight):
+            raise FubonExecutionWorkerError(
+                f"unexpected preflight type: {type(result).__name__}"
+            )
+        return result
 
     def session_health(self) -> dict[str, Any]:
         result = self._query("session_health")

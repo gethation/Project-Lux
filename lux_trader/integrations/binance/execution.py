@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime
 from math import isfinite
 from pathlib import Path
@@ -20,6 +20,7 @@ from ...core.models import (
 from ...execution import (
     ExecutionOutcome,
     ExecutionOutcomeStatus,
+    ExecutionPreflight,
     order_request_from_execution_leg,
 )
 from ...execution.intent import (
@@ -40,10 +41,7 @@ BINANCE_EXECUTION_SMOKE_ENV_GATES = (
 )
 
 
-@dataclass(frozen=True)
-class BinanceExecutionPreflight:
-    open_orders: tuple[dict[str, Any], ...]
-    position_quantity: float
+BinanceExecutionPreflight = ExecutionPreflight
 
 
 class BinanceTsmExecutionAdapter:
