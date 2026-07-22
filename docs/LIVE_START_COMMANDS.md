@@ -24,7 +24,7 @@ Set-Location 'C:\Users\huang\workplace\Project-Lux'
 
 ```powershell
 .\scripts\lux.ps1 live-dry-run `
-  --config config.live.smoke.local.toml `
+  --config configs/config.live.smoke.local.toml `
   --reset-store `
   --max-iterations 3 `
   --quiet-ui
