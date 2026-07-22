@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,8 @@ from lux_trader.reconciliation import FakeReadOnlyBroker
 from lux_trader.reconciliation.models import BrokerMarginSnapshot
 from lux_trader.store import SQLiteStore
 
+from fakes import write_test_config
+
 
 USDTTWD = 31.8
 NOTIONAL = 1_000_000.0
@@ -28,46 +31,7 @@ def ts(text: str) -> datetime:
     return datetime.fromisoformat(text)
 
 
-def write_config(
-    tmp_path: Path,
-    *,
-    margin_enabled: bool = True,
-    qff_lots: int | None = None,
-    margin_leg_notional_twd: float | None = None,
-    qff_symbol: str = "QFFG6",
-) -> Path:
-    config_path = tmp_path / "config.test.toml"
-    store_path = (tmp_path / "project_lux.sqlite3").as_posix()
-    cache_dir = (tmp_path / "taifex_cache").as_posix()
-    config_path.write_text(
-        "\n".join(
-            [
-                "[paths]",
-                "input_csv = ''",
-                f"store_path = '{store_path}'",
-                "",
-                "[strategy]",
-                *( [f"qff_lots = {qff_lots}"] if qff_lots is not None else [] ),
-                "",
-                "[live_market_data]",
-                f"qff_symbol = '{qff_symbol}'",
-                "binance_symbol = 'TSM/USDT:USDT'",
-                f"taifex_cache_dir = '{cache_dir}'",
-                "",
-                "[margin_management]",
-                f"enabled = {str(margin_enabled).lower()}",
-                "check_time = '10:00'",
-                "red_line_interval_minutes = 15",
-                *(
-                    [f"leg_notional_twd = {margin_leg_notional_twd}"]
-                    if margin_leg_notional_twd is not None
-                    else []
-                ),
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return config_path
+write_config = partial(write_test_config, margin_enabled=True)
 
 
 def fubon_broker(equity_twd: float, maint_twd: float = 103_500.0) -> FakeReadOnlyBroker:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 import lux_trader.cli.commands_live as commands_live
@@ -23,42 +24,18 @@ from lux_trader.core.models import (
 from lux_trader.core.strategy import StrategyRuntimeState
 from lux_trader.store import SQLiteStore
 
-from fakes import make_fake_broker_builder
+from fakes import make_fake_broker_builder, write_test_config
 
 
 def ts() -> datetime:
     return datetime.fromisoformat("2026-02-02T09:15:00+08:00")
 
 
-def write_config(tmp_path: Path, *, allow_live_order: bool = False) -> Path:
-    config_path = tmp_path / "config.test.toml"
-    store_path = (tmp_path / "project_lux.sqlite3").as_posix()
-    cache_dir = (tmp_path / "taifex_cache").as_posix()
-    config_path.write_text(
-        "\n".join(
-            [
-                "[paths]",
-                "input_csv = ''",
-                f"store_path = '{store_path}'",
-                "",
-                "[safety]",
-                f"allow_live_order = {str(allow_live_order).lower()}",
-                "",
-                "[live_market_data]",
-                "qff_symbol = 'QFFG6'",
-                "binance_symbol = 'TSM/USDT:USDT'",
-                f"taifex_cache_dir = '{cache_dir}'",
-                "",
-                "[broker_reconciliation]",
-                "enabled = false",
-                "fail_on_mismatch = false",
-                "tsm_units_tolerance = 0.000001",
-                "qff_contract_tolerance = 0",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return config_path
+write_config = partial(
+    write_test_config,
+    allow_live_order=False,
+    include_broker_reconciliation=True,
+)
 
 
 def seed_state(

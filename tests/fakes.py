@@ -9,6 +9,7 @@ monkeypatching ``lux_trader.cli.commands_live.build_reconciliation_brokers``.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from lux_trader.core.models import BrokerName, Direction, OrderRequest, OrderSide
 from lux_trader.execution.intent import (
@@ -159,3 +160,69 @@ def make_fake_broker_builder(fake_case: str):
         )
 
     return builder
+
+
+def write_test_config(
+    tmp_path: Path,
+    *,
+    allow_live_order: bool | None = None,
+    qff_lots: int | None = None,
+    qff_symbol: str = "QFFG6",
+    include_broker_reconciliation: bool = False,
+    margin_enabled: bool | None = None,
+    margin_leg_notional_twd: float | None = None,
+) -> Path:
+    """Write the shared minimal config used by CLI/integration tests."""
+
+    config_path = tmp_path / "config.test.toml"
+    store_path = (tmp_path / "project_lux.sqlite3").as_posix()
+    cache_dir = (tmp_path / "taifex_cache").as_posix()
+    lines = [
+        "[paths]",
+        "input_csv = ''",
+        f"store_path = '{store_path}'",
+    ]
+    if allow_live_order is not None:
+        lines.extend(
+            [
+                "",
+                "[safety]",
+                f"allow_live_order = {str(allow_live_order).lower()}",
+            ]
+        )
+    if qff_lots is not None:
+        lines.extend(["", "[strategy]", f"qff_lots = {qff_lots}"])
+    lines.extend(
+        [
+            "",
+            "[live_market_data]",
+            f"qff_symbol = '{qff_symbol}'",
+            "binance_symbol = 'TSM/USDT:USDT'",
+            f"taifex_cache_dir = '{cache_dir}'",
+        ]
+    )
+    if include_broker_reconciliation:
+        lines.extend(
+            [
+                "",
+                "[broker_reconciliation]",
+                "enabled = false",
+                "fail_on_mismatch = false",
+                "tsm_units_tolerance = 0.000001",
+                "qff_contract_tolerance = 0",
+            ]
+        )
+    if margin_enabled is not None:
+        lines.extend(
+            [
+                "",
+                "[margin_management]",
+                f"enabled = {str(margin_enabled).lower()}",
+                "check_time = '10:00'",
+                "red_line_interval_minutes = 15",
+            ]
+        )
+        if margin_leg_notional_twd is not None:
+            lines.append(f"leg_notional_twd = {margin_leg_notional_twd}")
+    config_path.write_text("\n".join(lines), encoding="utf-8")
+    return config_path
