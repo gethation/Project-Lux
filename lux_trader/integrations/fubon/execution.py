@@ -386,8 +386,6 @@ class FubonFutureExecutionAdapter:
         self.relogin_count += 1
 
     def _ensure_connected(self) -> tuple[Any, Any]:
-        if self.sdk is not None and self.account is not None and self.last_invalid_reason:
-            self._reset_session(self.last_invalid_reason)
         if self.sdk is not None and self.account is not None:
             self._ensure_fill_listener()
             return self.sdk, self.account
@@ -401,18 +399,8 @@ class FubonFutureExecutionAdapter:
         self.session_generation += 1
         self.last_login_at = self.clock()
         self.last_invalid_reason = None
-        self._ensure_session_event_callback()
         self._ensure_fill_listener()
         return self.sdk, self.account
-
-    def _ensure_session_event_callback(self) -> None:
-        if self.session_event_callback_attached or self.sdk is None:
-            return
-        setter = getattr(self.sdk, "set_on_event", None)
-        if not callable(setter):
-            return
-        setter(self._handle_session_event)
-        self.session_event_callback_attached = True
 
     def _handle_session_event(self, *args: Any, **kwargs: Any) -> None:
         text = " ".join(str(item) for item in args)
@@ -424,7 +412,11 @@ class FubonFutureExecutionAdapter:
 
     def _ensure_fill_listener(self) -> None:
         if self.fill_listener is None and self.sdk is not None:
-            self.fill_listener = FubonFillReportListener.attach(self.sdk)
+            self.fill_listener = FubonFillReportListener.attach(
+                self.sdk,
+                event_observer=self._handle_session_event,
+            )
+            self.session_event_callback_attached = True
 
     def _login(self, sdk: Any) -> list[Any]:
         return login_fubon_sdk(

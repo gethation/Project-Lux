@@ -26,7 +26,7 @@ from __future__ import annotations
 import threading
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from ...core.contracts import row_to_dict
 from .parsing import fubon_first_float, fubon_first_text, safe_jsonable
@@ -138,7 +138,12 @@ class FillWaiter:
 class FubonFillReportListener:
     """One dispatcher per SDK session; inactive when the SDK has no hooks."""
 
-    def __init__(self, sdk: Any) -> None:
+    def __init__(
+        self,
+        sdk: Any,
+        *,
+        event_observer: Callable[..., None] | None = None,
+    ) -> None:
         self.condition = threading.Condition()
         self.active = False
         self.stream_unreliable = False
@@ -150,21 +155,29 @@ class FubonFillReportListener:
         self._unmatched_reports: deque[dict[str, Any]] = deque(
             maxlen=UNMATCHED_FILL_BUFFER_SIZE
         )
+        self.event_observer = event_observer
         self._register(sdk)
 
     @classmethod
-    def attach(cls, sdk: Any) -> "FubonFillReportListener":
+    def attach(
+        cls,
+        sdk: Any,
+        *,
+        event_observer: Callable[..., None] | None = None,
+    ) -> "FubonFillReportListener":
         with _ATTACH_LOCK:
             existing = getattr(sdk, "_lux_fill_listener", None)
             if isinstance(existing, cls):
+                existing.event_observer = event_observer
                 return existing
             # Registry fallback only ever holds SDK objects that rejected
             # attribute assignment (real bindings, process lifetime), so the
             # id-reuse hazard does not apply to test fakes.
             registered = _ATTACHED_LISTENERS.get(id(sdk))
             if registered is not None:
+                registered.event_observer = event_observer
                 return registered
-            listener = cls(sdk)
+            listener = cls(sdk, event_observer=event_observer)
             try:
                 setattr(sdk, "_lux_fill_listener", listener)
             except Exception:
@@ -255,6 +268,8 @@ class FubonFillReportListener:
                 with self.condition:
                     self.stream_unreliable = True
                     self.condition.notify_all()
+            if self.event_observer is not None:
+                self.event_observer(code, content)
         except Exception as exc:  # pragma: no cover - defensive
             self._record_callback_error("on_event", exc)
 
