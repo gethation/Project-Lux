@@ -67,6 +67,20 @@ def latest_reconciliation(store_path: Path):
         store.close()
 
 
+def inject_fake_shared_brokers(monkeypatch, fake_case: str) -> None:
+    builder = make_fake_broker_builder(fake_case)
+
+    def shared(config, _qff_symbol):
+        brokers = builder(config, None, readonly=True)
+        return brokers[0], brokers
+
+    monkeypatch.setattr(
+        commands_execution,
+        "build_live_execution_brokers",
+        shared,
+    )
+
+
 def test_live_execute_refreshes_matched_reconciliation_before_runner(
     tmp_path: Path,
     monkeypatch,
@@ -79,10 +93,11 @@ def test_live_execute_refreshes_matched_reconciliation_before_runner(
         "build_reconciliation_brokers",
         make_fake_broker_builder("matched"),
     )
+    inject_fake_shared_brokers(monkeypatch, "matched")
     run_calls: list[dict[str, object]] = []
 
     class FakeLiveExecuteRunner:
-        def __init__(self, config, *, reporter):  # noqa: ARG002
+        def __init__(self, config, *, reporter, **_kwargs):  # noqa: ARG002
             pass
 
         def run(self, **kwargs):
@@ -125,6 +140,7 @@ def test_live_execute_stops_before_runner_when_reconciliation_mismatches(
         "build_reconciliation_brokers",
         make_fake_broker_builder("mismatch"),
     )
+    inject_fake_shared_brokers(monkeypatch, "mismatch")
 
     class RunnerMustNotStart:
         def __init__(self, *args, **kwargs):  # noqa: ARG002

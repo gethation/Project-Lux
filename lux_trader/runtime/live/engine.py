@@ -247,10 +247,14 @@ class LiveRuntime:
             # Not given the runtime clock on purpose: refresh() runs every bar and
             # only needs a wall-clock display timestamp; consuming an injected
             # (finite, test-budgeted) clock here would starve the loop.
+            shared_account_factory = (
+                self.margin_brokers_factory
+                or self.handler.account_brokers_factory()
+            )
             account_display = AccountDisplayProvider(
                 self.config,
                 usdttwd_rate=_usdttwd_rate,
-                brokers_factory=self.margin_brokers_factory,
+                brokers_factory=shared_account_factory,
             )
             if not account_display.enabled():
                 self.reporter.event(

@@ -25,6 +25,7 @@ from lux_trader.reconciliation import (
     ReconciliationStatus,
 )
 from lux_trader.runtime.live import LiveDryRunRunner, WarmupRunner, resolve_qff_contract
+from lux_trader.runtime.live.lease import assert_live_lease_available
 from lux_trader.store import SQLiteStore
 from lux_trader.reconciliation.post_trade import PostTradeReconciler
 from lux_trader.terminal_ui import LiveTerminalReporter, NullLiveReporter
@@ -71,6 +72,7 @@ def build_live_reporter(args: argparse.Namespace, config: object, *, mode: str):
 
 def command_live_dry_run(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    assert_live_lease_available(config.store_path)
     if config.safety.allow_live_order:
         raise SystemExit("allow_live_order must remain false for live-dry-run")
     reporter = build_live_reporter(args, config, mode="live-dry-run")
@@ -151,6 +153,7 @@ def command_live_status(args: argparse.Namespace) -> int:
 
 def command_reconcile_brokers(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    assert_live_lease_available(config.store_path)
     store = SQLiteStore(config.store_path)
     try:
         store.initialize()
@@ -180,28 +183,31 @@ def reconcile_brokers_to_store(
     *,
     readonly: bool,
     timestamp: datetime | None = None,
+    brokers: tuple[ReadOnlyBroker, ...] | None = None,
 ):
     """Fetch read-only broker state, reconcile it, and persist one report.
 
     The caller owns ``store``. Real broker construction remains guarded by both
     the explicit ``readonly`` argument and ``LUX_READONLY_BROKER=1``.
     """
-    brokers: tuple[ReadOnlyBroker, ...] = ()
+    active_brokers: tuple[ReadOnlyBroker, ...] = brokers or ()
+    owns_brokers = brokers is None
     try:
         resume_state = store.load_resume_state()
         strategy_state = resume_state.strategy if resume_state is not None else None
         observed_at = timestamp or datetime.now().astimezone()
-        brokers = build_reconciliation_brokers(
-            config,
-            strategy_state,
-            readonly=readonly,
-        )
+        if not active_brokers:
+            active_brokers = build_reconciliation_brokers(
+                config,
+                strategy_state,
+                readonly=readonly,
+            )
         report = BrokerReconciler(
             tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
             qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
         ).reconcile(
             strategy_state=strategy_state,
-            brokers=brokers,
+            brokers=active_brokers,
             tsm_symbol=config.live.binance_symbol,
             qff_symbol=helpers.reconciliation_qff_symbol(config, strategy_state),
             timestamp=observed_at,
@@ -213,13 +219,15 @@ def reconcile_brokers_to_store(
         store.rollback()
         raise
     finally:
-        helpers.close_brokers(brokers)
+        if owns_brokers:
+            helpers.close_brokers(active_brokers)
 
 
 def command_clear_pause(args: argparse.Namespace) -> int:
     """Guarded recovery: re-run read-only reconciliation and only clear a PAUSED
     strategy back to OPEN/FLAT when broker and store agree. Sends no orders."""
     config = load_config(args.config)
+    assert_live_lease_available(config.store_path)
     store = SQLiteStore(config.store_path)
     brokers: tuple[ReadOnlyBroker, ...] = ()
     target: StrategyState | None = None
@@ -329,6 +337,7 @@ def command_margin_check(args: argparse.Namespace) -> int:
     Windows scheduled task when no live session is up.
     """
     config = load_config(args.config)
+    assert_live_lease_available(config.store_path)
     if not config.margin_management.enabled:
         raise SystemExit("Set [margin_management] enabled=true to run margin-check")
     helpers.require_readonly_broker_enabled()
@@ -404,6 +413,7 @@ def fetch_usdttwd_rate(config: object) -> float | None:
 
 def command_warmup_live(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    assert_live_lease_available(config.store_path)
     result = WarmupRunner(config).run(reset_store=args.reset_store)
     print(
         "Warmup complete: "

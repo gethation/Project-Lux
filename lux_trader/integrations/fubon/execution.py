@@ -927,6 +927,10 @@ def signed_fubon_lot_delta(side: OrderSide, quantity: float) -> float:
     return float(quantity) if side == OrderSide.BUY else -float(quantity)
 
 
+def fubon_attempt_id(plan: PairExecutionPlan) -> str:
+    return f"LUX-FUBON-{plan.plan_id}"
+
+
 def order_status_from_outcome(status: ExecutionOutcomeStatus) -> OrderStatus:
     if status == ExecutionOutcomeStatus.FILLED:
         return OrderStatus.FILLED

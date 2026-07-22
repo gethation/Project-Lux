@@ -37,6 +37,7 @@ from lux_trader.integrations.binance.execution import (
     binance_manual_close_env_gates_open,
     binance_smoke_env_gates_open,
 )
+from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.fubon.execution import (
     FUBON_EXECUTION_SMOKE_ENV_GATES,
     FUBON_MANUAL_CLOSE_ENV_GATES,
@@ -45,8 +46,13 @@ from lux_trader.integrations.fubon.execution import (
     fubon_smoke_env_gates_open,
 )
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
+from lux_trader.integrations.fubon.execution_process import FubonFutureExecutionProcess
 from lux_trader.reconciliation import ReadOnlyBroker
 from lux_trader.runtime.live import LiveExecuteRunner
+from lux_trader.runtime.live.lease import (
+    LiveProcessLease,
+    assert_live_lease_available,
+)
 from lux_trader.store import SQLiteStore
 
 
@@ -90,17 +96,31 @@ def command_live_execute(args: argparse.Namespace) -> int:
 
     config = load_config(args.config)
     reporter = build_live_reporter(args, config, mode="live-execute")
+    lease = LiveProcessLease(config.store_path)
+    shared_fubon: FubonFutureExecutionProcess | None = None
+    shared_brokers: tuple[ReadOnlyBroker, ...] | None = None
     try:
+        lease.acquire(metadata={"mode": "live-execute"})
         store = SQLiteStore(config.store_path)
         try:
             if args.reset_store:
                 store.reset()
             store.initialize()
+            resume_state = store.load_resume_state()
+            qff_symbol = helpers.reconciliation_qff_symbol(
+                config,
+                resume_state.strategy if resume_state is not None else None,
+            )
+            shared_fubon, shared_brokers = build_live_execution_brokers(
+                config,
+                qff_symbol,
+            )
             if config.live_execution.require_readonly_reconciliation:
                 run_id, reconciliation_report = reconcile_brokers_to_store(
                     config,
                     store,
                     readonly=True,
+                    brokers=shared_brokers,
                 )
                 reporter.event(
                     datetime.now().astimezone(),
@@ -118,7 +138,12 @@ def command_live_execute(args: argparse.Namespace) -> int:
         finally:
             store.close()
         assert_live_execution_gate_open(gate_report)
-        LiveExecuteRunner(config, reporter=reporter).run(
+        LiveExecuteRunner(
+            config,
+            reporter=reporter,
+            fubon_adapter=shared_fubon,
+            readonly_brokers=shared_brokers,
+        ).run(
             resume=args.resume,
             # A requested reset must happen before reconciliation so the fresh
             # report remains in the same store used by the live runtime.
@@ -134,8 +159,32 @@ def command_live_execute(args: argparse.Namespace) -> int:
             raise SystemExit(str(exc))
         raise
     finally:
+        helpers.close_brokers(shared_brokers or ())
+        lease.release()
         reporter.finish()
     return 0
+
+
+def build_live_execution_brokers(
+    config: object,
+    qff_symbol: str,
+) -> tuple[
+    FubonFutureExecutionProcess | None,
+    tuple[ReadOnlyBroker, ...] | None,
+]:
+    if qff_symbol.strip().lower() == "auto":
+        return None, None
+    fubon = FubonFutureExecutionProcess(
+        qff_symbol,
+        config.live.fubon_env_path,
+    )
+    return fubon, (
+        fubon,
+        BinanceReadOnlyBroker(
+            config.live.binance_symbol,
+            config.live.fubon_env_path,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +193,9 @@ def command_live_execute(args: argparse.Namespace) -> int:
 
 
 def command_exec_smoke(args: argparse.Namespace) -> int:
+    if args.venue == "fubon":
+        config = load_config(args.config)
+        assert_live_lease_available(config.store_path)
     if args.venue == "binance":
         if args.quantity is None:
             raise SystemExit("--quantity is required for --venue binance")
@@ -357,6 +409,9 @@ def fubon_exec_smoke(args: argparse.Namespace) -> int:
 
 
 def command_manual_close(args: argparse.Namespace) -> int:
+    if args.venue == "fubon":
+        config = load_config(args.config)
+        assert_live_lease_available(config.store_path)
     if args.venue == "binance":
         if args.quantity is None:
             raise SystemExit("--quantity is required for --venue binance")
@@ -509,6 +564,7 @@ def fubon_manual_close(args: argparse.Namespace) -> int:
 
 def command_broker_status(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    assert_live_lease_available(config.store_path)
     if config.safety.allow_live_order and not (args.funds or args.orders):
         raise SystemExit("allow_live_order must remain false for broker-status")
 

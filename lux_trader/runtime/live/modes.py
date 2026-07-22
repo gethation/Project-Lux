@@ -29,9 +29,8 @@ from lux_trader.execution.recorder import DryRunExecutionRecorder
 from lux_trader.execution.price_policy import apply_live_touch_market_price_policy
 from lux_trader.integrations.binance.market_data import BinanceMarketData
 from lux_trader.integrations.bitopro.market_data import BitoProMarketData
-from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
+from lux_trader.integrations.fubon.execution_process import FubonFutureExecutionProcess
 from lux_trader.integrations.fubon.market_data import FubonQffMarketData
-from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.taifex.downloader import TaifexQffTradeDownloader
 from lux_trader.core.fees import fill_costs
@@ -147,6 +146,9 @@ class LiveModeHandler:
         return None
 
     def close(self) -> None:
+        return None
+
+    def account_brokers_factory(self) -> Any | None:
         return None
 
     def finish_payload(
@@ -433,16 +435,13 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 enforce_leverage=self.config.binance_execution.enforce_leverage,
             )
         if self.fubon_adapter is None:
-            self.fubon_adapter = FubonFutureExecutionAdapter(
+            self.fubon_adapter = FubonFutureExecutionProcess(
                 qff_symbol,
                 self.config.live.fubon_env_path,
             )
         if self.readonly_brokers is None:
             self.readonly_brokers = (
-                FubonReadOnlyBroker(
-                    self.config.live.fubon_env_path,
-                    symbol=qff_symbol,
-                ),
+                self.fubon_adapter,
                 BinanceReadOnlyBroker(
                     self.config.live.binance_symbol,
                     self.config.live.fubon_env_path,
@@ -463,6 +462,11 @@ class LiveExecuteModeHandler(LiveModeHandler):
             fubon_adapter=self.fubon_adapter,
             qff_first=self.config.live_execution.qff_first,
         )
+
+    def account_brokers_factory(self) -> Any | None:
+        if self.readonly_brokers is None:
+            return None
+        return lambda: self.readonly_brokers
 
     def on_resume(
         self,
