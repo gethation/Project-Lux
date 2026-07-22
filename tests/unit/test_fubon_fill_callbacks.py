@@ -25,6 +25,7 @@ from test_fubon_execution import (
     execution_plan,
     filled_row,
     fubon_leg,
+    position_row,
     ts,
 )
 
@@ -98,6 +99,7 @@ def test_fill_callback_is_primary_confirmation_even_before_place_returns() -> No
     assert outcome.fills[0].price == pytest.approx(101.5)
     # callback confirmation means no after-order position fetch is needed
     assert sdk.futopt_accounting.calls == 1
+    assert sdk.futopt.get_order_results_calls == []
 
 
 def test_fill_callbacks_accumulate_partial_fills_to_full() -> None:
@@ -236,7 +238,7 @@ def test_polled_status_9_timeout_triggers_immediate_requery() -> None:
     }
     row_50 = dict(row_9, status="50", filled_lot=1)
     sleeps: list[float] = []
-    sdk = FakeSdk(positions=[])
+    sdk = FakeSdk(position_results=[[], [position_row()]])
     sdk.futopt = SequencedFutOpt([[row_9], [row_50]])
     adapter = FubonFutureExecutionAdapter(
         SYMBOL,
@@ -258,7 +260,7 @@ def test_polled_status_9_timeout_triggers_immediate_requery() -> None:
 def test_disconnect_event_marks_callback_stream_unreliable() -> None:
     sdk = CallbackFakeSdk(
         order_results=[filled_row(filled_lot=1.0, status="50")],
-        positions=[],
+        position_results=[[], [position_row()]],
     )
     original = sdk.futopt.place_order
 
@@ -273,7 +275,7 @@ def test_disconnect_event_marks_callback_stream_unreliable() -> None:
     outcome = adapter.execute(execution_plan())
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
-    assert outcome.payload["fill_source"] == "order_result"
+    assert outcome.payload["fill_source"] == "position_delta"
     assert outcome.payload["callback_stream_unreliable"] is True
 
 

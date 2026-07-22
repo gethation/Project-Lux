@@ -58,6 +58,7 @@ class AccountDisplay:
     fubon_equity_twd: float | None = None
     stale: bool = False
     fetched_at: datetime | None = None
+    error_reason: str | None = None
 
 
 class AccountDisplayProvider:
@@ -111,9 +112,13 @@ class AccountDisplayProvider:
                 notional_twd=notional_twd,
                 rate=self.usdttwd_rate(),
             )
-        except Exception:
+        except Exception as exc:
             # A refresh must never kill the trading loop; keep the last values.
-            self._latest = replace(self._latest, stale=True)
+            self._latest = replace(
+                self._latest,
+                stale=True,
+                error_reason=f"{type(exc).__name__}: {exc}",
+            )
         return self._latest
 
     def close(self) -> None:

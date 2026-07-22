@@ -32,6 +32,7 @@ from lux_trader.market_data import (
     LiveQuote,
     LiveQuoteSet,
     WarmupBuilder,
+    build_qff_expected_warmup_index,
     build_qff_warmup_source_report,
     parse_timestamp,
     qff_symbol_to_taifex_contract_month,
@@ -70,7 +71,7 @@ from lux_trader.core.models import (
 from lux_trader.reconciliation import BrokerAccountSnapshot, BrokerPositionSnapshot
 from lux_trader.core.strategy import StrategyRuntimeState
 from lux_trader.store import SQLiteStore
-from lux_trader.terminal_ui import LiveTerminalReporter
+from lux_trader.terminal_ui import LiveTerminalReporter, NullLiveReporter
 from lux_trader.core.tradable_spread import TradableSpreadSnapshot
 
 from conftest import make_app_config
@@ -224,6 +225,7 @@ class FakeFubonIntraday:
         self.responses = responses
         self.sessions: list[str] = []
         self.quote_calls: list[dict[str, object]] = []
+        self.candle_calls: list[dict[str, object]] = []
 
     def tickers(self, *, type: str, exchange: str, session: str, product: str) -> object:
         self.sessions.append(session)
@@ -245,6 +247,18 @@ class FakeFubonIntraday:
                 }
             },
         )
+
+    def candles(self, **kwargs: object) -> object:
+        self.candle_calls.append(kwargs)
+        key = (
+            "candles_afterhours"
+            if kwargs.get("session") == "afterhours"
+            else "candles_regular"
+        )
+        response = self.responses.get(key, {"data": []})
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class FakeCcxtExchange:
@@ -813,6 +827,11 @@ def test_live_runtime_tears_down_qff_books_during_non_trading_and_restarts_on_op
             "2026-06-23T08:45:00+08:00",
         ]
     )
+    trading_session_events: list[datetime] = []
+
+    class RecordingSessionReporter(NullLiveReporter):
+        def trading_session(self, timestamp) -> None:
+            trading_session_events.append(timestamp)
 
     result = LiveDryRunRunner(
         config,
@@ -829,12 +848,14 @@ def test_live_runtime_tears_down_qff_books_during_non_trading_and_restarts_on_op
             ]
         ),
         sleeper=lambda _: None,
+        reporter=RecordingSessionReporter(),
     ).run(max_iterations=3, skip_warmup=True)
 
     assert result.iterations == 3
     assert qff.teardown_books_calls == 1
     assert qff.restart_books_calls == ["QFFG6"]
     assert qff.quote_calls == ["QFFG6", "QFFG6"]
+    assert trading_session_events == [ts("2026-06-23T08:45:00+08:00")]
 
 
 def test_live_runtime_qff_watchdog_restarts_once_with_backoff(tmp_path) -> None:
@@ -1296,6 +1317,42 @@ def test_fubon_books_subscription_can_unsubscribe_old_symbol() -> None:
     assert websocket.unsubscriptions == [{"id": "sub-1"}]
 
 
+def test_fubon_qff_candles_merge_regular_and_afterhours_sessions() -> None:
+    provider = FubonQffMarketData(None)
+    intraday = FakeFubonIntraday(
+        {
+            "candles_regular": {
+                "data": [
+                    {"date": "2026-06-18T13:45:00+08:00", "close": 100.0},
+                ]
+            },
+            "candles_afterhours": {
+                "data": [
+                    {"date": "2026-06-18T17:25:00+08:00", "close": 101.0},
+                    {"date": "2026-06-19T00:04:00+08:00", "close": 102.0},
+                ]
+            },
+        }
+    )
+    provider.intraday = intraday
+
+    frame = provider.fetch_1m(
+        "QFFG6",
+        ts("2026-06-18T13:45:00+08:00"),
+        ts("2026-06-19T00:04:00+08:00"),
+    )
+
+    assert frame["timestamp"].tolist() == [
+        pd.Timestamp("2026-06-18T13:45:00+08:00"),
+        pd.Timestamp("2026-06-18T17:25:00+08:00"),
+        pd.Timestamp("2026-06-19T00:04:00+08:00"),
+    ]
+    assert intraday.candle_calls == [
+        {"symbol": "QFFG6", "timeframe": "1"},
+        {"symbol": "QFFG6", "timeframe": "1", "session": "afterhours"},
+    ]
+
+
 def test_fubon_books_restart_clears_cache_disconnects_and_resubscribes() -> None:
     provider = FubonQffMarketData(None, book_wait_timeout_seconds=0.0)
     provider.intraday = FakeFubonIntraday({"REGULAR": {"data": []}, "AFTERHOURS": {"data": []}})
@@ -1484,6 +1541,47 @@ def test_warmup_builder_does_not_fetch_fallback_when_intraday_is_sufficient(
     assert fallback.fetch_1m_calls == []
 
 
+def test_expected_warmup_index_is_anchored_to_current_night_session() -> None:
+    warmup_index, session_index = build_qff_expected_warmup_index(
+        start=ts("2026-06-18T13:40:00+08:00"),
+        end=ts("2026-06-19T00:04:00+08:00"),
+        count=3,
+    )
+
+    assert warmup_index.tolist() == [
+        pd.Timestamp("2026-06-19T00:02:00+08:00"),
+        pd.Timestamp("2026-06-19T00:03:00+08:00"),
+        pd.Timestamp("2026-06-19T00:04:00+08:00"),
+    ]
+    assert pd.Timestamp("2026-06-18T13:45:00+08:00") in session_index
+    assert pd.Timestamp("2026-06-18T17:25:00+08:00") in session_index
+
+
+def test_warmup_builder_refuses_wholly_missing_current_night_session(
+    tmp_path,
+) -> None:
+    config = small_live_config(tmp_path)
+    day_only = rows(
+        [
+            ("2026-06-18T13:43:00+08:00", 100.0),
+            ("2026-06-18T13:44:00+08:00", 101.0),
+            ("2026-06-18T13:45:00+08:00", 102.0),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="expected warmup window"):
+        WarmupBuilder(
+            live_config=config.live,
+            qff_intraday_provider=FakeQffProvider(day_only),
+            qff_fallback_provider=FakeQffProvider(day_only),
+            tsm_provider=FakeOhlcvProvider(pd.DataFrame()),
+            usdttwd_provider=FakeOhlcvProvider(pd.DataFrame()),
+        ).build(
+            qff_symbol="QFF202607",
+            end=ts("2026-06-18T19:42:00+08:00"),
+        )
+
+
 def test_warmup_builder_refuses_when_forward_fill_ratio_too_high(tmp_path) -> None:
     config = small_live_config(tmp_path)
     config = replace(
@@ -1656,7 +1754,7 @@ def test_warmup_builder_fails_when_initial_qff_cannot_be_filled(tmp_path) -> Non
         )
     )
 
-    with pytest.raises(RuntimeError, match="QFF session warmup has only"):
+    with pytest.raises(RuntimeError, match="cannot forward-fill"):
         WarmupBuilder(
             live_config=config.live,
             qff_intraday_provider=qff,
@@ -2359,14 +2457,15 @@ class _RaisingReadOnlyBroker:
         return None
 
 
-def test_live_execute_resume_pauses_when_broker_unreachable(
+def test_live_execute_resume_keeps_position_when_broker_unreachable(
     tmp_path, monkeypatch
 ) -> None:
     config = _live_execute_resume_config(tmp_path, monkeypatch)
     _run_live_execute_entry_to_open(config)
 
-    # Read-only API is unreachable at restart: reconciliation cannot confirm the
-    # restored position, so resume must pause rather than crash or trade blind.
+    # Read-only API is unreachable at restart.  Query transport failure is not
+    # evidence that the restored broker position is wrong: preserve the open
+    # position and close only the new-entry gate until a snapshot succeeds.
     _resume_live_execute(
         config,
         readonly=(
@@ -2385,7 +2484,7 @@ def test_live_execute_resume_pauses_when_broker_unreachable(
         store.initialize()
         state = store.load_resume_state()
         assert state is not None
-        assert state.strategy.state == StrategyState.PAUSED
+        assert state.strategy.state == StrategyState.OPEN
     finally:
         store.close()
 
@@ -2953,6 +3052,55 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
         store.close()
 
 
+def test_live_runtime_non_resume_refreshes_existing_seed_by_default(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    seed_warmup_bars(config)
+    fresh_qff = rows(
+        [
+            ("2026-06-18T08:45:00+08:00", 110.0),
+            ("2026-06-18T08:46:00+08:00", 111.0),
+            ("2026-06-18T08:47:00+08:00", 112.0),
+        ]
+    )
+    fresh_tsm = rows(
+        [
+            ("2026-06-18T08:45:00+08:00", 20.0),
+            ("2026-06-18T08:46:00+08:00", 20.0),
+            ("2026-06-18T08:47:00+08:00", 20.0),
+        ]
+    )
+    fresh_usd = rows(
+        [
+            ("2026-06-18T08:45:00+08:00", 30.0),
+            ("2026-06-18T08:46:00+08:00", 30.0),
+            ("2026-06-18T08:47:00+08:00", 30.0),
+        ]
+    )
+    qff = FakeQffProvider(fresh_qff)
+
+    LiveDryRunRunner(
+        config,
+        qff_provider=qff,
+        tsm_provider=FakeOhlcvProvider(fresh_tsm),
+        usdttwd_provider=FakeOhlcvProvider(fresh_usd),
+        clock=lambda: ts("2026-06-18T08:48:00+08:00"),
+        sleeper=lambda _: None,
+    ).run(max_iterations=0)
+
+    assert qff.fetch_1m_calls
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        refreshed = store.load_indicator_seed_bars(3, qff_symbol="QFFG6")
+        assert [bar.timestamp for bar in refreshed] == [
+            ts("2026-06-18T08:45:00+08:00"),
+            ts("2026-06-18T08:46:00+08:00"),
+            ts("2026-06-18T08:47:00+08:00"),
+        ]
+    finally:
+        store.close()
+
+
 def test_live_runtime_resume_refuses_cached_seed_when_refresh_fails(tmp_path) -> None:
     config = small_live_config(tmp_path)
     seed_warmup_bars(config)
@@ -3160,6 +3308,24 @@ def test_qff_warmup_check_runner_uses_fubon_and_taifex_only(tmp_path) -> None:
     assert result.report.null_count == 0
     assert result.report.source_rows == {"taifex": 3, "fubon": 1}
     assert result.output_csv is None
+
+
+def test_qff_warmup_check_refuses_wholly_missing_current_session(tmp_path) -> None:
+    config = small_live_config(tmp_path)
+    day_only = rows(
+        [
+            ("2026-06-18T13:43:00+08:00", 100.0),
+            ("2026-06-18T13:44:00+08:00", 101.0),
+            ("2026-06-18T13:45:00+08:00", 102.0),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="expected warmup window"):
+        QffWarmupCheckRunner(
+            config,
+            qff_provider=FakeQffProvider(day_only),
+            taifex_provider=FakeQffProvider(day_only),
+        ).run(output_csv="", end=ts("2026-06-18T19:42:00+08:00"))
 
 
 def test_contract_switch_cancels_entry_pending_state(tmp_path) -> None:

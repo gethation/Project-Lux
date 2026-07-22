@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import io
+import sqlite3
 import threading
 from argparse import Namespace
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+import requests
 
+import lux_trader.ntfy as ntfy_module
 from lux_trader.config import NtfyConfig, load_ntfy_config
 from lux_trader.cli import commands_live
 from lux_trader.core.models import BrokerName, Direction, Fill, OrderSide, StrategyAction
@@ -19,6 +22,7 @@ from lux_trader.ntfy import (
     NtfyLiveReporter,
     NtfyMessage,
     NtfyPublisher,
+    NtfyStatusCommandSubscriber,
     notify_operational_error,
 )
 from lux_trader.terminal_ui import NullLiveReporter
@@ -101,7 +105,7 @@ def test_load_ntfy_config_validates_enabled_topics_and_normalizes_url() -> None:
         )
 
 
-def test_bar_publishes_low_priority_structured_account_status() -> None:
+def test_bar_does_not_publish_periodic_status() -> None:
     ntfy, publisher = reporter()
     snapshot = SimpleNamespace(mid_spread=10.83, short_zscore=-2.12, long_zscore=-1.86)
     state = SimpleNamespace(
@@ -117,13 +121,26 @@ def test_bar_publishes_low_priority_structured_account_status() -> None:
 
     ntfy.bar(ts(), snapshot, state, StrategyAction.NONE, "", 0.0, 0.0, account)
 
+    assert publisher.messages == []
+
+
+def test_bar_strategy_error_still_publishes_alert() -> None:
+    ntfy, publisher = reporter()
+    snapshot = SimpleNamespace(mid_spread=10.83, short_zscore=-2.12, long_zscore=-1.86)
+
+    ntfy.bar(
+        ts(),
+        snapshot,
+        SimpleNamespace(state=SimpleNamespace(value="flat")),
+        StrategyAction.ERROR,
+        "indicator_failed",
+        0.0,
+        0.0,
+    )
+
     assert len(publisher.messages) == 1
-    message = publisher.messages[0]
-    assert message.topic == "status-abc12"
-    assert message.priority == STATUS_PRIORITY
-    assert "mode=LIVE" in message.message
-    assert "mid=10.83 short_z=-2.12 long_z=-1.86 state=LONG" in message.message
-    assert "pnl=12,345 margin(bina=142%,fubon=138%)" in message.message
+    assert publisher.messages[0].topic == "errors-ghi56"
+    assert "strategy_error" in publisher.messages[0].message
 
 
 def test_dry_run_filled_execution_is_clearly_labeled_and_lists_both_fills() -> None:
@@ -175,6 +192,70 @@ def test_dry_run_filled_execution_is_clearly_labeled_and_lists_both_fills() -> N
     assert "mode=DRY-RUN" in message.message
     assert "BINANCE_TSM TSM/USDT:USDT sell qty=2.5 price=105.25" in message.message
     assert "FUBON_QFF QFFQ6 buy qty=1 price=842" in message.message
+    assert "trade_pnl_twd" not in message.message
+
+
+def test_filled_exit_notification_includes_authoritative_trade_pnl() -> None:
+    ntfy, publisher = reporter()
+    plan = SimpleNamespace(
+        plan_type=ExecutionPlanType.EXIT,
+        direction=Direction.LONG_TSM_SHORT_QFF,
+    )
+    fill = SimpleNamespace(
+        broker=SimpleNamespace(value="fubon_qff"),
+        symbol="QFFQ6",
+        side=SimpleNamespace(value="buy"),
+        quantity=1.0,
+        price=842.0,
+        fee_twd=88.0,
+    )
+    outcome = SimpleNamespace(
+        status=ExecutionOutcomeStatus.FILLED,
+        fills=(fill,),
+        message="exit filled",
+    )
+    result = SimpleNamespace(
+        reason="live_filled",
+        trade={
+            "net_pnl_twd": 12_345.4,
+            "gross_pnl_twd": 12_500.4,
+            "total_fee_twd": 155.0,
+        },
+    )
+
+    ntfy.execution(ts(), plan, outcome, result)
+
+    assert len(publisher.messages) == 1
+    assert (
+        "trade_pnl_twd net=12,345 gross=12,500 fees=155"
+        in publisher.messages[0].message
+    )
+
+
+def test_filled_exit_notification_marks_missing_trade_pnl_unavailable() -> None:
+    ntfy, publisher = reporter()
+    plan = SimpleNamespace(
+        plan_type=ExecutionPlanType.EXIT,
+        direction=Direction.LONG_TSM_SHORT_QFF,
+    )
+    outcome = SimpleNamespace(
+        status=ExecutionOutcomeStatus.FILLED,
+        fills=(
+            SimpleNamespace(
+                broker=SimpleNamespace(value="fubon_qff"),
+                symbol="QFFQ6",
+                side=SimpleNamespace(value="buy"),
+                quantity=1.0,
+                price=842.0,
+                fee_twd=88.0,
+            ),
+        ),
+        message="exit filled",
+    )
+
+    ntfy.execution(ts(), plan, outcome, SimpleNamespace(reason="live_filled"))
+
+    assert publisher.messages[0].message.endswith("trade_pnl_twd unavailable")
 
 
 def test_partial_execution_publishes_fill_and_error_notifications() -> None:
@@ -207,6 +288,7 @@ def test_partial_execution_publishes_fill_and_error_notifications() -> None:
         "trades-def34",
         "errors-ghi56",
     ]
+    assert "trade_pnl_twd" not in publisher.messages[0].message
     assert "exit_execution_partial_fill" in publisher.messages[1].message
 
 
@@ -270,15 +352,329 @@ def test_publish_failure_is_logged_without_raising_to_caller() -> None:
     assert "ntfy publish failed; trading continues" in errors.getvalue()
 
 
-def test_quiet_ui_still_wraps_reporter_with_ntfy(monkeypatch) -> None:
+def seed_status_bars(path, count: int) -> None:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            """
+            CREATE TABLE bars (
+                row_index INTEGER PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                spread REAL,
+                short_zscore REAL,
+                long_zscore REAL,
+                state TEXT NOT NULL,
+                position TEXT NOT NULL,
+                unrealized_pnl REAL NOT NULL
+            )
+            """
+        )
+        start = ts()
+        for index in range(count):
+            state = "open" if index == count - 1 else "flat"
+            position = "long_tsm_short_qff" if state == "open" else "flat"
+            connection.execute(
+                """
+                INSERT INTO bars (
+                    row_index, timestamp, spread, short_zscore, long_zscore,
+                    state, position, unrealized_pnl
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    index,
+                    (start + timedelta(minutes=index)).isoformat(),
+                    10.0 + index / 10.0,
+                    1.0 + index / 10.0,
+                    1.5 + index / 10.0,
+                    state,
+                    position,
+                    index * 1000.0,
+                ),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def command_subscriber(path, publisher, *, error_stream=None):
+    return NtfyStatusCommandSubscriber(
+        config(),
+        store_path=path,
+        mode_label="LIVE",
+        publisher=publisher,
+        transport=lambda *args, **kwargs: None,
+        error_stream=error_stream,
+    )
+
+
+def test_status_command_replies_with_latest_ten_committed_bars(tmp_path) -> None:
+    store_path = tmp_path / "live.sqlite3"
+    seed_status_bars(store_path, 12)
+    publisher = FakePublisher()
+    subscriber = command_subscriber(store_path, publisher)
+
+    assert not subscriber.handle_event(
+        {"event": "message", "id": "ignore", "message": "hello"}
+    )
+    assert subscriber.handle_event(
+        {"event": "message", "id": "command-1", "message": " STATUS "}
+    )
+    assert not subscriber.handle_event(
+        {"event": "message", "id": "command-1", "message": "status"}
+    )
+    assert not subscriber.handle_event(
+        {
+            "event": "message",
+            "id": "reply-1",
+            "message": "07-14 09:11\nmid=11.10 zS=2.10 zL=2.60",
+        }
+    )
+
+    assert len(publisher.messages) == 1
+    message = publisher.messages[0]
+    assert message.title == "[LIVE] Latest 10 BARs"
+    blocks = message.message.split("\n\n")
+    assert len(blocks) == 10
+    assert blocks[0].startswith("07-14 09:14\nmid=10.20 zS=1.20 zL=1.70")
+    assert blocks[-1].endswith("state=LONG PnL=11,000 TWD")
+
+
+def test_status_command_reports_available_count_and_empty_store(tmp_path) -> None:
+    partial_path = tmp_path / "partial.sqlite3"
+    seed_status_bars(partial_path, 2)
+    partial_publisher = FakePublisher()
+    partial = command_subscriber(partial_path, partial_publisher)
+
+    assert partial.handle_event(
+        {"event": "message", "id": "partial", "message": "status"}
+    )
+    assert partial_publisher.messages[0].title == "[LIVE] Latest 2 BARs"
+
+    empty_path = tmp_path / "empty.sqlite3"
+    seed_status_bars(empty_path, 0)
+    empty_publisher = FakePublisher()
+    empty = command_subscriber(empty_path, empty_publisher)
+
+    assert empty.handle_event(
+        {"event": "message", "id": "empty", "message": "status"}
+    )
+    assert empty_publisher.messages[0].title == "[LIVE] Latest 0 BARs"
+    assert empty_publisher.messages[0].message == "No committed BAR data"
+
+
+def test_status_command_labels_non_trading_session(tmp_path) -> None:
+    store_path = tmp_path / "live.sqlite3"
+    seed_status_bars(store_path, 10)
+    publisher = FakePublisher()
+    subscriber = command_subscriber(store_path, publisher)
+    subscriber.set_trading_session(False)
+
+    assert subscriber.handle_event(
+        {"event": "message", "id": "non-trading", "message": "status"}
+    )
+
+    assert (
+        publisher.messages[0].title
+        == "[LIVE] non-trading session Latest 10 BARs"
+    )
+
+
+def test_trading_session_transition_publishes_once_to_trades_topic() -> None:
+    ntfy, publisher = reporter()
+
+    ntfy.live_non_trading(
+        ts(),
+        ts() + timedelta(hours=1),
+        "scheduled_break",
+    )
+    ntfy.trading_session(ts() + timedelta(hours=1))
+    ntfy.trading_session(ts() + timedelta(hours=1, seconds=1))
+
+    assert len(publisher.messages) == 1
+    message = publisher.messages[0]
+    assert message.topic == "trades-def34"
+    assert message.title == "[LIVE] trading session started"
+    assert message.priority == ALERT_PRIORITY
+    assert "session=trading" in message.message
+
+
+def test_status_query_failure_is_non_fatal_and_returns_unavailable(tmp_path) -> None:
+    publisher = FakePublisher()
+    errors = io.StringIO()
+    subscriber = command_subscriber(
+        tmp_path / "missing.sqlite3",
+        publisher,
+        error_stream=errors,
+    )
+
+    assert subscriber.handle_event(
+        {"event": "message", "id": "missing", "message": "status"}
+    )
+
+    assert publisher.messages[0].title == "[LIVE] Status unavailable"
+    assert "command subscriber failed; trading continues" in errors.getvalue()
+
+
+def test_cached_bootstrap_message_is_not_replayed(tmp_path) -> None:
+    store_path = tmp_path / "live.sqlite3"
+    seed_status_bars(store_path, 1)
+    publisher = FakePublisher()
+
+    class CachedResponse:
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            return iter(
+                [
+                    b'{"event":"open","id":"open"}',
+                    b'{"event":"message","id":"old-status","message":"status"}',
+                ]
+            )
+
+        def close(self):
+            return None
+
+    subscriber = NtfyStatusCommandSubscriber(
+        config(),
+        store_path=store_path,
+        mode_label="LIVE",
+        publisher=publisher,
+        transport=lambda *args, **kwargs: CachedResponse(),
+    )
+
+    subscriber._bootstrap_cursor()
+
+    assert not subscriber.handle_event(
+        {"event": "message", "id": "old-status", "message": "status"}
+    )
+    assert publisher.messages == []
+
+
+def test_command_subscriber_network_failure_is_logged_without_raising(tmp_path) -> None:
+    errors = io.StringIO()
+
+    def offline(*args, **kwargs):
+        raise OSError("offline")
+
+    subscriber = NtfyStatusCommandSubscriber(
+        config(),
+        store_path=tmp_path / "live.sqlite3",
+        mode_label="LIVE",
+        publisher=FakePublisher(),
+        transport=offline,
+        error_stream=errors,
+    )
+
+    subscriber._bootstrap_cursor()
+
+    assert "command subscriber failed; trading continues" in errors.getvalue()
+
+
+def test_command_subscriber_reconnects_after_429(monkeypatch, tmp_path) -> None:
+    store_path = tmp_path / "live.sqlite3"
+    seed_status_bars(store_path, 1)
+    publisher = FakePublisher()
+    stream_requested = threading.Event()
+    call_count = 0
+
+    class StreamResponse:
+        def __init__(self, lines=(), *, rate_limited=False):
+            self.lines = tuple(lines)
+            self.rate_limited = rate_limited
+
+        def raise_for_status(self):
+            if self.rate_limited:
+                response = SimpleNamespace(status_code=429, headers={})
+                raise requests.HTTPError("429 Too Many Requests", response=response)
+
+        def iter_lines(self):
+            return iter(self.lines)
+
+        def close(self):
+            return None
+
+    def transport(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:  # cached-message bootstrap
+            return StreamResponse()
+        if call_count == 2:
+            return StreamResponse(rate_limited=True)
+        stream_requested.set()
+        return StreamResponse(
+            [b'{"event":"message","id":"fresh","message":"status"}']
+        )
+
+    monkeypatch.setattr(ntfy_module, "SUBSCRIBER_BACKOFF_SECONDS", (0.01,))
+    subscriber = NtfyStatusCommandSubscriber(
+        config(),
+        store_path=store_path,
+        mode_label="LIVE",
+        publisher=publisher,
+        transport=transport,
+        error_stream=io.StringIO(),
+    )
+
+    subscriber.start()
+    try:
+        assert stream_requested.wait(1.0)
+        deadline = datetime.now().timestamp() + 1.0
+        while not publisher.messages and datetime.now().timestamp() < deadline:
+            threading.Event().wait(0.01)
+    finally:
+        subscriber.close()
+
+    assert call_count >= 3
+    assert publisher.messages[0].title == "[LIVE] Latest 1 BARs"
+
+
+def test_reporter_stops_command_subscriber_before_publisher() -> None:
+    events: list[str] = []
+
+    class OrderedPublisher(FakePublisher):
+        def close(self):
+            events.append("publisher")
+            super().close()
+
+    class OrderedSubscriber:
+        def start(self):
+            events.append("start")
+
+        def close(self):
+            events.append("subscriber")
+
+    publisher = OrderedPublisher()
+    reporter = NtfyLiveReporter(
+        FakeBaseReporter(),
+        config(),
+        mode="live-execute",
+        publisher=publisher,
+        command_subscriber=OrderedSubscriber(),
+    )
+
+    reporter.finish()
+
+    assert events == ["start", "subscriber", "publisher"]
+
+
+def test_quiet_ui_still_wraps_reporter_with_ntfy(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
     class FakeNtfyReporter:
-        def __init__(self, base, ntfy_config, *, mode):
-            captured.update(base=base, config=ntfy_config, mode=mode)
+        def __init__(self, base, ntfy_config, *, mode, store_path):
+            captured.update(
+                base=base,
+                config=ntfy_config,
+                mode=mode,
+                store_path=store_path,
+            )
 
     monkeypatch.setattr(commands_live, "NtfyLiveReporter", FakeNtfyReporter)
-    app_config = SimpleNamespace(ntfy=config())
+    app_config = SimpleNamespace(
+        ntfy=config(),
+        store_path=tmp_path / "live.sqlite3",
+    )
 
     wrapped = commands_live.build_live_reporter(
         Namespace(quiet_ui=True, no_color=False, ui="compact"),
@@ -289,3 +685,4 @@ def test_quiet_ui_still_wraps_reporter_with_ntfy(monkeypatch) -> None:
     assert isinstance(wrapped, FakeNtfyReporter)
     assert isinstance(captured["base"], NullLiveReporter)
     assert captured["mode"] == "live-execute"
+    assert captured["store_path"] == app_config.store_path

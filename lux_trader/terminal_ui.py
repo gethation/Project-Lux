@@ -6,6 +6,7 @@ from typing import Any, Callable, TextIO
 
 from .core.time import ensure_taipei
 from .core.tradable_spread import TradableSpreadSnapshot
+from .trade_pnl import format_trade_pnl_values, format_twd, trade_pnl_from_execution
 
 
 ANSI = {
@@ -58,6 +59,15 @@ class NullLiveReporter:
         return
 
     def error(self, timestamp: Any, message: str) -> None:
+        return
+
+    def execution(
+        self,
+        timestamp: Any,
+        plan: Any,
+        outcome: Any,
+        result: Any,
+    ) -> None:
         return
 
     def finish(self) -> None:
@@ -214,7 +224,7 @@ class LiveTerminalReporter:
         action_text = compact_action(action, reason)
         pnl_text = f"pnl={account_pnl_text(account_display)}"
         pnl_status_text = (
-            "realized_pnl=PENDING"
+            " realized_pnl=PENDING"
             if getattr(strategy_state, "pnl_status", "complete") != "complete"
             else ""
         )
@@ -231,8 +241,7 @@ class LiveTerminalReporter:
         )
         plain = (
             f"{time_text} BAR  {mid_text} {mid_z_text} {short_text} {long_text} "
-            f"{state_text} {action_text} {pnl_text} "
-            f"{pnl_status_text + ' ' if pnl_status_text else ''}{margin_text}"
+            f"{state_text} {action_text} {pnl_text}{pnl_status_text} {margin_text}"
         )
         colored = " ".join(
             [
@@ -245,7 +254,7 @@ class LiveTerminalReporter:
                 self._paint_state(state_text),
                 self._paint_action(action_text, action),
                 pnl_text,
-                *([pnl_status_text] if pnl_status_text else []),
+                *([pnl_status_text.strip()] if pnl_status_text else []),
                 margin_text,
             ]
         )
@@ -259,6 +268,42 @@ class LiveTerminalReporter:
 
     def error(self, timestamp: Any, message: str) -> None:
         self._write_short(timestamp, "ERR", message, "", "red")
+
+    def execution(
+        self,
+        timestamp: Any,
+        plan: Any,
+        outcome: Any,
+        result: Any,
+    ) -> None:
+        summary = trade_pnl_from_execution(plan, outcome, result)
+        if summary is None:
+            return
+        time_text = format_time(timestamp, with_seconds=True)
+        values = format_trade_pnl_values(summary)
+        if values is None:
+            plain = f"{time_text} TRADE EXIT trade_pnl_twd unavailable"
+            colored = " ".join(
+                (
+                    self._paint(time_text, "dim"),
+                    self._paint("TRADE EXIT", "magenta"),
+                    self._paint("trade_pnl_twd unavailable", "yellow"),
+                )
+            )
+        else:
+            net_text = f"net={format_twd(summary.net_pnl_twd)}"
+            gross_and_fees = values.split(" ", 1)[1]
+            net_style = "green" if float(summary.net_pnl_twd or 0.0) >= 0 else "red"
+            plain = f"{time_text} TRADE EXIT {values} TWD"
+            colored = " ".join(
+                (
+                    self._paint(time_text, "dim"),
+                    self._paint("TRADE EXIT", "magenta"),
+                    self._paint(net_text, net_style),
+                    f"{gross_and_fees} TWD",
+                )
+            )
+        self._write_permanent(plain, colored)
 
     def finish(self) -> None:
         self._clear_live_line()
@@ -509,10 +554,14 @@ def account_margin_text(account_display: Any) -> str:
     binance_ratio = getattr(account_display, "binance_ratio", None)
     fubon_ratio = getattr(account_display, "fubon_ratio", None)
     prefix = "~" if getattr(account_display, "stale", False) else ""
-    return (
+    text = (
         f"margin({prefix}bina={format_pct(binance_ratio)},"
         f"fubon={format_pct(fubon_ratio)})"
     )
+    error_reason = getattr(account_display, "error_reason", None)
+    if error_reason:
+        return f"{text} account_error={error_reason}"
+    return text
 
 
 def state_value(value: Any) -> str:

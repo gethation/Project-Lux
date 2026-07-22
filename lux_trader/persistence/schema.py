@@ -334,6 +334,28 @@ SQLITE_SCHEMA = r"""
             CREATE INDEX IF NOT EXISTS idx_position_adjustments_exposure
             ON position_adjustments(broker, symbol);
 
+            CREATE TABLE IF NOT EXISTS fubon_order_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                plan_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                state TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fubon_evidence_events (
+                evidence_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                attempt_id TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                evidence_type TEXT NOT NULL,
+                accepted INTEGER NOT NULL,
+                rejection_reason TEXT,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(attempt_id) REFERENCES fubon_order_attempts(attempt_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_fubon_evidence_attempt
+            ON fubon_evidence_events(attempt_id, evidence_id);
+
             CREATE TABLE IF NOT EXISTS fubon_session_events (
                 session_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 observed_at TEXT NOT NULL,

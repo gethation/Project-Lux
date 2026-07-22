@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, TextIO
 
 import requests
@@ -14,11 +17,10 @@ from .config import NtfyConfig
 from .core.time import ensure_taipei
 from .execution.outcome import ExecutionOutcomeStatus
 from .terminal_ui import (
-    account_margin_text,
-    account_pnl_text,
     format_float,
-    state_value,
+    format_money,
 )
+from .trade_pnl import format_trade_pnl_values, trade_pnl_from_execution
 
 
 STATUS_PRIORITY = 2
@@ -26,6 +28,11 @@ ALERT_PRIORITY = 4
 DEFAULT_QUEUE_SIZE = 128
 DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 FAILURE_LOG_INTERVAL_SECONDS = 60.0
+STATUS_BAR_COUNT = 10
+STATUS_COMMAND = "status"
+SUBSCRIBER_BACKOFF_SECONDS = (1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
+SUBSCRIBER_READ_TIMEOUT_SECONDS = 75.0
+SEEN_MESSAGE_ID_LIMIT = 256
 
 
 def ntfy_best_effort(method: Callable[..., Any]) -> Callable[..., None]:
@@ -66,6 +73,327 @@ class NtfyMessage:
         if self.tags:
             payload["tags"] = list(self.tags)
         return payload
+
+
+@dataclass(frozen=True)
+class NtfyStatusBar:
+    timestamp: datetime
+    mid_spread: float | None
+    short_zscore: float | None
+    long_zscore: float | None
+    state: str
+    position: str
+    unrealized_pnl: float
+
+
+def load_recent_status_bars(
+    store_path: Path,
+    *,
+    limit: int = STATUS_BAR_COUNT,
+) -> tuple[NtfyStatusBar, ...]:
+    """Load committed BARs without touching the live writer connection."""
+
+    path = Path(store_path).resolve()
+    connection = sqlite3.connect(
+        f"{path.as_uri()}?mode=ro",
+        uri=True,
+        timeout=1.0,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA query_only = ON")
+        rows = connection.execute(
+            """
+            SELECT timestamp, spread, short_zscore, long_zscore,
+                   state, position, unrealized_pnl
+            FROM bars
+            ORDER BY row_index DESC
+            LIMIT ?
+            """,
+            (max(int(limit), 1),),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    return tuple(
+        NtfyStatusBar(
+            timestamp=datetime.fromisoformat(str(row["timestamp"])),
+            mid_spread=float(row["spread"]) if row["spread"] is not None else None,
+            short_zscore=(
+                float(row["short_zscore"])
+                if row["short_zscore"] is not None
+                else None
+            ),
+            long_zscore=(
+                float(row["long_zscore"])
+                if row["long_zscore"] is not None
+                else None
+            ),
+            state=str(row["state"]),
+            position=str(row["position"]),
+            unrealized_pnl=float(row["unrealized_pnl"]),
+        )
+        for row in reversed(rows)
+    )
+
+
+def format_status_state(state: str, position: str) -> str:
+    state_text = str(state).upper()
+    if state_text != "OPEN":
+        return state_text
+    position_text = str(position).lower()
+    if position_text == "long_tsm_short_qff":
+        return "LONG"
+    if position_text == "short_tsm_long_qff":
+        return "SHORT"
+    return state_text
+
+
+def format_status_bars(bars: tuple[NtfyStatusBar, ...]) -> str:
+    blocks = []
+    for bar in bars:
+        blocks.append(
+            "\n".join(
+                (
+                    bar.timestamp.strftime("%m-%d %H:%M"),
+                    f"mid={format_float(bar.mid_spread, digits=2)} "
+                    f"zS={format_float(bar.short_zscore, digits=2)} "
+                    f"zL={format_float(bar.long_zscore, digits=2)}",
+                    f"state={format_status_state(bar.state, bar.position)} "
+                    f"PnL={format_money(bar.unrealized_pnl)} TWD",
+                )
+            )
+        )
+    return "\n\n".join(blocks)
+
+
+class NtfyStatusCommandSubscriber:
+    """Best-effort ntfy command listener isolated from the live loop."""
+
+    def __init__(
+        self,
+        config: NtfyConfig,
+        *,
+        store_path: Path,
+        mode_label: str,
+        publisher: Any,
+        transport: Callable[..., Any] | None = None,
+        error_stream: TextIO | None = None,
+    ) -> None:
+        self.config = config
+        self.store_path = Path(store_path)
+        self.mode_label = mode_label
+        self.publisher = publisher
+        self._session = requests.Session() if transport is None else None
+        self._transport = transport or self._session.get
+        self._error_stream = error_stream or sys.stderr
+        self._last_failure_log = 0.0
+        self._stop = threading.Event()
+        self._response_lock = threading.Lock()
+        self._active_response: Any = None
+        self._last_message_id: str | None = None
+        self._seen_message_ids: deque[str] = deque()
+        self._seen_message_id_set: set[str] = set()
+        self._is_trading_session: bool | None = None
+        self._pnl_pending_notified = False
+        self._thread: threading.Thread | None = None
+
+    @property
+    def endpoint(self) -> str:
+        return f"{self.config.server_url}/{self.config.status_topic}/json"
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._run,
+            name="project-lux-ntfy-command",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def close(self, timeout: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS) -> None:
+        self._stop.set()
+        with self._response_lock:
+            response = self._active_response
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
+        if self._thread is not None:
+            self._thread.join(max(float(timeout), 0.0))
+        if self._session is not None:
+            self._session.close()
+
+    def handle_event(self, event: dict[str, Any]) -> bool:
+        if str(event.get("event", "")) != "message":
+            return False
+        message_id = str(event.get("id", "")).strip()
+        if message_id:
+            if message_id in self._seen_message_id_set:
+                return False
+            self._remember_message_id(message_id)
+            self._last_message_id = message_id
+        if str(event.get("message", "")).strip().casefold() != STATUS_COMMAND:
+            return False
+        self._publish_recent_bars()
+        return True
+
+    def set_trading_session(self, is_trading: bool) -> None:
+        self._is_trading_session = bool(is_trading)
+
+    def _remember_message_id(self, message_id: str) -> None:
+        self._seen_message_ids.append(message_id)
+        self._seen_message_id_set.add(message_id)
+        while len(self._seen_message_ids) > SEEN_MESSAGE_ID_LIMIT:
+            expired = self._seen_message_ids.popleft()
+            self._seen_message_id_set.discard(expired)
+
+    def _publish_recent_bars(self) -> None:
+        try:
+            bars = load_recent_status_bars(
+                self.store_path,
+                limit=STATUS_BAR_COUNT,
+            )
+        except Exception as exc:
+            self._log_failure(exc)
+            self.publisher.publish(
+                NtfyMessage(
+                    topic=self.config.status_topic,
+                    title=f"[{self.mode_label}] Status unavailable",
+                    message="BAR data temporarily unavailable",
+                    priority=STATUS_PRIORITY,
+                    tags=("warning",),
+                )
+            )
+            return
+
+        session_label = (
+            "non-trading session " if self._is_trading_session is False else ""
+        )
+        if not bars:
+            title = f"[{self.mode_label}] {session_label}Latest 0 BARs"
+            body = "No committed BAR data"
+        else:
+            title = (
+                f"[{self.mode_label}] {session_label}Latest {len(bars)} BARs"
+            )
+            body = format_status_bars(bars)
+        self.publisher.publish(
+            NtfyMessage(
+                topic=self.config.status_topic,
+                title=title,
+                message=body,
+                priority=STATUS_PRIORITY,
+                tags=("bar_chart",),
+            )
+        )
+
+    def _run(self) -> None:
+        backoff_index = 0
+        try:
+            self._bootstrap_cursor()
+            while not self._stop.is_set():
+                try:
+                    params = {
+                        "since": self._last_message_id or str(int(time.time()))
+                    }
+                    response = self._transport(
+                        self.endpoint,
+                        params=params,
+                        stream=True,
+                        timeout=(
+                            self.config.request_timeout_seconds,
+                            SUBSCRIBER_READ_TIMEOUT_SECONDS,
+                        ),
+                    )
+                    with self._response_lock:
+                        self._active_response = response
+                    response.raise_for_status()
+                    backoff_index = 0
+                    for raw_line in response.iter_lines():
+                        if self._stop.is_set():
+                            break
+                        if not raw_line:
+                            continue
+                        try:
+                            event = json.loads(raw_line)
+                        except (TypeError, ValueError):
+                            continue
+                        if isinstance(event, dict):
+                            self.handle_event(event)
+                except Exception as exc:
+                    if self._stop.is_set():
+                        break
+                    self._log_failure(exc)
+                    delay = SUBSCRIBER_BACKOFF_SECONDS[
+                        min(backoff_index, len(SUBSCRIBER_BACKOFF_SECONDS) - 1)
+                    ]
+                    backoff_index += 1
+                    self._stop.wait(delay)
+                finally:
+                    with self._response_lock:
+                        response = self._active_response
+                        self._active_response = None
+                    if response is not None:
+                        try:
+                            response.close()
+                        except Exception:
+                            pass
+        finally:
+            if self._session is not None:
+                self._session.close()
+
+    def _bootstrap_cursor(self) -> None:
+        """Start after the latest cached event so old commands are not replayed."""
+
+        try:
+            response = self._transport(
+                self.endpoint,
+                params={"poll": "1", "since": "latest"},
+                stream=True,
+                timeout=self.config.request_timeout_seconds,
+            )
+            with self._response_lock:
+                self._active_response = response
+            response.raise_for_status()
+            for raw_line in response.iter_lines():
+                if not raw_line:
+                    continue
+                try:
+                    event = json.loads(raw_line)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(event, dict) or event.get("event") != "message":
+                    continue
+                message_id = str(event.get("id", "")).strip()
+                if message_id:
+                    self._remember_message_id(message_id)
+                    self._last_message_id = message_id
+        except Exception as exc:
+            if not self._stop.is_set():
+                self._log_failure(exc)
+        finally:
+            with self._response_lock:
+                response = self._active_response
+                self._active_response = None
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
+    def _log_failure(self, exc: Exception) -> None:
+        now = time.monotonic()
+        if now - self._last_failure_log < FAILURE_LOG_INTERVAL_SECONDS:
+            return
+        self._last_failure_log = now
+        self._error_stream.write(
+            "WARN ntfy command subscriber failed; trading continues: "
+            f"{type(exc).__name__}: {exc}\n"
+        )
+        self._error_stream.flush()
 
 
 class NtfyPublisher:
@@ -190,19 +518,59 @@ class NtfyLiveReporter:
         *,
         mode: str,
         publisher: NtfyPublisher | None = None,
+        store_path: Path | None = None,
+        command_subscriber: NtfyStatusCommandSubscriber | None = None,
     ) -> None:
         self.base = base_reporter
         self.config = config
         self.mode = mode
         self.mode_label = "LIVE" if mode == "live-execute" else "DRY-RUN"
         self.publisher = publisher or NtfyPublisher(config)
+        self._is_trading_session: bool | None = None
         self._pnl_pending_notified = False
+        self.command_subscriber = command_subscriber
+        if self.command_subscriber is None and store_path is not None:
+            self.command_subscriber = NtfyStatusCommandSubscriber(
+                config,
+                store_path=store_path,
+                mode_label=self.mode_label,
+                publisher=self.publisher,
+            )
+        if self.command_subscriber is not None:
+            self.command_subscriber.start()
 
     def live(self, *args: Any, **kwargs: Any) -> None:
+        self._set_trading_session(True)
         self.base.live(*args, **kwargs)
 
     def live_non_trading(self, *args: Any, **kwargs: Any) -> None:
+        self._set_trading_session(False)
         self.base.live_non_trading(*args, **kwargs)
+
+    def _set_trading_session(self, is_trading: bool) -> None:
+        self._is_trading_session = bool(is_trading)
+        setter = getattr(self.command_subscriber, "set_trading_session", None)
+        if callable(setter):
+            setter(is_trading)
+
+    @ntfy_best_effort
+    def trading_session(self, timestamp: Any) -> None:
+        previous = self._is_trading_session
+        self._set_trading_session(True)
+        if previous is not False:
+            return
+        self.publisher.publish(
+            NtfyMessage(
+                topic=self.config.trades_topic,
+                title=f"[{self.mode_label}] trading session started",
+                message=(
+                    f"{format_timestamp(timestamp)} mode={self.mode_label} "
+                    "session=trading"
+                ),
+                priority=ALERT_PRIORITY,
+                tags=("bell",),
+            )
+        )
 
     def bar(
         self,
@@ -225,14 +593,6 @@ class NtfyLiveReporter:
             equity,
             account_display=account_display,
         )
-        self._publish_status(
-            timestamp,
-            spread_snapshot,
-            strategy_state,
-            action,
-            reason,
-            account_display,
-        )
         if (
             getattr(strategy_state, "pnl_status", "complete") != "complete"
             and not self._pnl_pending_notified
@@ -250,35 +610,6 @@ class NtfyLiveReporter:
                     tags=("warning",),
                 )
             )
-
-    @ntfy_best_effort
-    def _publish_status(
-        self,
-        timestamp: Any,
-        spread_snapshot: Any,
-        strategy_state: Any,
-        action: Any,
-        reason: str,
-        account_display: Any,
-    ) -> None:
-        stamp = format_timestamp(timestamp)
-        self.publisher.publish(
-            NtfyMessage(
-                topic=self.config.status_topic,
-                title=f"[{self.mode_label}] Project Lux status",
-                message=(
-                    f"{stamp} mode={self.mode_label} "
-                    f"mid={format_float(spread_snapshot.mid_spread, digits=2)} "
-                    f"short_z={format_float(spread_snapshot.short_zscore, digits=2)} "
-                    f"long_z={format_float(spread_snapshot.long_zscore, digits=2)} "
-                    f"state={state_value(strategy_state)} "
-                    f"pnl={account_pnl_text(account_display)} "
-                    f"{account_margin_text(account_display)}"
-                ),
-                priority=STATUS_PRIORITY,
-                tags=("bar_chart",),
-            )
-        )
         if str(getattr(action, "value", action)) == "error":
             self.notify_error(timestamp, "strategy_error", reason)
 
@@ -300,11 +631,35 @@ class NtfyLiveReporter:
         outcome: Any,
         result: Any,
     ) -> None:
+        base_execution = getattr(self.base, "execution", None)
+        if callable(base_execution):
+            try:
+                base_execution(timestamp, plan, outcome, result)
+            except Exception as exc:
+                log_failure = getattr(self.publisher, "_log_failure", None)
+                if callable(log_failure):
+                    log_failure(exc)
+                else:
+                    try:
+                        sys.stderr.write(
+                            "WARN terminal execution reporter failed; "
+                            f"trading continues: {type(exc).__name__}: {exc}\n"
+                        )
+                    except Exception:
+                        pass
         fills = tuple(getattr(outcome, "fills", ()) or ())
         plan_type = str(getattr(getattr(plan, "plan_type", None), "value", "trade"))
         status = str(getattr(getattr(outcome, "status", None), "value", "unknown"))
         if fills:
             fill_lines = [format_fill(fill) for fill in fills]
+            pnl_summary = trade_pnl_from_execution(plan, outcome, result)
+            if pnl_summary is not None:
+                pnl_values = format_trade_pnl_values(pnl_summary)
+                fill_lines.append(
+                    f"trade_pnl_twd {pnl_values}"
+                    if pnl_values is not None
+                    else "trade_pnl_twd unavailable"
+                )
             self.publisher.publish(
                 NtfyMessage(
                     topic=self.config.trades_topic,
@@ -353,7 +708,11 @@ class NtfyLiveReporter:
         try:
             self.base.finish()
         finally:
-            self.publisher.close()
+            try:
+                if self.command_subscriber is not None:
+                    self.command_subscriber.close()
+            finally:
+                self.publisher.close()
 
 
 def notify_operational_error(

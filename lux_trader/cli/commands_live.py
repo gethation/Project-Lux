@@ -24,16 +24,21 @@ from lux_trader.reconciliation import (
     ReadOnlyBroker,
     ReconciliationStatus,
 )
+from lux_trader.reconciliation.post_trade import PostTradeReconciler
 from lux_trader.runtime.live import LiveDryRunRunner, WarmupRunner, resolve_qff_contract
 from lux_trader.runtime.live.lease import assert_live_lease_available
 from lux_trader.store import SQLiteStore
-from lux_trader.reconciliation.post_trade import PostTradeReconciler
 from lux_trader.terminal_ui import LiveTerminalReporter, NullLiveReporter
 
 
 def with_ntfy(reporter: object, config: object, *, mode: str):
     if config.ntfy.enabled:
-        return NtfyLiveReporter(reporter, config.ntfy, mode=mode)
+        return NtfyLiveReporter(
+            reporter,
+            config.ntfy,
+            mode=mode,
+            store_path=config.store_path,
+        )
     return reporter
 
 
@@ -168,6 +173,8 @@ def command_live_status(args: argparse.Namespace) -> int:
             f"invalid_reason={fubon_health['invalid_reason'] or '-'}"
         )
     return 0
+
+
 
 
 def command_reconcile_brokers(args: argparse.Namespace) -> int:

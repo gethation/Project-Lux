@@ -187,9 +187,41 @@ class RealExecutionCoordinator:
             legs=(leg,),
             checks=(),
         )
+        attempt_id = None
+        if leg.broker == BrokerName.FUBON_QFF:
+            attempt_id = f"LUX-FUBON-{leg_plan.plan_id}"
+            start_attempt = getattr(self.store, "start_fubon_attempt", None)
+            if callable(start_attempt):
+                start_attempt(
+                    attempt_id=attempt_id,
+                    plan_id=leg_plan.plan_id,
+                    created_at=self.clock(),
+                    payload={
+                        "broker": leg.broker.value,
+                        "symbol": leg.symbol,
+                        "side": leg.side.value,
+                        "quantity": leg.quantity,
+                        "price": leg.price,
+                        "expected_price": leg.expected_price,
+                        "fee_twd": leg.fee_twd,
+                        "timestamp": leg.timestamp,
+                        "row_index": leg.row_index,
+                        "qff_symbol": leg.qff_symbol,
+                        "qff_expiry": leg.qff_expiry,
+                        "contract_policy_state": leg.contract_policy_state,
+                        "order_type": leg.order_type,
+                    },
+                )
+                # The intent must be durable before place_order can reach the
+                # broker so a process/power failure leaves a recoverable trace.
+                commit = getattr(self.store, "commit", None)
+                if callable(commit):
+                    commit()
         started_at = self.clock()
         outcome = self._safe_adapter_execute(leg.broker, leg_plan)
         finished_at = self.clock()
+        if attempt_id is not None:
+            self._record_fubon_attempt_outcome(attempt_id, outcome)
         if timings is not None:
             timings[leg.broker] = leg_timing_payload(
                 leg=leg,
@@ -198,6 +230,70 @@ class RealExecutionCoordinator:
                 execute_finished_at=finished_at,
             )
         return outcome
+
+    def _record_fubon_attempt_outcome(
+        self,
+        attempt_id: str,
+        outcome: ExecutionOutcome,
+    ) -> None:
+        payload = outcome.payload or {}
+        record_evidence = getattr(self.store, "record_fubon_evidence", None)
+        if callable(record_evidence):
+            evidence = (
+                ("place_result", payload.get("place_result"), True, None),
+                (
+                    "final_order",
+                    payload.get("final_order"),
+                    bool(payload.get("matched_order_result")),
+                    None
+                    if payload.get("matched_order_result")
+                    else "not_exact_attempt_match",
+                ),
+                ("position_delta", payload.get("position_delta"), True, None),
+            )
+            for evidence_type, raw, accepted, reason in evidence:
+                if raw:
+                    record_evidence(
+                        attempt_id=attempt_id,
+                        observed_at=outcome.timestamp,
+                        evidence_type=evidence_type,
+                        payload=raw,
+                        accepted=accepted,
+                        rejection_reason=reason,
+                    )
+            for raw in payload.get("fill_events") or ():
+                record_evidence(
+                    attempt_id=attempt_id,
+                    observed_at=outcome.timestamp,
+                    evidence_type="filled_callback",
+                    payload=raw,
+                    accepted=True,
+                )
+            for raw in payload.get("stale_order_results") or ():
+                record_evidence(
+                    attempt_id=attempt_id,
+                    observed_at=outcome.timestamp,
+                    evidence_type="stale_query_result",
+                    payload=raw,
+                    accepted=False,
+                    rejection_reason="broker_identifiers_do_not_match_attempt",
+                )
+        finish_attempt = getattr(self.store, "finish_fubon_attempt", None)
+        if callable(finish_attempt):
+            finish_attempt(
+                attempt_id=attempt_id,
+                state=outcome.status.value,
+                payload={
+                    "message": outcome.message,
+                    "recommended_state": (
+                        outcome.recommended_state.value
+                        if outcome.recommended_state is not None
+                        else None
+                    ),
+                    "confirmation_source": payload.get("confirmation_source"),
+                    "fill_price_quality": payload.get("fill_price_quality"),
+                },
+            )
 
     def _safe_adapter_execute(
         self,

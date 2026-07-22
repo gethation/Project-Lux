@@ -30,6 +30,7 @@ from lux_trader.integrations.binance.market_data import BinanceMarketData
 from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
 from lux_trader.integrations.fubon.market_data import FubonQffMarketData
+from lux_trader.integrations.fubon.market_data_process import FubonQffMarketDataProcess
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.taifex.downloader import TaifexQffTradeDownloader
@@ -119,7 +120,7 @@ def open_live_quote_providers(
     started_at: datetime,
 ) -> LiveProviderSet:
     reporter.event(started_at, "startup", "init_fubon")
-    qff = qff_provider or FubonQffMarketData(config.live.fubon_env_path)
+    qff = qff_provider or FubonQffMarketDataProcess(config.live.fubon_env_path)
     reporter.event(started_at, "startup", "init_binance")
     tsm = tsm_provider or BinanceMarketData()
     reporter.event(started_at, "startup", "init_bitopro")
@@ -398,7 +399,10 @@ def prepare_live_runtime(
         # but its rolling indicator must reflect the latest completed market
         # data.  Do not accept an old cached seed merely because it has enough
         # rows; rebuild the same fresh warmup snapshot used on first startup.
-        force_rebuild=resume,
+        # Every normal live startup must be anchored to current market data.
+        # --skip-warmup is the sole explicit cached-seed diagnostic path, and
+        # resume rejects that flag before reaching this function.
+        force_rebuild=not skip_warmup,
         allow_rebuild=not skip_warmup,
         reporter=reporter,
         auto_warmup_context=auto_warmup_context,

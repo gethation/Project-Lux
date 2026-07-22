@@ -366,9 +366,33 @@ class FubonQffMarketData:
 
     def fetch_1m(self, symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
         intraday = self._require_intraday()
-        raw = intraday.candles(symbol=symbol, timeframe="1")
-        data = raw.get("data", raw) if isinstance(raw, dict) else raw
-        return normalize_candle_rows(list(data or []), start, end)
+        parts: list[pd.DataFrame] = []
+        errors: dict[str, str] = {}
+        for label, session in (("regular", None), ("afterhours", "afterhours")):
+            params: dict[str, Any] = {"symbol": symbol, "timeframe": "1"}
+            if session is not None:
+                params["session"] = session
+            try:
+                raw = intraday.candles(**params)
+                data = raw.get("data", raw) if isinstance(raw, dict) else raw
+                frame = normalize_candle_rows(list(data or []), start, end)
+                if not frame.empty:
+                    parts.append(frame)
+            except Exception as exc:
+                errors[label] = str(exc)
+        if not parts:
+            if errors:
+                raise RuntimeError(
+                    "Fubon QFF candles returned no usable regular/after-hours "
+                    f"data: {errors}"
+                )
+            return pd.DataFrame(columns=["timestamp", "close"])
+        return (
+            pd.concat(parts, ignore_index=True)
+            .sort_values("timestamp")
+            .drop_duplicates("timestamp", keep="last")
+            .reset_index(drop=True)
+        )
 
 
 

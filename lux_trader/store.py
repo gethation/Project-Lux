@@ -165,71 +165,97 @@ class SQLiteStore:
 
     def record_order(self, order: OrderResult) -> None:
         request = order.request
+        payload_json = json.dumps(
+            {
+                "order_id": order.order_id,
+                "fee_twd": request.fee_twd,
+                "order_type": request.order_type,
+                "expected_price": request.expected_price,
+                "trigger_bid": request.trigger_bid,
+                "trigger_ask": request.trigger_ask,
+                "trigger_mid": request.trigger_mid,
+                "price_source": request.price_source,
+            },
+            default=json_default,
+        )
+        values = (
+            order.order_id,
+            request.row_index,
+            timestamp_text(request.timestamp),
+            request.broker.value,
+            request.symbol,
+            request.side.value,
+            request.quantity,
+            request.price,
+            order.status.value,
+            request.qff_symbol,
+            request.qff_expiry,
+            request.contract_policy_state,
+            payload_json,
+        )
+        existing = self.connection.execute(
+            "SELECT * FROM orders WHERE order_id = ?",
+            (order.order_id,),
+        ).fetchone()
+        if existing is not None:
+            comparable = tuple(existing[key] for key in existing.keys())
+            if comparable == values:
+                return
+            raise RuntimeError(
+                f"order_id_collision: {order.order_id} already has different data"
+            )
         self.connection.execute(
             """
-            INSERT OR REPLACE INTO orders (
+            INSERT INTO orders (
                 order_id, row_index, timestamp, broker, symbol, side,
                 quantity, price, status, qff_symbol, qff_expiry,
                 contract_policy_state, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                order.order_id,
-                request.row_index,
-                timestamp_text(request.timestamp),
-                request.broker.value,
-                request.symbol,
-                request.side.value,
-                request.quantity,
-                request.price,
-                order.status.value,
-                request.qff_symbol,
-                request.qff_expiry,
-                request.contract_policy_state,
-                json.dumps(
-                    {
-                        "order_id": order.order_id,
-                        "fee_twd": request.fee_twd,
-                        "order_type": request.order_type,
-                        "expected_price": request.expected_price,
-                        "trigger_bid": request.trigger_bid,
-                        "trigger_ask": request.trigger_ask,
-                        "trigger_mid": request.trigger_mid,
-                        "price_source": request.price_source,
-                    },
-                    default=json_default,
-                ),
-            ),
+            values,
         )
 
     def record_fill(self, fill: Fill) -> None:
+        payload_json = json.dumps(
+            {"fill_id": fill.fill_id, "actual_fill_price": fill.price},
+            default=json_default,
+        )
+        values = (
+            fill.fill_id,
+            fill.order_id,
+            fill.row_index,
+            timestamp_text(fill.timestamp),
+            fill.broker.value,
+            fill.symbol,
+            fill.side.value,
+            fill.quantity,
+            fill.price,
+            fill.fee_twd,
+            fill.qff_symbol,
+            fill.qff_expiry,
+            fill.contract_policy_state,
+            payload_json,
+        )
+        existing = self.connection.execute(
+            "SELECT * FROM fills WHERE fill_id = ?",
+            (fill.fill_id,),
+        ).fetchone()
+        if existing is not None:
+            comparable = tuple(existing[key] for key in existing.keys())
+            if comparable == values:
+                return
+            raise RuntimeError(
+                f"fill_id_collision: {fill.fill_id} already has different data"
+            )
         self.connection.execute(
             """
-            INSERT OR REPLACE INTO fills (
+            INSERT INTO fills (
                 fill_id, order_id, row_index, timestamp, broker, symbol,
                 side, quantity, price, fee_twd, qff_symbol, qff_expiry,
                 contract_policy_state, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                fill.fill_id,
-                fill.order_id,
-                fill.row_index,
-                timestamp_text(fill.timestamp),
-                fill.broker.value,
-                fill.symbol,
-                fill.side.value,
-                fill.quantity,
-                fill.price,
-                fill.fee_twd,
-                fill.qff_symbol,
-                fill.qff_expiry,
-                fill.contract_policy_state,
-                json.dumps(
-                    {"fill_id": fill.fill_id, "actual_fill_price": fill.price},
-                    default=json_default,
-                ),
-            ),
+            values,
         )
 
     def load_recorded_fill_exposure(
@@ -768,6 +794,83 @@ class SQLiteStore:
 
     def record_execution_outcome(self, outcome: Any) -> int:
         return ExecutionStore(self.connection).record_outcome(outcome)
+
+    def start_fubon_attempt(
+        self,
+        *,
+        attempt_id: str,
+        plan_id: str,
+        created_at: datetime,
+        payload: dict[str, Any],
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO fubon_order_attempts (
+                attempt_id, plan_id, created_at, state, payload_json
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                attempt_id,
+                plan_id,
+                timestamp_text(created_at),
+                "submitting",
+                json.dumps(payload, default=json_default),
+            ),
+        )
+
+    def finish_fubon_attempt(
+        self,
+        *,
+        attempt_id: str,
+        state: str,
+        payload: dict[str, Any],
+    ) -> None:
+        existing = self.connection.execute(
+            "SELECT payload_json FROM fubon_order_attempts WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+        merged_payload = (
+            json.loads(existing["payload_json"])
+            if existing is not None
+            else {}
+        )
+        merged_payload.update(payload)
+        self.connection.execute(
+            """
+            UPDATE fubon_order_attempts
+            SET state = ?, payload_json = ?
+            WHERE attempt_id = ?
+            """,
+            (state, json.dumps(merged_payload, default=json_default), attempt_id),
+        )
+
+    def record_fubon_evidence(
+        self,
+        *,
+        attempt_id: str,
+        observed_at: datetime,
+        evidence_type: str,
+        payload: Any,
+        accepted: bool,
+        rejection_reason: str | None = None,
+    ) -> int:
+        cursor = self.connection.execute(
+            """
+            INSERT INTO fubon_evidence_events (
+                attempt_id, observed_at, evidence_type, accepted,
+                rejection_reason, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                attempt_id,
+                timestamp_text(observed_at),
+                evidence_type,
+                int(accepted),
+                rejection_reason,
+                json.dumps(payload, default=json_default),
+            ),
+        )
+        return int(cursor.lastrowid)
 
     def record_fubon_session_health(
         self,

@@ -48,12 +48,11 @@ from lux_trader.market_data import (
     QffWarmupProvider,
     QuoteProvider,
     WarmupBuilder,
-    build_qff_session_index,
-    build_qff_session_warmup_index,
+    build_qff_expected_warmup_index,
     build_qff_warmup_source_report,
     floor_minute,
     parse_timestamp,
-    prioritized_qff_close_frame,
+    validate_qff_warmup_report,
 )
 from lux_trader.store import SQLiteStore
 from lux_trader.core.models import Direction, IndicatorSnapshot, MarketBar, StrategyAction, StrategyState
@@ -139,6 +138,7 @@ class WarmupRunner:
                 qff_fallback_provider=fallback,
                 tsm_provider=tsm_provider,
                 usdttwd_provider=usdttwd_provider,
+                closed_dates=self.config.trading_calendar.closed_dates,
             )
             bars = builder.build(
                 qff_symbol=contract.symbol,
@@ -162,6 +162,11 @@ class WarmupRunner:
                     "qff_symbol": contract.symbol,
                     "qff_expiry": contract.expiry,
                     "contract_policy_state": contract.policy_state,
+                    "start_timestamp": bars[0].timestamp.isoformat(),
+                    "end_timestamp": bars[-1].timestamp.isoformat(),
+                    "requested_end": ensure_taipei(
+                        end or datetime.now().astimezone()
+                    ).isoformat(),
                 },
             )
             store.commit()
@@ -218,15 +223,12 @@ class QffWarmupCheckRunner:
                 raise RuntimeError("TAIFEX QFF warmup data is empty")
             if fubon_frame.empty:
                 raise RuntimeError("Fubon QFF intraday candles are empty")
-            combined_qff = prioritized_qff_close_frame(
-                [("taifex", taifex_frame), ("fubon", fubon_frame)]
-            )
-            warmup_index = build_qff_session_warmup_index(
-                combined_qff["close"],
+            warmup_index, session_index = build_qff_expected_warmup_index(
+                start=qff_fetch_start,
                 end=end_minute,
                 count=self.config.live.warmup_minutes,
+                closed_dates=self.config.trading_calendar.closed_dates,
             )
-            session_index = build_qff_session_index(combined_qff["close"], end=end_minute)
             start_minute = warmup_index[0].to_pydatetime()
 
             report = build_qff_warmup_source_report(
@@ -246,6 +248,15 @@ class QffWarmupCheckRunner:
                 raise RuntimeError(
                     f"QFF warmup report has {report.null_count} null filled closes"
                 )
+            validate_qff_warmup_report(
+                report,
+                max_trailing_fill_minutes=(
+                    self.config.live.warmup_qff_max_trailing_fill_minutes
+                ),
+                max_forward_fill_ratio=(
+                    self.config.live.warmup_forward_fill_max_ratio
+                ),
+            )
 
             resolved_output = self._resolve_output_csv(output_csv)
             if resolved_output is not None:
@@ -335,6 +346,7 @@ def load_or_build_live_indicator(
             qff_fallback_provider=fallback,
             tsm_provider=tsm_provider,
             usdttwd_provider=usdttwd_provider,
+            closed_dates=config.trading_calendar.closed_dates,
         )
         seed_bars = builder.build(
             qff_symbol=qff_symbol,
@@ -350,7 +362,13 @@ def load_or_build_live_indicator(
         store.replace_warmup_bars(seed_bars)
         if auto_warmup_context is not None:
             if reporter is not None:
-                reporter.event(end, "warmup_auto", f"done_{len(seed_bars)}")
+                reporter.event(
+                    end,
+                    "warmup_auto",
+                    f"done_{len(seed_bars)} "
+                    f"start={seed_bars[0].timestamp.isoformat()} "
+                    f"end={seed_bars[-1].timestamp.isoformat()}",
+                )
             store.record_event(
                 seed_bars[-1].row_index,
                 seed_bars[-1].timestamp,
@@ -363,6 +381,9 @@ def load_or_build_live_indicator(
                     "contract_policy_state": policy_state,
                     "context": auto_warmup_context,
                     "force_rebuild": force_rebuild,
+                    "start_timestamp": seed_bars[0].timestamp.isoformat(),
+                    "end_timestamp": seed_bars[-1].timestamp.isoformat(),
+                    "requested_end": end.isoformat(),
                 },
             )
 

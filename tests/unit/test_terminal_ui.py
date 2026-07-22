@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -349,6 +350,79 @@ def test_live_terminal_reporter_bar_marks_stale_account_display() -> None:
     output = stream.getvalue()
     # Combined uPnL unavailable -> NA; stale marked with a ~ prefix on the ratios.
     assert "pnl=NA margin(~bina=142%,fubon=138%)\n" in output
+
+
+def test_live_terminal_reporter_prints_filled_exit_trade_pnl() -> None:
+    stream = io.StringIO()
+    reporter = LiveTerminalReporter(stream, color=False)
+
+    reporter.execution(
+        ts("2026-06-18T17:30:00+08:00"),
+        SimpleNamespace(plan_type="exit"),
+        SimpleNamespace(status="filled"),
+        SimpleNamespace(
+            trade={
+                "net_pnl_twd": 12_345.4,
+                "gross_pnl_twd": 12_500.4,
+                "total_fee_twd": 155.0,
+            }
+        ),
+    )
+
+    assert (
+        stream.getvalue()
+        == "17:30:00 TRADE EXIT net=12,345 gross=12,500 fees=155 TWD\n"
+    )
+
+
+def test_live_terminal_reporter_colors_loss_and_marks_missing_pnl() -> None:
+    loss_stream = io.StringIO()
+    loss_reporter = LiveTerminalReporter(loss_stream, color=True)
+    loss_reporter.execution(
+        ts("2026-06-18T17:30:00+08:00"),
+        SimpleNamespace(plan_type="exit"),
+        SimpleNamespace(status="filled"),
+        SimpleNamespace(
+            trade={
+                "net_pnl_twd": -1_234.0,
+                "gross_pnl_twd": -1_000.0,
+                "total_fee_twd": 234.0,
+            }
+        ),
+    )
+    assert "\x1b[31mnet=-1,234\x1b[0m" in loss_stream.getvalue()
+
+    unavailable_stream = io.StringIO()
+    unavailable_reporter = LiveTerminalReporter(unavailable_stream, color=False)
+    unavailable_reporter.execution(
+        ts("2026-06-18T17:31:00+08:00"),
+        SimpleNamespace(plan_type="exit"),
+        SimpleNamespace(status="filled"),
+        SimpleNamespace(trade=None),
+    )
+    assert unavailable_stream.getvalue() == (
+        "17:31:00 TRADE EXIT trade_pnl_twd unavailable\n"
+    )
+
+
+def test_live_terminal_reporter_does_not_print_pnl_for_non_filled_exit() -> None:
+    stream = io.StringIO()
+    reporter = LiveTerminalReporter(stream, color=False)
+
+    reporter.execution(
+        ts("2026-06-18T17:30:00+08:00"),
+        SimpleNamespace(plan_type="entry"),
+        SimpleNamespace(status="filled"),
+        SimpleNamespace(trade=None),
+    )
+    reporter.execution(
+        ts("2026-06-18T17:31:00+08:00"),
+        SimpleNamespace(plan_type="exit"),
+        SimpleNamespace(status="partial_fill"),
+        SimpleNamespace(trade=None),
+    )
+
+    assert stream.getvalue() == ""
 
 
 def test_live_terminal_reporter_compacts_action_reason_and_supports_color() -> None:

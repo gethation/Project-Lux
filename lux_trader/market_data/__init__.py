@@ -5,6 +5,8 @@ from .parsing import parse_optional_float, parse_timestamp
 from .replay import CsvReplayMarketData
 from .session import (
     QFF_FORWARD_FILL_LOOKBACK,
+    build_qff_expected_session_index,
+    build_qff_expected_warmup_index,
     build_qff_session_index,
     build_qff_session_warmup_index,
     floor_minute,
@@ -26,6 +28,7 @@ from .warmup import (
     CsvQffWarmupProvider,
     WarmupBuilder,
     build_qff_warmup_source_report,
+    validate_qff_warmup_report,
 )
 
 __all__ = [
@@ -37,6 +40,8 @@ __all__ = [
     "MinuteBuildResult",
     "OhlcvProvider",
     "QFF_FORWARD_FILL_LOOKBACK",
+    "build_qff_expected_session_index",
+    "build_qff_expected_warmup_index",
     "QffContractCandidate",
     "QffWarmupProvider",
     "QffWarmupSourceReport",
@@ -45,6 +50,7 @@ __all__ = [
     "build_qff_session_index",
     "build_qff_session_warmup_index",
     "build_qff_warmup_source_report",
+    "validate_qff_warmup_report",
     "floor_minute",
     "parse_optional_float",
     "parse_timestamp",

@@ -318,6 +318,14 @@ class LiveRuntime:
                 # Broker accounting endpoints can be unavailable during the
                 # post-session settlement window. Defer due checks until the
                 # first trading iteration instead of querying while closed.
+                if qff_books_torn_down_for_non_trading:
+                    notify_trading_session = getattr(
+                        self.reporter,
+                        "trading_session",
+                        None,
+                    )
+                    if callable(notify_trading_session):
+                        notify_trading_session(observed_at)
                 margin_monitor.maybe_run(
                     observed_at,
                     strategy_state=strategy.state,

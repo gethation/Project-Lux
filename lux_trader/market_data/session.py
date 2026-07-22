@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 import re
 from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
 
-from ..core.calendar import in_day_session, in_night_session, session_start_date
+from ..core.calendar import (
+    in_day_session,
+    in_night_session,
+    is_live_business_day,
+    session_start_date,
+)
 from ..core.contracts import parse_contract_expiry, row_get, row_to_dict
 from ..core.time import TAIPEI_TZ, ensure_taipei
 from .normalization import close_series
@@ -126,6 +132,63 @@ def build_qff_session_warmup_index(
     return pd.DatetimeIndex(session_index[-count:])
 
 
+def build_qff_expected_session_index(
+    *,
+    start: datetime,
+    end: datetime,
+    closed_dates: Iterable[date] = (),
+) -> pd.DatetimeIndex:
+    """Return every QFF trading minute required by the live calendar.
+
+    Unlike :func:`build_qff_session_index`, this index is anchored to the
+    requested time range rather than inferred from whatever rows a provider
+    happened to return.  A wholly missing current day/night session therefore
+    remains visible to warmup freshness checks instead of disappearing.
+    """
+    start_ts = pd.Timestamp(floor_minute(start))
+    end_ts = pd.Timestamp(floor_minute(end))
+    if end_ts < start_ts:
+        return pd.DatetimeIndex([], tz=TAIPEI_TZ)
+
+    closed = set(closed_dates)
+    candidates = pd.date_range(start_ts, end_ts, freq="min")
+    expected: list[pd.Timestamp] = []
+    for timestamp in candidates:
+        value = timestamp.to_pydatetime()
+        if value.date() in closed:
+            continue
+        if in_day_session(value):
+            trading_date = value.date()
+        elif in_night_session(value):
+            trading_date = session_start_date(value)
+        else:
+            continue
+        if is_live_business_day(trading_date, closed):
+            expected.append(timestamp)
+    return pd.DatetimeIndex(expected)
+
+
+def build_qff_expected_warmup_index(
+    *,
+    start: datetime,
+    end: datetime,
+    count: int,
+    closed_dates: Iterable[date] = (),
+) -> tuple[pd.DatetimeIndex, pd.DatetimeIndex]:
+    """Return ``(last_count_minutes, full_fill_index)`` for live warmup."""
+    session_index = build_qff_expected_session_index(
+        start=start,
+        end=end,
+        closed_dates=closed_dates,
+    )
+    if len(session_index) < count:
+        raise RuntimeError(
+            "QFF expected-session warmup has only "
+            f"{len(session_index)} bars, need {count}"
+        )
+    return pd.DatetimeIndex(session_index[-count:]), session_index
+
+
 def prioritized_qff_close_frame(
     frames: list[tuple[str, pd.DataFrame]],
 ) -> pd.DataFrame:
@@ -225,6 +288,8 @@ __all__ = [
     "QFF_FORWARD_FILL_LOOKBACK",
     "build_qff_session_index",
     "build_qff_session_warmup_index",
+    "build_qff_expected_session_index",
+    "build_qff_expected_warmup_index",
     "floor_minute",
     "parse_optional_float",
     "parse_timestamp",

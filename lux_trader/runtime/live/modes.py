@@ -410,6 +410,8 @@ class LiveExecuteModeHandler(LiveModeHandler):
         self.readonly_brokers = readonly_brokers
         self.post_trade_reconciler = post_trade_reconciler
         self.coordinator: RealExecutionCoordinator | None = None
+        self.reconciliation_entry_blocked = False
+        self._last_reconciliation_requires_pause = False
 
     def validate_config(self, config: AppConfig) -> None:
         report = evaluate_live_execution_gate(
@@ -526,12 +528,64 @@ class LiveExecuteModeHandler(LiveModeHandler):
             },
         )
         if matched:
+            self.reconciliation_entry_blocked = False
             reporter.event(timestamp, "resume_reconciliation", "matched")
             return
+        issue_types = {issue.issue_type for issue in report.issues}
+        if issue_types and issue_types <= {"recorded_fill_position_mismatch"}:
+            reporter.warn(
+                timestamp,
+                "resume_reconciliation",
+                "ledger_only_no_pause",
+            )
+            return
+        if "broker_fetch_failed" in issue_types:
+            self.reconciliation_entry_blocked = True
+            reporter.warn(
+                timestamp,
+                "resume_reconciliation",
+                "unavailable_entry_gate_closed",
+            )
+            return
+        first_signature = broker_mismatch_signature(report)
+        if first_signature:
+            self._restart_fubon_readonly_worker()
+            time.sleep(1.0)
+            confirmed = self.post_trade_reconciler.reconcile(
+                store=store,
+                strategy_state=state,
+                brokers=self.readonly_brokers,
+                tsm_symbol=self.config.live.binance_symbol,
+                qff_symbol=state.trading_qff_symbol or qff_symbol,
+                timestamp=timestamp,
+            )
+            confirmed_run_id = store.record_reconciliation_report(confirmed)
+            store.record_event(
+                row_index,
+                timestamp,
+                "resume_reconciliation_confirmation",
+                f"resume reconciliation confirmation={confirmed.status.value}",
+                {
+                    "run_id": confirmed_run_id,
+                    "status": confirmed.status.value,
+                    "issue_count": len(confirmed.issues),
+                },
+            )
+            if broker_mismatch_signature(confirmed) != first_signature:
+                self.reconciliation_entry_blocked = (
+                    "broker_fetch_failed"
+                    in {issue.issue_type for issue in confirmed.issues}
+                )
+                reporter.warn(
+                    timestamp,
+                    "resume_reconciliation",
+                    "mismatch_not_confirmed",
+                )
+                return
         state.state = StrategyState.PAUSED
         store.save_state(row_index, timestamp, state, indicator)
         reporter.warn(timestamp, "resume_reconciliation", report.status.value)
-        reporter.event(timestamp, "resume_reconciliation", "paused")
+        reporter.event(timestamp, "resume_reconciliation", "paused_confirmed")
         notify_operational_error(
             reporter,
             timestamp,
@@ -594,15 +648,18 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 {"qff_symbol": qff_symbol, "qff_expiry": qff_expiry},
             )
         elif strategy.state.state == StrategyState.ENTRY_PENDING:
-            result, plan, outcome = execute_live_entry(
-                strategy,
-                self.coordinator,
-                bar,
-                decision_snapshot,
-                decision_spread_type,
-                quote_set,
-                self.config.live_execution.max_plan_age_seconds,
-            )
+            if self.reconciliation_entry_blocked:
+                result = cancel_entry_for_reconciliation_gate(strategy, bar)
+            else:
+                result, plan, outcome = execute_live_entry(
+                    strategy,
+                    self.coordinator,
+                    bar,
+                    decision_snapshot,
+                    decision_spread_type,
+                    quote_set,
+                    self.config.live_execution.max_plan_age_seconds,
+                )
         elif strategy.state.state == StrategyState.EXIT_PENDING:
             result, plan, outcome = execute_live_exit(
                 strategy,
@@ -622,15 +679,18 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 and strategy.state.state == StrategyState.ENTRY_PENDING
             ):
                 record_live_signal_event(store, reporter, bar, strategy, result)
-                result, plan, outcome = execute_live_entry(
-                    strategy,
-                    self.coordinator,
-                    bar,
-                    decision_snapshot,
-                    decision_spread_type,
-                    quote_set,
-                    self.config.live_execution.max_plan_age_seconds,
-                )
+                if self.reconciliation_entry_blocked:
+                    result = cancel_entry_for_reconciliation_gate(strategy, bar)
+                else:
+                    result, plan, outcome = execute_live_entry(
+                        strategy,
+                        self.coordinator,
+                        bar,
+                        decision_snapshot,
+                        decision_spread_type,
+                        quote_set,
+                        self.config.live_execution.max_plan_age_seconds,
+                    )
             elif (
                 result.action == StrategyAction.EXIT_SIGNAL
                 and strategy.state.state == StrategyState.EXIT_PENDING
@@ -697,7 +757,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 bar=bar,
                 qff_symbol=qff_symbol,
             )
-            if post_report.status != ReconciliationStatus.MATCHED:
+            if self._last_reconciliation_requires_pause:
                 strategy.state.state = StrategyState.PAUSED
                 result.action = StrategyAction.LIVE_EXECUTION
                 result.reason = "post_trade_reconciliation_mismatch"
@@ -722,6 +782,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
     ) -> ReconciliationReport:
         if self.post_trade_reconciler is None or self.readonly_brokers is None:
             raise RuntimeError("post-trade reconciliation is not initialized")
+        self._last_reconciliation_requires_pause = False
         report = self.post_trade_reconciler.reconcile(
             store=store,
             strategy_state=strategy.state,
@@ -730,45 +791,109 @@ class LiveExecuteModeHandler(LiveModeHandler):
             qff_symbol=strategy.state.trading_qff_symbol or qff_symbol,
             timestamp=bar.timestamp,
         )
+        self._record_post_trade_reconciliation(store, bar, report)
+        if report.status == ReconciliationStatus.MATCHED:
+            self.reconciliation_entry_blocked = False
+            reporter.event(bar.timestamp, "post_trade_reconciliation", "matched")
+            return report
+
+        issue_types = {issue.issue_type for issue in report.issues}
+        if issue_types and issue_types <= {"recorded_fill_position_mismatch"}:
+            # The broker pair is correct; this is an audit-ledger problem, not
+            # live exposure.  Preserve the position and route it for repair.
+            reporter.warn(
+                bar.timestamp,
+                "recorded_fill_position_mismatch",
+                "ledger_only_no_pause",
+            )
+            reporter.event(
+                bar.timestamp,
+                "post_trade_reconciliation",
+                "ledger_warning",
+            )
+            return report
+
+        if "broker_fetch_failed" in issue_types:
+            self.reconciliation_entry_blocked = True
+            reporter.warn(
+                bar.timestamp,
+                "post_trade_reconciliation",
+                "unavailable_entry_gate_closed",
+            )
+            return report
+
+        first_signature = broker_mismatch_signature(report)
+        if first_signature:
+            reporter.warn(
+                bar.timestamp,
+                "post_trade_reconciliation",
+                "mismatch_pending_confirmation",
+            )
+            self._restart_fubon_readonly_worker()
+            time.sleep(1.0)
+            confirmed = self.post_trade_reconciler.reconcile(
+                store=store,
+                strategy_state=strategy.state,
+                brokers=self.readonly_brokers,
+                tsm_symbol=self.config.live.binance_symbol,
+                qff_symbol=strategy.state.trading_qff_symbol or qff_symbol,
+                timestamp=bar.timestamp,
+            )
+            self._record_post_trade_reconciliation(store, bar, confirmed)
+            confirmed_signature = broker_mismatch_signature(confirmed)
+            self._last_reconciliation_requires_pause = (
+                confirmed_signature == first_signature
+            )
+            if self._last_reconciliation_requires_pause:
+                reporter.event(
+                    bar.timestamp,
+                    "post_trade_reconciliation",
+                    "paused_confirmed_mismatch",
+                )
+                notify_operational_error(
+                    reporter,
+                    bar.timestamp,
+                    "post_trade_reconciliation_mismatch",
+                    confirmed.status.value,
+                )
+            elif "broker_fetch_failed" in {
+                issue.issue_type for issue in confirmed.issues
+            }:
+                self.reconciliation_entry_blocked = True
+            else:
+                self.reconciliation_entry_blocked = False
+            return confirmed
+
+        return report
+
+    def _record_post_trade_reconciliation(
+        self,
+        store: SQLiteStore,
+        bar: MarketBar,
+        report: ReconciliationReport,
+    ) -> int:
         run_id = store.record_reconciliation_report(report)
-        report_payload = report.to_jsonable()
-        event_type = (
-            "post_trade_reconciliation_matched"
-            if report.status == ReconciliationStatus.MATCHED
-            else "post_trade_reconciliation_mismatch"
-        )
         store.record_event(
             bar.row_index,
             bar.timestamp,
-            event_type,
+            "post_trade_reconciliation_matched"
+            if report.status == ReconciliationStatus.MATCHED
+            else "post_trade_reconciliation_mismatch",
             f"post-trade reconciliation status={report.status.value}",
             {
                 "run_id": run_id,
                 "status": report.status.value,
                 "issue_count": len(report.issues),
-                "issues": report_payload["issues"],
+                "issues": report.to_jsonable()["issues"],
             },
         )
-        if report.status == ReconciliationStatus.MATCHED:
-            reporter.event(bar.timestamp, "post_trade_reconciliation", "matched")
-        else:
-            reporter.warn(
-                bar.timestamp,
-                "post_trade_reconciliation",
-                report.status.value,
-            )
-            reporter.event(
-                bar.timestamp,
-                "post_trade_reconciliation",
-                "paused",
-            )
-            notify_operational_error(
-                reporter,
-                bar.timestamp,
-                "post_trade_reconciliation_mismatch",
-                report.status.value,
-            )
-        return report
+        return run_id
+
+    def _restart_fubon_readonly_worker(self) -> None:
+        for broker in self.readonly_brokers or ():
+            restart = getattr(broker, "restart_worker", None)
+            if callable(restart):
+                restart()
 
 
 def execute_dry_run_entry(
@@ -1252,4 +1377,43 @@ def clear_entry_candidate(state: StrategyRuntimeState) -> None:
     state.candidate_idx = -1
     state.candidate_time = None
     state.candidate_zscore = None
+
+
+def cancel_entry_for_reconciliation_gate(
+    strategy: PairStrategy,
+    bar: MarketBar,
+) -> Any:
+    clear_entry_candidate(strategy.state)
+    strategy.state.state = StrategyState.FLAT
+    return strategy.mark_to_market_result(
+        action=StrategyAction.ENTRY_CANCEL,
+        reason="reconciliation_entry_gate_closed",
+        bar=bar,
+    )
+
+
+def broker_mismatch_signature(
+    report: ReconciliationReport,
+) -> tuple[tuple[Any, ...], ...]:
+    """Stable signature for exposure/open-order issues only.
+
+    Ledger drift and snapshot transport failures are intentionally excluded:
+    neither is proof that the live broker position is wrong.
+    """
+
+    ignored = {"recorded_fill_position_mismatch", "broker_fetch_failed"}
+    rows = []
+    for issue in report.issues:
+        if issue.issue_type in ignored:
+            continue
+        rows.append(
+            (
+                issue.issue_type,
+                issue.broker.value,
+                issue.symbol,
+                issue.expected_quantity,
+                issue.actual_quantity,
+            )
+        )
+    return tuple(sorted(rows, key=repr))
 

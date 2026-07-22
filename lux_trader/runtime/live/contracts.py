@@ -318,7 +318,13 @@ def switch_to_contract(
         seed_bars[-1].timestamp,
         "warmup_rebuilt_for_new_contract",
         "warmup rebuilt for QFF contract",
-        {"qff_symbol": contract.symbol, "qff_expiry": contract.expiry},
+        {
+            "qff_symbol": contract.symbol,
+            "qff_expiry": contract.expiry,
+            "start_timestamp": seed_bars[0].timestamp.isoformat(),
+            "end_timestamp": seed_bars[-1].timestamp.isoformat(),
+            "requested_end": end.isoformat(),
+        },
     )
     return contract.symbol, contract.expiry, indicator, seed_bars
 

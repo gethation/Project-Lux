@@ -36,6 +36,7 @@ from .terminal_ui import (
     format_time,
     state_value,
 )
+from .trade_pnl import format_trade_pnl_values, format_twd, trade_pnl_from_execution
 
 
 STATE_STYLES = {
@@ -194,6 +195,31 @@ class DashboardReporter:
 
     def error(self, timestamp: Any, message: str) -> None:
         self._log("ERR", timestamp, message, "", "bold red")
+        self._refresh()
+
+    def execution(
+        self,
+        timestamp: Any,
+        plan: Any,
+        outcome: Any,
+        result: Any,
+    ) -> None:
+        summary = trade_pnl_from_execution(plan, outcome, result)
+        if summary is None:
+            return
+        stamp = format_time(timestamp, with_seconds=True)
+        line = Text()
+        line.append(f"{stamp} ", style="dim")
+        line.append("TRADE EXIT", style="magenta")
+        values = format_trade_pnl_values(summary)
+        if values is None:
+            line.append(" trade_pnl_twd unavailable", style="yellow")
+        else:
+            net_text = f"net={format_twd(summary.net_pnl_twd)}"
+            net_style = "green" if float(summary.net_pnl_twd or 0.0) >= 0 else "red"
+            line.append(f" {net_text}", style=net_style)
+            line.append(f" {values.split(' ', 1)[1]} TWD", style="dim")
+        self.state.activity.append(line)
         self._refresh()
 
     def finish(self) -> None:

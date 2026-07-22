@@ -90,6 +90,8 @@ class FubonFillWaitResult:
     order_reports: tuple[dict[str, Any], ...] = ()
     stream_unreliable: bool = False
     wait_elapsed_seconds: float | None = None
+    matched_order_result: bool = False
+    stale_order_results: tuple[dict[str, Any], ...] = ()
 
 
 class FubonFutureExecutionAdapter:
@@ -108,6 +110,8 @@ class FubonFutureExecutionAdapter:
         sleep: Callable[[float], None] | None = None,
         max_poll_seconds: float = 10.0,
         poll_interval_seconds: float = 0.5,
+        callback_grace_seconds: float = 0.5,
+        order_match_time_window_seconds: float | None = 120.0,
         unblock: bool = False,
     ) -> None:
         self.symbol = str(symbol).strip()
@@ -124,6 +128,12 @@ class FubonFutureExecutionAdapter:
         self.sleep = sleep or time.sleep
         self.max_poll_seconds = float(max_poll_seconds)
         self.poll_interval_seconds = float(poll_interval_seconds)
+        self.callback_grace_seconds = float(callback_grace_seconds)
+        self.order_match_time_window_seconds = (
+            float(order_match_time_window_seconds)
+            if order_match_time_window_seconds is not None
+            else None
+        )
         self.unblock = bool(unblock)
         self.fill_listener: FubonFillReportListener | None = None
         self.session_generation = 0
@@ -241,21 +251,18 @@ class FubonFutureExecutionAdapter:
             order_keys=order_keys,
             place_row=place_row,
             waiter=waiter,
+            submit_started_at=submit_started_at,
         )
         requested_lot = int(float(leg.quantity))
         callback_confirmed_full = (
             wait_result.callback_filled_lot >= float(requested_lot) - 1e-12
         )
         position_delta = None
-        if (
-            position_before is not None
-            and not callback_confirmed_full
-            and not order_row_is_filled(
-                wait_result.final_row,
-                place_row,
-                requested=requested_lot,
-            )
-        ):
+        # A polled order row is supporting evidence only.  Whenever the
+        # callback did not confirm the complete fill, require an independent
+        # position delta even if get_order_results claims the order is filled.
+        # This prevents a stale terminal row from becoming the trade truth.
+        if position_before is not None and not callback_confirmed_full:
             position_after, position_after_errors = self._safe_fetch_position_quantity(
                 stage="after_order"
             )
@@ -284,6 +291,8 @@ class FubonFutureExecutionAdapter:
             order_reports=wait_result.order_reports,
             stream_unreliable=wait_result.stream_unreliable,
             wait_elapsed_seconds=wait_result.wait_elapsed_seconds,
+            matched_order_result=wait_result.matched_order_result,
+            stale_order_results=wait_result.stale_order_results,
         )
 
     def fetch_open_orders(self) -> tuple[dict[str, Any], ...]:
@@ -493,6 +502,7 @@ class FubonFutureExecutionAdapter:
         order_keys: tuple[str, ...],
         place_row: Any,
         waiter: "FillWaiter | None",
+        submit_started_at: datetime,
     ) -> FubonFillWaitResult:
         """Callback-first fill confirmation with polling as the backup channel.
 
@@ -513,6 +523,8 @@ class FubonFutureExecutionAdapter:
         market_type = self._build_order(plan, leg).market_type
         best_row = fubon_raw_row(place_row)
         errors: list[dict[str, Any]] = []
+        stale_order_results: list[dict[str, Any]] = []
+        matched_order_result = False
         started_at = time.monotonic()
 
         def waiter_result(row: dict[str, Any]) -> FubonFillWaitResult:
@@ -537,7 +549,18 @@ class FubonFutureExecutionAdapter:
                     else False
                 ),
                 wait_elapsed_seconds=time.monotonic() - started_at,
+                matched_order_result=matched_order_result,
+                stale_order_results=tuple(stale_order_results),
             )
+
+        # Give the primary callback channel one short exclusive opportunity
+        # before issuing the first history query.  Real fills commonly arrive
+        # within milliseconds of place_order returning.
+        if waiter is not None and self.callback_grace_seconds > 0:
+            if waiter.filled_lots < requested - 1e-12:
+                waiter.wait(self.callback_grace_seconds)
+            if waiter.filled_lots >= requested - 1e-12:
+                return waiter_result(best_row)
 
         attempt = 0
         while attempt < attempts:
@@ -566,9 +589,15 @@ class FubonFutureExecutionAdapter:
                     }
                 )
                 rows = []
-            matched = self._match_order_row(rows, order_keys, leg)
+            matched = self._match_order_row(
+                rows,
+                order_keys,
+                leg,
+                submit_started_at=submit_started_at,
+            )
             if matched is not None:
                 best_row = matched
+                matched_order_result = True
                 if is_fubon_final_order(best_row):
                     return waiter_result(best_row)
                 status = normalized_fubon_status(fubon_status_text(best_row))
@@ -576,6 +605,18 @@ class FubonFutureExecutionAdapter:
                     # Official status 9 = TimeOut: the broker asks clients to
                     # re-query; do so immediately without burning the interval.
                     continue
+            elif order_keys:
+                for row in rows:
+                    raw = fubon_raw_row(row)
+                    if not self.identity.matches(
+                        raw,
+                        side=leg.side,
+                        lot=leg.quantity,
+                    ):
+                        continue
+                    safe = safe_jsonable(raw) or {}
+                    if safe not in stale_order_results:
+                        stale_order_results.append(safe)
             if attempt < attempts and self.poll_interval_seconds > 0:
                 if waiter is not None:
                     waiter.wait(self.poll_interval_seconds)
@@ -588,6 +629,8 @@ class FubonFutureExecutionAdapter:
         rows: list[Any],
         order_keys: tuple[str, ...],
         leg: ExecutionLeg,
+        *,
+        submit_started_at: datetime | None = None,
     ) -> dict[str, Any] | None:
         candidates = [fubon_raw_row(row) for row in rows]
         if order_keys:
@@ -599,6 +642,24 @@ class FubonFutureExecutionAdapter:
                     if key
                 }
                 if known_keys.intersection(candidate_keys):
+                    observed_at = fubon_order_timestamp(
+                        row,
+                        timezone=(
+                            submit_started_at.tzinfo
+                            if submit_started_at is not None
+                            else None
+                        ),
+                    )
+                    if (
+                        observed_at is not None
+                        and submit_started_at is not None
+                        and self.order_match_time_window_seconds is not None
+                        and abs(
+                            (observed_at - submit_started_at).total_seconds()
+                        )
+                        > self.order_match_time_window_seconds
+                    ):
+                        continue
                     return row
             # ``place_order`` gave us a broker identifier, so a row with only
             # the same contract/side/lot is not evidence that it is this
@@ -634,36 +695,53 @@ class FubonFutureExecutionAdapter:
         order_reports: tuple[dict[str, Any], ...] = (),
         stream_unreliable: bool = False,
         wait_elapsed_seconds: float | None = None,
+        matched_order_result: bool = False,
+        stale_order_results: tuple[dict[str, Any], ...] = (),
     ) -> ExecutionOutcome:
         place_raw = fubon_raw_row(place_row)
-        order_id = fubon_order_id(final_row) or fubon_order_id(place_raw) or "UNKNOWN"
+        attempt_id = fubon_attempt_id(plan)
+        order_id = attempt_id
         requested = int(float(leg.quantity))
-        filled_lot = fubon_filled_lot(final_row)
-        if filled_lot is None:
-            filled_lot = fubon_filled_lot(place_raw)
-        filled_lot = float(filled_lot or 0.0)
-        fill_source = "order_result" if filled_lot > 0 else None
-        if callback_filled_lot > filled_lot + 1e-12:
-            filled_lot = float(callback_filled_lot)
-            fill_source = "filled_callback"
+        filled_lot = float(callback_filled_lot or 0.0)
+        fill_source = "filled_callback" if filled_lot > 0 else None
         position_delta_fill_lot = 0.0
         if position_delta is not None:
             position_delta_fill_lot = float(
                 position_delta.get("confirmed_fill_lot") or 0.0
             )
-        if position_delta_fill_lot > filled_lot + 1e-12:
+        if (
+            callback_filled_lot < float(requested) - 1e-12
+            and position_delta_fill_lot > filled_lot + 1e-12
+        ):
             filled_lot = position_delta_fill_lot
             fill_source = "position_delta"
-        average_price = (
-            (callback_avg_price if fill_source == "filled_callback" else None)
-            or fubon_average_price(final_row)
-            or fubon_average_price(place_raw)
+        exact_query_price = (
+            fubon_average_price(final_row)
             or fubon_filled_money_price(final_row, filled_lot)
-            or fubon_filled_money_price(place_raw, filled_lot)
+            if matched_order_result
+            else None
+        )
+        average_price = (
+            callback_avg_price
+            or exact_query_price
             or leg.expected_price
             or leg.price
         )
-        status_text = fubon_status_text(final_row) or fubon_status_text(place_raw)
+        price_quality = (
+            "actual"
+            if callback_avg_price is not None or exact_query_price is not None
+            else "estimated"
+        )
+        final_status_text = fubon_status_text(final_row)
+        status_text = (
+            final_status_text
+            if (
+                matched_order_result
+                or normalized_fubon_status(final_status_text)
+                in FUBON_FAILED_STATUS_CODES
+            )
+            else ""
+        ) or fubon_status_text(place_raw)
         outcome_status = map_fubon_order_status(
             status_text=status_text,
             requested=float(requested),
@@ -715,6 +793,7 @@ class FubonFutureExecutionAdapter:
             recommended_state=recommended_state,
             payload={
                 "adapter": "fubon_future_execution",
+                "attempt_id": attempt_id,
                 "symbol": self.symbol,
                 "side": leg.side.value,
                 "submit_started_at": submit_started_at,
@@ -722,7 +801,9 @@ class FubonFutureExecutionAdapter:
                 "requested_lot": requested,
                 "filled_lot": filled_lot,
                 "fill_source": fill_source,
+                "confirmation_source": fill_source,
                 "average_price": average_price,
+                "fill_price_quality": price_quality,
                 "status": status_text,
                 "seq_no": fubon_first_text(final_row, "seq_no", "seqNo"),
                 "order_no": fubon_first_text(
@@ -745,6 +826,8 @@ class FubonFutureExecutionAdapter:
                 "position_errors": tuple(position_errors),
                 "place_result": safe_jsonable(place_raw),
                 "final_order": safe_jsonable(final_row),
+                "matched_order_result": matched_order_result,
+                "stale_order_results": tuple(stale_order_results),
                 "fill_events": tuple(fill_events),
                 "order_reports": tuple(order_reports),
                 "callback_filled_lot": callback_filled_lot,
@@ -928,6 +1011,14 @@ def signed_fubon_lot_delta(side: OrderSide, quantity: float) -> float:
 
 
 def fubon_attempt_id(plan: PairExecutionPlan) -> str:
+    """Return the canonical local identity for one Fubon execution attempt.
+
+    Broker identifiers are aliases only: Fubon history/callback rows have
+    proven that they can be stale or repeated.  The leg plan id is already
+    unique for primary and emergency-close attempts and is deterministic
+    across persistence/replay.
+    """
+
     return f"LUX-FUBON-{plan.plan_id}"
 
 
@@ -980,6 +1071,32 @@ def fubon_status_text(row: Any) -> str:
         fubon_first_text(raw, "status", "order_status", "orderStatus", "state")
         or ""
     )
+
+
+def fubon_order_timestamp(
+    row: Any,
+    *,
+    timezone: Any = None,
+) -> datetime | None:
+    raw = row_to_dict(row)
+    date_text = fubon_first_text(raw, "date", "order_date", "orderDate")
+    time_text = fubon_first_text(
+        raw,
+        "last_time",
+        "lastTime",
+        "time",
+        "order_time",
+        "orderTime",
+    )
+    if not date_text or not time_text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(
+            f"{date_text.replace('/', '-')}T{time_text}"
+        )
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone) if timezone is not None else parsed
 
 
 

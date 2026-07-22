@@ -791,6 +791,118 @@ def test_live_execute_post_trade_reconciliation_match_keeps_open_state(tmp_path)
         store.close()
 
 
+def test_live_execute_ledger_only_mismatch_does_not_pause(tmp_path) -> None:
+    class MissingFillStore(SQLiteStore):
+        def record_fill(self, fill) -> None:
+            # Simulate the historical Fubon ledger-loss incident while broker
+            # positions and strategy state remain correct.
+            return None
+
+    config = make_app_config(tmp_path)
+    store = MissingFillStore(config.store_path)
+    strategy = entry_pending_strategy(tmp_path)
+    strategy.state.trading_qff_symbol = SYMBOL_QFF
+    handler = LiveExecuteModeHandler(
+        config,
+        fubon_adapter=FakeExecutionAdapter(
+            BrokerName.FUBON_QFF,
+            [{"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 10.0}],
+        ),
+        binance_adapter=FakeExecutionAdapter(
+            BrokerName.BINANCE_TSM,
+            [{"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 909.0}],
+        ),
+        readonly_brokers=(
+            StrategyReadOnlyBroker(BrokerName.FUBON_QFF, strategy),
+            StrategyReadOnlyBroker(BrokerName.BINANCE_TSM, strategy),
+        ),
+    )
+    try:
+        store.initialize()
+        handler.on_runtime_ready(store, qff_symbol=SYMBOL_QFF, qff_expiry=None)
+
+        mode_result = handler.handle_bar(
+            config=config,
+            store=store,
+            reporter=NullLiveReporter(),
+            strategy=strategy,
+            bar=live_bar(),
+            decision_snapshot=live_snapshot(),
+            decision_spread_type="shortSpread",
+            quote_set=None,
+            force_exit_reason=None,
+            qff_symbol=SYMBOL_QFF,
+            qff_expiry=None,
+        )
+
+        report = store.load_latest_reconciliation_report()
+        assert mode_result.result.action == StrategyAction.ENTRY_FILL
+        assert strategy.state.state == StrategyState.OPEN
+        assert handler._last_reconciliation_requires_pause is False
+        assert report is not None
+        assert {
+            issue.issue_type for issue in report.issues
+        } == {"recorded_fill_position_mismatch"}
+    finally:
+        handler.close()
+        store.close()
+
+
+def test_live_execute_query_failure_closes_entry_gate_without_pausing(tmp_path) -> None:
+    class RaisingReadOnlyBroker:
+        broker = BrokerName.FUBON_QFF
+
+        def fetch_snapshot(self):
+            raise TimeoutError("Fubon snapshot timeout")
+
+        def close(self) -> None:
+            return None
+
+    config = make_app_config(tmp_path)
+    store = SQLiteStore(config.store_path)
+    strategy = entry_pending_strategy(tmp_path)
+    strategy.state.trading_qff_symbol = SYMBOL_QFF
+    handler = LiveExecuteModeHandler(
+        config,
+        fubon_adapter=FakeExecutionAdapter(
+            BrokerName.FUBON_QFF,
+            [{"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 10.0}],
+        ),
+        binance_adapter=FakeExecutionAdapter(
+            BrokerName.BINANCE_TSM,
+            [{"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 909.0}],
+        ),
+        readonly_brokers=(
+            RaisingReadOnlyBroker(),
+            StrategyReadOnlyBroker(BrokerName.BINANCE_TSM, strategy),
+        ),
+    )
+    try:
+        store.initialize()
+        handler.on_runtime_ready(store, qff_symbol=SYMBOL_QFF, qff_expiry=None)
+
+        handler.handle_bar(
+            config=config,
+            store=store,
+            reporter=NullLiveReporter(),
+            strategy=strategy,
+            bar=live_bar(),
+            decision_snapshot=live_snapshot(),
+            decision_spread_type="shortSpread",
+            quote_set=None,
+            force_exit_reason=None,
+            qff_symbol=SYMBOL_QFF,
+            qff_expiry=None,
+        )
+
+        assert strategy.state.state == StrategyState.OPEN
+        assert handler.reconciliation_entry_blocked is True
+        assert handler._last_reconciliation_requires_pause is False
+    finally:
+        handler.close()
+        store.close()
+
+
 def test_live_execute_post_trade_reconciliation_mismatch_pauses_strategy(
     tmp_path,
 ) -> None:
@@ -842,6 +954,9 @@ def test_live_execute_post_trade_reconciliation_mismatch_pauses_strategy(
             issue.issue_type == "position_quantity_mismatch"
             for issue in report.issues
         )
+        assert store.connection.execute(
+            "SELECT COUNT(*) FROM broker_reconciliation_runs"
+        ).fetchone()[0] == 2
     finally:
         handler.close()
         store.close()

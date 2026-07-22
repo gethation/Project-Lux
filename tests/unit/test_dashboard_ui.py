@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from datetime import datetime
+from types import SimpleNamespace
 
 from lux_trader.core.models import Direction, StrategyState
 from lux_trader.core.strategy import StrategyRuntimeState
@@ -107,6 +108,48 @@ def test_dashboard_tracks_session_reconciliation_and_events() -> None:
     assert state.reconciliation_time == "02:31:05"
     assert state.gate_text == "allow_live_order=false"
     assert len(state.activity) == 3
+
+
+def test_dashboard_logs_filled_exit_trade_pnl() -> None:
+    reporter, _ = make_reporter()
+    try:
+        reporter.execution(
+            ts("2026-06-18T17:30:00+08:00"),
+            SimpleNamespace(plan_type="exit"),
+            SimpleNamespace(status="filled"),
+            SimpleNamespace(
+                trade={
+                    "net_pnl_twd": -1_234.0,
+                    "gross_pnl_twd": -1_000.0,
+                    "total_fee_twd": 234.0,
+                }
+            ),
+        )
+    finally:
+        reporter.finish()
+
+    line = reporter.state.activity[-1]
+    assert str(line) == (
+        "17:30:00 TRADE EXIT net=-1,234 gross=-1,000 fees=234 TWD"
+    )
+    assert any(span.style == "red" for span in line.spans)
+
+
+def test_dashboard_marks_missing_filled_exit_trade_pnl_unavailable() -> None:
+    reporter, _ = make_reporter()
+    try:
+        reporter.execution(
+            ts("2026-06-18T17:30:00+08:00"),
+            SimpleNamespace(plan_type="exit"),
+            SimpleNamespace(status="filled"),
+            SimpleNamespace(trade={}),
+        )
+    finally:
+        reporter.finish()
+
+    assert str(reporter.state.activity[-1]).endswith(
+        "TRADE EXIT trade_pnl_twd unavailable"
+    )
 
 
 def test_dashboard_margin_panel_tracks_margin_events() -> None:
