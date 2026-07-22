@@ -240,9 +240,15 @@ class SQLiteStore:
     ) -> dict[BrokerName, float]:
         rows = self.connection.execute(
             """
-            SELECT broker,
-                   SUM(CASE WHEN side = 'buy' THEN quantity ELSE -quantity END) AS quantity
-            FROM fills
+            SELECT broker, SUM(quantity) AS quantity
+            FROM (
+                SELECT broker, symbol,
+                       CASE WHEN side = 'buy' THEN quantity ELSE -quantity END AS quantity
+                FROM fills
+                UNION ALL
+                SELECT broker, symbol, quantity
+                FROM position_adjustments
+            ) exposure_rows
             WHERE (broker = ? AND symbol = ?)
                OR (broker = ? AND symbol = ?)
             GROUP BY broker
@@ -261,6 +267,96 @@ class SQLiteStore:
         for row in rows:
             exposure[BrokerName(str(row["broker"]))] = float(row["quantity"] or 0.0)
         return exposure
+
+    def load_latest_live_run(self) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM live_runs ORDER BY run_id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def load_pending_manual_close(self) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            """
+            SELECT * FROM pending_manual_closes
+            WHERE status = 'pending'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["original_state"] = json.loads(result.pop("original_state_json"))
+        return result
+
+    def record_manual_flat_recovery(
+        self,
+        *,
+        recovery_id: str,
+        created_at: datetime,
+        row_index: int,
+        qff_symbol: str,
+        tsm_symbol: str,
+        tsm_adjustment: float,
+        qff_adjustment: float,
+        reason: str,
+        original_state: StrategyRuntimeState,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO pending_manual_closes (
+                recovery_id, created_at, settled_at, status, row_index,
+                qff_symbol, reason, original_state_json, settlement_json
+            ) VALUES (?, ?, NULL, 'pending', ?, ?, ?, ?, NULL)
+            """,
+            (
+                recovery_id,
+                timestamp_text(created_at),
+                row_index,
+                qff_symbol,
+                reason,
+                json.dumps(original_state.to_jsonable(), default=json_default),
+            ),
+        )
+        adjustments = (
+            (
+                f"{recovery_id}:BINANCE_TSM",
+                BrokerName.BINANCE_TSM.value,
+                tsm_symbol,
+                float(tsm_adjustment),
+            ),
+            (
+                f"{recovery_id}:FUBON_QFF",
+                BrokerName.FUBON_QFF.value,
+                qff_symbol,
+                float(qff_adjustment),
+            ),
+        )
+        for adjustment_id, broker, symbol, quantity in adjustments:
+            self.connection.execute(
+                """
+                INSERT INTO position_adjustments (
+                    adjustment_id, recovery_id, created_at, broker, symbol,
+                    quantity, reason, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    adjustment_id,
+                    recovery_id,
+                    timestamp_text(created_at),
+                    broker,
+                    symbol,
+                    quantity,
+                    reason,
+                    json.dumps(
+                        {
+                            "source": "external_manual_close",
+                            "price_status": "unknown",
+                            "pnl_status": "pending",
+                        }
+                    ),
+                ),
+            )
 
     def record_trade(self, trade: dict[str, Any]) -> None:
         payload = {

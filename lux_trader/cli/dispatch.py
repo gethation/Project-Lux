@@ -7,6 +7,7 @@ from .commands_execution import (
     command_live_execute,
     command_manual_close,
 )
+from .commands_recovery import command_recover_manual_flat
 from .commands_live import (
     command_clear_pause,
     command_live_dry_run,
@@ -26,6 +27,7 @@ COMMAND_HANDLERS = {
     "live-status": command_live_status,
     "reconcile-brokers": command_reconcile_brokers,
     "clear-pause": command_clear_pause,
+    "recover-manual-flat": command_recover_manual_flat,
     "warmup-live": command_warmup_live,
     "margin-check": command_margin_check,
     "live-execute": command_live_execute,

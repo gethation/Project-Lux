@@ -306,6 +306,34 @@ SQLITE_SCHEMA = r"""
                 FOREIGN KEY(plan_id) REFERENCES execution_plans(plan_id)
             );
 
+            CREATE TABLE IF NOT EXISTS pending_manual_closes (
+                recovery_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                settled_at TEXT,
+                status TEXT NOT NULL,
+                row_index INTEGER NOT NULL,
+                qff_symbol TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                original_state_json TEXT NOT NULL,
+                settlement_json TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS position_adjustments (
+                adjustment_id TEXT PRIMARY KEY,
+                recovery_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                broker TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                reason TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                UNIQUE(recovery_id, broker, symbol),
+                FOREIGN KEY(recovery_id) REFERENCES pending_manual_closes(recovery_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_position_adjustments_exposure
+            ON position_adjustments(broker, symbol);
+
             CREATE TABLE IF NOT EXISTS margin_checks (
                 check_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 checked_at TEXT NOT NULL,

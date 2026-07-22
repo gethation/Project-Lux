@@ -26,6 +26,7 @@ from lux_trader.reconciliation import (
 )
 from lux_trader.runtime.live import LiveDryRunRunner, WarmupRunner, resolve_qff_contract
 from lux_trader.store import SQLiteStore
+from lux_trader.reconciliation.post_trade import PostTradeReconciler
 from lux_trader.terminal_ui import LiveTerminalReporter, NullLiveReporter
 
 
@@ -240,16 +241,38 @@ def command_clear_pause(args: argparse.Namespace) -> int:
             state,
             readonly=bool(args.readonly),
         )
-        report = BrokerReconciler(
-            tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
-            qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
-        ).reconcile(
-            strategy_state=state,
-            brokers=brokers,
-            tsm_symbol=config.live.binance_symbol,
-            qff_symbol=helpers.reconciliation_qff_symbol(config, state),
-            timestamp=timestamp,
-        )
+        pending_manual_close = store.load_pending_manual_close()
+        if pending_manual_close is not None:
+            report = PostTradeReconciler(
+                tsm_units_tolerance=(
+                    config.broker_reconciliation.tsm_units_tolerance
+                ),
+                qff_contract_tolerance=(
+                    config.broker_reconciliation.qff_contract_tolerance
+                ),
+            ).reconcile(
+                store=store,
+                strategy_state=state,
+                brokers=brokers,
+                tsm_symbol=config.live.binance_symbol,
+                qff_symbol=helpers.reconciliation_qff_symbol(config, state),
+                timestamp=timestamp,
+            )
+        else:
+            report = BrokerReconciler(
+                tsm_units_tolerance=(
+                    config.broker_reconciliation.tsm_units_tolerance
+                ),
+                qff_contract_tolerance=(
+                    config.broker_reconciliation.qff_contract_tolerance
+                ),
+            ).reconcile(
+                strategy_state=state,
+                brokers=brokers,
+                tsm_symbol=config.live.binance_symbol,
+                qff_symbol=helpers.reconciliation_qff_symbol(config, state),
+                timestamp=timestamp,
+            )
         store.record_reconciliation_report(report)
         if report.status != ReconciliationStatus.MATCHED:
             store.commit()

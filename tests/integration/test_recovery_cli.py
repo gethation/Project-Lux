@@ -4,11 +4,22 @@ from datetime import datetime
 from pathlib import Path
 
 import lux_trader.cli.commands_live as commands_live
+import lux_trader.cli.commands_recovery as commands_recovery
 from lux_trader.cli.commands_live import command_clear_pause, command_live_status
+from lux_trader.cli.commands_recovery import command_recover_manual_flat
 from lux_trader.cli.parser import build_parser
 from lux_trader.config import load_config
 from lux_trader.core.indicator import IndicatorEngine
-from lux_trader.core.models import Direction, StrategyState
+from lux_trader.core.models import (
+    BrokerName,
+    Direction,
+    Fill,
+    OrderRequest,
+    OrderResult,
+    OrderSide,
+    OrderStatus,
+    StrategyState,
+)
 from lux_trader.core.strategy import StrategyRuntimeState
 from lux_trader.store import SQLiteStore
 
@@ -84,11 +95,71 @@ def load_persisted_state(config_path: Path) -> StrategyRuntimeState:
         store.close()
 
 
+def seed_recorded_exposure(config_path: Path) -> None:
+    config = load_config(config_path)
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        for order_id, broker, symbol, side, quantity in (
+            (
+                "entry-binance",
+                BrokerName.BINANCE_TSM,
+                config.live.binance_symbol,
+                OrderSide.SELL,
+                100.0,
+            ),
+            (
+                "entry-fubon",
+                BrokerName.FUBON_QFF,
+                "QFFG6",
+                OrderSide.BUY,
+                2.0,
+            ),
+        ):
+            request = OrderRequest(
+                broker=broker,
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                price=1.0,
+                timestamp=ts(),
+                row_index=0,
+                qff_symbol="QFFG6",
+            )
+            store.record_order(
+                OrderResult(order_id=order_id, request=request, status=OrderStatus.FILLED)
+            )
+            store.record_fill(
+                Fill(
+                    fill_id=f"fill-{order_id}",
+                    order_id=order_id,
+                    broker=broker,
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity,
+                    price=1.0,
+                    fee_twd=0.0,
+                    timestamp=ts(),
+                    row_index=0,
+                    qff_symbol="QFFG6",
+                )
+            )
+        store.commit()
+    finally:
+        store.close()
+
+
 def use_fake_brokers(monkeypatch, fake_case: str) -> None:
+    builder = make_fake_broker_builder(fake_case)
     monkeypatch.setattr(
         commands_live,
         "build_reconciliation_brokers",
-        make_fake_broker_builder(fake_case),
+        builder,
+    )
+    monkeypatch.setattr(
+        commands_recovery.helpers,
+        "build_reconciliation_brokers",
+        builder,
     )
 
 
@@ -116,6 +187,114 @@ def test_live_status_reports_paused_position(tmp_path: Path, capsys) -> None:
     assert "direction=short_tsm_long_qff" in output
     assert "qff_contracts=2" in output
     assert "ACTION: strategy is PAUSED" in output
+
+
+# --- recover-manual-flat -------------------------------------------------
+
+
+def test_recover_manual_flat_dry_run_does_not_change_state(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_state(config_path, state=StrategyState.PAUSED, with_position=True)
+    seed_recorded_exposure(config_path)
+    use_fake_brokers(monkeypatch, "matched")
+
+    args = build_parser().parse_args(
+        ["recover-manual-flat", "--config", str(config_path), "--readonly"]
+    )
+    assert command_recover_manual_flat(args) == 0
+    state = load_persisted_state(config_path)
+    assert state.state == StrategyState.PAUSED
+    assert state.tsm_units == -100.0
+    assert state.qff_contracts == 2
+    assert "Dry-run only" in capsys.readouterr().out
+
+
+def test_recover_manual_flat_apply_offsets_ledger_and_remains_paused(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_state(config_path, state=StrategyState.PAUSED, with_position=True)
+    seed_recorded_exposure(config_path)
+    use_fake_brokers(monkeypatch, "matched")
+
+    args = build_parser().parse_args(
+        [
+            "recover-manual-flat",
+            "--config",
+            str(config_path),
+            "--readonly",
+            "--apply",
+            "--reason",
+            "test_manual_close",
+        ]
+    )
+    assert command_recover_manual_flat(args) == 0
+
+    config = load_config(config_path)
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        resume = store.load_resume_state()
+        assert resume is not None
+        assert resume.strategy.state == StrategyState.PAUSED
+        assert resume.strategy.position_direction is None
+        assert resume.strategy.tsm_units == 0.0
+        assert resume.strategy.qff_contracts == 0
+        assert resume.strategy.pnl_status == "pending"
+        assert store.load_pending_manual_close() is not None
+        exposure = store.load_recorded_fill_exposure(
+            tsm_symbol=config.live.binance_symbol,
+            qff_symbol="QFFG6",
+        )
+        assert exposure[BrokerName.BINANCE_TSM] == 0.0
+        assert exposure[BrokerName.FUBON_QFF] == 0.0
+    finally:
+        store.close()
+    assert "strategy remains PAUSED" in capsys.readouterr().out
+
+
+def test_recover_then_clear_pause_reaches_flat(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_state(config_path, state=StrategyState.PAUSED, with_position=True)
+    seed_recorded_exposure(config_path)
+    use_fake_brokers(monkeypatch, "matched")
+    recover_args = build_parser().parse_args(
+        [
+            "recover-manual-flat",
+            "--config",
+            str(config_path),
+            "--readonly",
+            "--apply",
+            "--reason",
+            "test_manual_close",
+        ]
+    )
+    assert command_recover_manual_flat(recover_args) == 0
+
+    clear_args = build_parser().parse_args(
+        ["clear-pause", "--config", str(config_path), "--readonly"]
+    )
+    assert command_clear_pause(clear_args) == 0
+    state = load_persisted_state(config_path)
+    assert state.state == StrategyState.FLAT
+    assert state.pnl_status == "pending"
+
+
+def test_recover_manual_flat_refuses_nonflat_broker(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_state(config_path, state=StrategyState.PAUSED, with_position=True)
+    use_fake_brokers(monkeypatch, "mismatch")
+    args = build_parser().parse_args(
+        ["recover-manual-flat", "--config", str(config_path), "--readonly"]
+    )
+    assert command_recover_manual_flat(args) == 1
+    assert load_persisted_state(config_path).tsm_units == -100.0
 
 
 # --- clear-pause ----------------------------------------------------------

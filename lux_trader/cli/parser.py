@@ -104,6 +104,27 @@ def build_parser() -> argparse.ArgumentParser:
         "(requires LUX_READONLY_BROKER=1)",
     )
 
+    recover_manual_flat = subparsers.add_parser(
+        "recover-manual-flat",
+        help="Reconcile an externally manual-closed PAUSED position to flat "
+        "without inventing fill prices",
+    )
+    recover_manual_flat.add_argument("--config", type=Path, required=True)
+    recover_manual_flat.add_argument(
+        "--readonly",
+        action="store_true",
+        help="Verify both real brokers are flat (requires LUX_READONLY_BROKER=1)",
+    )
+    recover_manual_flat.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply the audited exposure adjustment; default is dry-run",
+    )
+    recover_manual_flat.add_argument(
+        "--reason",
+        help="Required recovery reason when --apply is used",
+    )
+
     warmup_live = subparsers.add_parser(
         "warmup-live",
         help="Seed live warmup bars (debug/acceptance tool)",

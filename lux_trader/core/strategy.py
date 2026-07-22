@@ -78,6 +78,7 @@ class StrategyRuntimeState:
     pending_symbol_switch: bool = False
     last_warmup_symbol: str | None = None
     contract_policy_state: str | None = None
+    pnl_status: str = "complete"
 
     def to_jsonable(self) -> dict[str, Any]:
         return {
@@ -116,6 +117,7 @@ class StrategyRuntimeState:
             "pending_symbol_switch": self.pending_symbol_switch,
             "last_warmup_symbol": self.last_warmup_symbol,
             "contract_policy_state": self.contract_policy_state,
+            "pnl_status": self.pnl_status,
         }
 
     @staticmethod
@@ -161,6 +163,7 @@ class StrategyRuntimeState:
         state.pending_symbol_switch = bool(payload.get("pending_symbol_switch", False))
         state.last_warmup_symbol = payload.get("last_warmup_symbol")
         state.contract_policy_state = payload.get("contract_policy_state")
+        state.pnl_status = str(payload.get("pnl_status", "complete"))
         return state
 
 
