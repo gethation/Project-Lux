@@ -196,6 +196,7 @@ class NtfyLiveReporter:
         self.mode = mode
         self.mode_label = "LIVE" if mode == "live-execute" else "DRY-RUN"
         self.publisher = publisher or NtfyPublisher(config)
+        self._pnl_pending_notified = False
 
     def live(self, *args: Any, **kwargs: Any) -> None:
         self.base.live(*args, **kwargs)
@@ -232,6 +233,23 @@ class NtfyLiveReporter:
             reason,
             account_display,
         )
+        if (
+            getattr(strategy_state, "pnl_status", "complete") != "complete"
+            and not self._pnl_pending_notified
+        ):
+            self._pnl_pending_notified = True
+            self.publisher.publish(
+                NtfyMessage(
+                    topic=self.config.status_topic,
+                    title=f"[{self.mode_label}] realized PnL pending",
+                    message=(
+                        f"{format_timestamp(timestamp)} realized_pnl excludes "
+                        "externally manual-closed trade"
+                    ),
+                    priority=ALERT_PRIORITY,
+                    tags=("warning",),
+                )
+            )
 
     @ntfy_best_effort
     def _publish_status(

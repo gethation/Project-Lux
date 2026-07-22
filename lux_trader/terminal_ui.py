@@ -213,6 +213,11 @@ class LiveTerminalReporter:
         state_text = state_value(strategy_state)
         action_text = compact_action(action, reason)
         pnl_text = f"pnl={account_pnl_text(account_display)}"
+        pnl_status_text = (
+            "realized_pnl=PENDING"
+            if getattr(strategy_state, "pnl_status", "complete") != "complete"
+            else ""
+        )
         margin_text = account_margin_text(account_display)
         short_text = format_spread_block(
             "shortSpread",
@@ -226,7 +231,8 @@ class LiveTerminalReporter:
         )
         plain = (
             f"{time_text} BAR  {mid_text} {mid_z_text} {short_text} {long_text} "
-            f"{state_text} {action_text} {pnl_text} {margin_text}"
+            f"{state_text} {action_text} {pnl_text} "
+            f"{pnl_status_text + ' ' if pnl_status_text else ''}{margin_text}"
         )
         colored = " ".join(
             [
@@ -239,6 +245,7 @@ class LiveTerminalReporter:
                 self._paint_state(state_text),
                 self._paint_action(action_text, action),
                 pnl_text,
+                *([pnl_status_text] if pnl_status_text else []),
                 margin_text,
             ]
         )

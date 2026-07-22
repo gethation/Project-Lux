@@ -769,6 +769,50 @@ class SQLiteStore:
     def record_execution_outcome(self, outcome: Any) -> int:
         return ExecutionStore(self.connection).record_outcome(outcome)
 
+    def record_fubon_session_health(
+        self,
+        *,
+        observed_at: datetime,
+        health: dict[str, Any],
+    ) -> int:
+        cursor = self.connection.execute(
+            """
+            INSERT INTO fubon_session_events (
+                observed_at, role, generation, worker_pid, status,
+                last_login_at, last_success_at, relogin_count,
+                invalid_reason, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                timestamp_text(observed_at),
+                str(health.get("role") or "trading"),
+                int(health.get("generation") or 0),
+                health.get("worker_pid"),
+                str(health.get("status") or "unknown"),
+                timestamp_text(health["last_login_at"])
+                if isinstance(health.get("last_login_at"), datetime)
+                else health.get("last_login_at"),
+                timestamp_text(health["last_success_at"])
+                if isinstance(health.get("last_success_at"), datetime)
+                else health.get("last_success_at"),
+                int(health.get("relogin_count") or 0),
+                health.get("invalid_reason"),
+                json.dumps(health, default=json_default),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    def load_latest_fubon_session_health(self) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            """
+            SELECT * FROM fubon_session_events
+            WHERE role = 'trading'
+            ORDER BY session_event_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def load_latest_execution_simulation_payload(self) -> dict[str, Any] | None:
         return ExecutionStore(self.connection).load_latest_simulation_payload()
 

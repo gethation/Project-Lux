@@ -334,6 +334,23 @@ SQLITE_SCHEMA = r"""
             CREATE INDEX IF NOT EXISTS idx_position_adjustments_exposure
             ON position_adjustments(broker, symbol);
 
+            CREATE TABLE IF NOT EXISTS fubon_session_events (
+                session_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observed_at TEXT NOT NULL,
+                role TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                worker_pid INTEGER,
+                status TEXT NOT NULL,
+                last_login_at TEXT,
+                last_success_at TEXT,
+                relogin_count INTEGER NOT NULL,
+                invalid_reason TEXT,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_fubon_session_events_latest
+            ON fubon_session_events(role, session_event_id DESC);
+
             CREATE TABLE IF NOT EXISTS margin_checks (
                 check_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 checked_at TEXT NOT NULL,

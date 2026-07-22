@@ -110,6 +110,7 @@ def command_live_status(args: argparse.Namespace) -> int:
         store.initialize()
         resume_state = store.load_resume_state()
         report = store.load_latest_reconciliation_report()
+        fubon_health = store.load_latest_fubon_session_health()
     finally:
         store.close()
 
@@ -131,6 +132,11 @@ def command_live_status(args: argparse.Namespace) -> int:
             f"qff_symbol={state.trading_qff_symbol or '-'}"
         )
         print(f"- realized_pnl_twd: {state.realized_pnl}")
+        if state.pnl_status != "complete":
+            print(
+                "- realized_pnl_status: pending "
+                "(excludes externally manual-closed trade)"
+            )
         if state.state == StrategyState.PAUSED:
             print(
                 "- ACTION: strategy is PAUSED; inspect, manual-close any stray leg, "
@@ -148,6 +154,19 @@ def command_live_status(args: argparse.Namespace) -> int:
                 f"  - {issue.status.value} {issue.issue_type} "
                 f"{issue.broker.value} {issue.symbol or '-'} {issue.message}"
             )
+    if fubon_health is None:
+        print("- fubon_session: none recorded")
+    else:
+        print(
+            "- fubon_session: "
+            f"status={fubon_health['status']}, "
+            f"generation={fubon_health['generation']}, "
+            f"worker_pid={fubon_health['worker_pid'] or '-'}, "
+            f"last_login={fubon_health['last_login_at'] or '-'}, "
+            f"last_success={fubon_health['last_success_at'] or '-'}, "
+            f"relogin_count={fubon_health['relogin_count']}, "
+            f"invalid_reason={fubon_health['invalid_reason'] or '-'}"
+        )
     return 0
 
 

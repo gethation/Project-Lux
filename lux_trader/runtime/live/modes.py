@@ -462,6 +462,14 @@ class LiveExecuteModeHandler(LiveModeHandler):
             fubon_adapter=self.fubon_adapter,
             qff_first=self.config.live_execution.qff_first,
         )
+        health = getattr(self.fubon_adapter, "session_health", None)
+        preflight = getattr(self.fubon_adapter, "preflight", None)
+        if callable(health) and callable(preflight):
+            preflight()
+            store.record_fubon_session_health(
+                observed_at=datetime.now().astimezone(),
+                health=dict(health()),
+            )
 
     def account_brokers_factory(self) -> Any | None:
         if self.readonly_brokers is None:
