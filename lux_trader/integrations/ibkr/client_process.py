@@ -291,6 +291,89 @@ class _IbkrWorkerClient:
         finally:
             self.ib.cancelMktData(contract)
 
+    def fetch_umc_historical_1m(
+        self,
+        *,
+        end_date_time: str,
+        duration: str,
+        use_rth: bool = True,
+        timeout_seconds: float = 60.0,
+    ) -> list[dict[str, Any]]:
+        """Raw 1-minute TRADES bars for UMC.
+
+        ``formatDate=2`` is deliberate and must not be relaxed: any other value
+        makes IBKR return timestamps in whatever timezone the Gateway login screen
+        happens to be set to, which would silently redefine every stored bar.
+        ``TRADES`` is likewise required -- this account has no bid/ask permission,
+        so ``MIDPOINT`` fails with error 162.
+        """
+        self._ensure_connected()
+        contract = self._resolve_umc_detail().contract
+        bars = self.ib.reqHistoricalData(
+            contract,
+            endDateTime=end_date_time,
+            durationStr=duration,
+            barSizeSetting="1 min",
+            whatToShow="TRADES",
+            useRTH=use_rth,
+            formatDate=2,
+            timeout=timeout_seconds,
+        )
+        return [
+            {
+                "date": bar.date,
+                "open": float(bar.open),
+                "high": float(bar.high),
+                "low": float(bar.low),
+                "close": float(bar.close),
+                "volume": float(bar.volume),
+            }
+            for bar in bars
+        ]
+
+    def fetch_account_snapshot(self) -> dict[str, Any]:
+        """Read-only positions, open orders, and account values."""
+        self._ensure_connected()
+        accounts = [str(account) for account in self.ib.managedAccounts()]
+        positions = [
+            {
+                "account": str(position.account),
+                "symbol": str(position.contract.symbol),
+                "sec_type": str(position.contract.secType),
+                "currency": str(position.contract.currency),
+                "con_id": int(position.contract.conId),
+                "quantity": float(position.position),
+                "avg_cost": float(position.avgCost),
+            }
+            for position in self.ib.positions()
+        ]
+        open_orders = [
+            {
+                "order_id": int(trade.order.orderId),
+                "symbol": str(trade.contract.symbol),
+                "action": str(trade.order.action),
+                "quantity": float(trade.order.totalQuantity),
+                "status": str(trade.orderStatus.status),
+            }
+            for trade in self.ib.openTrades()
+        ]
+        values = [
+            {
+                "account": str(row.account),
+                "tag": str(row.tag),
+                "value": str(row.value),
+                "currency": str(row.currency),
+            }
+            for row in self.ib.accountSummary()
+        ]
+        return {
+            "accounts": accounts,
+            "positions": positions,
+            "open_orders": open_orders,
+            "account_values": values,
+            "fetched_at": self.clock(),
+        }
+
     def close(self) -> None:
         if self.ib.isConnected():
             self.ib.disconnect()
@@ -397,6 +480,26 @@ class IbkrClientProcess:
                 quote_wait_timeout_seconds=quote_wait_timeout_seconds,
             )
         )
+
+    def fetch_umc_historical_1m(
+        self,
+        *,
+        end_date_time: str = "",
+        duration: str = "1 D",
+        use_rth: bool = True,
+        timeout_seconds: float = 60.0,
+    ) -> list[dict[str, Any]]:
+        result = self._request_guarded(
+            "fetch_umc_historical_1m",
+            end_date_time=end_date_time,
+            duration=duration,
+            use_rth=use_rth,
+            timeout_seconds=timeout_seconds,
+        )
+        return [dict(row) for row in result]
+
+    def fetch_account_snapshot(self) -> dict[str, Any]:
+        return dict(self._request_guarded("fetch_account_snapshot"))
 
     def session_health(self) -> dict[str, Any]:
         health = dict(self._request_guarded("session_health"))

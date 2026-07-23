@@ -35,6 +35,7 @@ class OrderStatus(StrEnum):
 class BrokerName(StrEnum):
     FUBON = "FUBON"
     BINANCE = "BINANCE"
+    IBKR = "IBKR"
 
 
 class StrategyAction(StrEnum):
