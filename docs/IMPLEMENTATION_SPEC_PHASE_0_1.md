@@ -32,6 +32,12 @@ This project trades real money. A plausible-looking guess that silently changes
 trading behavior is far more expensive than a blocked afternoon. Questions are
 cheap and welcome; there is no penalty for asking.
 
+**Block at the finest granularity that is actually blocked.** A question about one
+part of a task does not block the parts that are already unambiguous. If your own
+analysis marks some items "unambiguous" and others "undefined", implement the
+unambiguous ones and block only the rest — then say exactly which sub-items remain
+open. Ask precisely; do not stop broadly.
+
 ### 0.2 Scope discipline
 
 - Implement **only** what is listed here. No opportunistic refactors, no drive-by
@@ -165,8 +171,9 @@ Complete task 2.3 first. Do not start 4.1 until the golden test is committed and
 |---|---|
 | `.tmp_pytest/`, `.tmp_pytest_live_execute/`, `.tmp_pytest_live_execute_core/` | Delete. Already gitignored; they are stale test debris |
 | `config.live.smoke.local.toml` (repo root) | Move to `configs/`. Update any reference |
-| `issue/M6_FUBON_SYMBOL_FORMAT_ISSUE.md` | **ASK** — the reviewer must confirm whether this is resolved before you archive or delete it |
-| `docs/M6_RUNBOOK.md` | Currently deleted-but-uncommitted in the working tree. **ASK** — do not resolve this yourself |
+| `issue/M6_FUBON_SYMBOL_FORMAT_ISSUE.md` | **RESOLVED (Q1)** — the issue is fixed. Delete the file; git history retains it. Remove the now-empty `issue/` directory |
+| `docs/M6_RUNBOOK.md` | Already resolved — deleted in commit `8171132`. No action needed |
+| `.tmp_pytest*` (three dirs) | **BLOCKED (Q2) — not your task.** Confirmed a genuine Windows ACL restriction; the reviewer reproduced `UnauthorizedAccessException` independently. The owner will remove them from an elevated shell. Do not retry, do not change ACLs, do not treat this as outstanding work |
 | `configs/live.example.toml` → `qff_fee_per_contract_twd` | Change `5.0` → `88.0`. The live configs already use 88.0; the example under-states the real fee by 17.6x. **Do not change the `replay.*.toml` copies** — see invariant 2 |
 
 **Do not remove BitoPro.** QFF/TSM continues to use it as its FX source.
@@ -204,10 +211,14 @@ Tasks:
    cannot be unified. Do not force a unification that loses information.
 4. Extract the subprocess-isolation transport currently hardcoded in
    `integrations/fubon/execution_process.py` and `readonly_process.py` into a reusable
-   module. It must remain functionally identical: same timeouts
-   (`DEFAULT_EXECUTION_TIMEOUT_SECONDS = 30.0`, `DEFAULT_QUERY_TIMEOUT_SECONDS = 15.0`,
-   `DEFAULT_TERMINATE_TIMEOUT_SECONDS = 3.0`), same error wrapping, same close
-   semantics.
+   module. It must remain functionally identical: same error wrapping, same close
+   semantics, and **every existing timeout preserved exactly as-is**.
+
+   **Q3 resolved — this spec was wrong.** An earlier revision listed 30/15/3 as "the"
+   shared timeouts; those are `execution_process.py`'s values. `readonly_process.py`
+   uses a **20-second** query timeout. Behavior preservation outranks uniformity:
+   keep 20s for readonly as an adapter-level override. The extracted transport takes
+   timeouts as parameters and hardcodes none. Do not "harmonize" the two.
 
 **Constraint:** do NOT make the Fubon execution worker symbol-agnostic in this phase.
 That is Phase 2 work and it changes live behavior. Note it in the report and move on.
@@ -215,7 +226,10 @@ That is Phase 2 work and it changes live behavior. Note it in the report and mov
 **Why this matters:** Phase 3 adds IBKR. If the protocol is right, IBKR implements one
 interface once. If it is wrong, IBKR gets bolted on as a third special case.
 
-### 4.3 CLI consolidation: 14 subcommands → 6
+### 4.3 CLI consolidation: 14 top-level commands → 7
+
+> **Correction:** an earlier revision said "→ 6" while the table listed seven names.
+> **Seven is correct** — the six operational commands plus the gated `admin`.
 
 Current: `replay`, `summary`, `doctor`, `live-dry-run`, `live-status`,
 `reconcile-brokers`, `clear-pause`, `recover-manual-flat`, `warmup-live`,
@@ -232,6 +246,32 @@ Target:
 | `recover` | `clear-pause`, `recover-manual-flat` (via flags) |
 | `warmup` | `warmup-live` |
 | `admin` | `exec-smoke`, `manual-close` — keep every existing env gate and confirm-symbol guard **exactly** as-is |
+
+#### Routing contract (Q4 resolved) — use nested subcommands
+
+Selectors are **nested subcommands**, not flags and not `--action` values:
+
+```text
+lux status live | status broker | status reconcile | status margin | status doctor
+lux recover clear-pause | recover manual-flat
+lux admin exec-smoke | admin manual-close
+lux live --mode dry-run | live --mode execute
+```
+
+- `--mode` on `live` is **required**. There is no default. An operator must never
+  reach a real-order path by omitting an argument.
+- `status`, `recover`, and `admin` require an explicit subcommand — no default action.
+  argparse enforces mutual exclusion naturally, which is precisely why this form was
+  chosen over flags.
+- `status doctor` keeps `--mode replay|live|order` as its own flag; it is unrelated to
+  `live --mode`.
+- All other flags carry over to their new home unchanged.
+
+#### Legacy names (Q5 resolved)
+
+**Remove all 14 old command names. Do not add aliases, hidden or otherwise.** Aliases
+would leave the parser accepting 14 commands and defeat the consolidation. Update
+`docs/LIVE_START_COMMANDS.md` to the new surface in the same commit.
 
 Requirements:
 
