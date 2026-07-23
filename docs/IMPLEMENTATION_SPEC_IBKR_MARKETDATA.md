@@ -218,8 +218,39 @@ screen**, not UTC, unless `formatDate=2` is used (which returns UTC epoch values
 **Use `formatDate=2`** and normalize to Taipei yourself via `lux_trader/core/time.py`.
 Never rely on the login-screen timezone — it is operator-configurable state that can
 silently change the meaning of every timestamp you store.
-- Output must match the PoC's OHLCV CSV schema so downstream scripts run unchanged:
-  `timestamp,open,high,low,close,volume` with Taipei `+08:00` timestamps.
+Output must match the PoC's OHLCV CSV schema so downstream scripts run unchanged:
+`timestamp,open,high,low,close,volume` with Taipei `+08:00` timestamps.
+
+#### Measured capability (reviewer probe, 2026-07-23)
+
+**Depth: at least 2 years.** The docs' "six months" limit applies to bars of 30
+seconds or less, not to 1-minute bars. Verified by requesting one RTH day at
+increasing offsets — 7d, 30d, 90d, 180d, 365d, and **730d** each returned a full
+390-bar session.
+
+**Per-request volume:**
+
+| `durationStr` | bars returned |
+|---|---:|
+| `1 D` | 390 |
+| `5 D` | 1,950 |
+| `10 D` | 3,900 |
+| `1 M` | 8,190 |
+| **`2 M`** | **15,600** |
+
+Use `2 M` chunks. The whole backfill is then trivially inside the pacing budget:
+**3 months ≈ 2 requests, 2 years ≈ 12 requests** against a 60-per-10-minutes limit.
+Do not over-engineer throughput for a workload this small — respect the limits, but
+put the complexity into correctness.
+
+**DST is visible in the data and must be handled.** The 180-days-back request
+returned `14:30–20:59 UTC` while the July requests returned `13:30–19:59 UTC` —
+RTH 09:30–16:00 ET is UTC−5 in winter and UTC−4 in summer. `useRTH=True` tracks this
+correctly. This is the concrete evidence behind §4.3's ban on a hardcoded Taipei
+offset: the same session is 21:30–04:00 Taipei in summer, 22:30–05:00 in winter.
+
+A full RTH day is exactly **390 bars**. Use that as a completeness assertion — a
+trading day yielding any other count needs investigating, not forward-filling.
 
 ### 4.5 — `ReadOnlyBroker` for account and positions
 
