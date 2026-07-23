@@ -58,6 +58,15 @@ class UsLegConfig:
 class FxConfig:
     venue: str
     symbol: str
+    # How long a fetched rate may be reused before refetching. Sources billed per
+    # request cannot take the live loop's once-a-second cadence: Twelve Data's free
+    # tier allows 8 credits a minute, which an unthrottled provider exhausts in 8
+    # seconds. Ignored by tick sources such as BitoPro, which are not metered.
+    cache_ttl_seconds: float = 300.0
+    # How long a cached rate may still be served after a refetch failure. None
+    # serves indefinitely; a value turns a prolonged outage into a hard error
+    # rather than a silently frozen rate.
+    max_serve_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -571,6 +580,14 @@ def load_pair_config(raw: object, root: Path, index: int) -> PairConfig:
         fx=FxConfig(
             venue=required_text(fx_raw.get("venue"), f"{prefix}.fx.venue").lower(),
             symbol=required_text(fx_raw.get("symbol"), f"{prefix}.fx.symbol"),
+            cache_ttl_seconds=required_positive_float(
+                fx_raw.get("cache_ttl_seconds", 300.0),
+                f"{prefix}.fx.cache_ttl_seconds",
+            ),
+            max_serve_seconds=optional_positive_float(
+                fx_raw.get("max_serve_seconds"),
+                f"{prefix}.fx.max_serve_seconds",
+            ),
         ),
         sizing=sizing,
         strategy=strategy,

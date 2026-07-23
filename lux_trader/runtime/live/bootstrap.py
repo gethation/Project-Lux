@@ -34,6 +34,8 @@ from lux_trader.integrations.fubon.market_data_process import FubonTwLegMarketDa
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.taifex.downloader import TaifexTwLegTradeDownloader
+from lux_trader.integrations.twelvedata import TwelveDataMarketData
+from lux_trader.market_data.cached_quote import CachedQuoteProvider
 from lux_trader.core.fees import fill_costs
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.execution.gate import (
@@ -110,6 +112,30 @@ class LiveRuntimeContext:
     next_row_index: int
 
 
+def build_fx_provider(config: AppConfig) -> QuoteProvider:
+    """Pick the FX source this pair's config names.
+
+    QFF/TSM prices its US leg in USDT, so BitoPro's USDT/TWD is the correct rate
+    for it. CCF/UMC prices UMC in dollars and needs real USD/TWD -- §8.2 measures
+    BitoPro's Taiwan-local crypto premium at 77% of that spread's own standard
+    deviation, which a rolling z-score does not absorb.
+    """
+    fx = config.active_pair.fx
+    if fx.venue == "bitopro":
+        # A tick source, not metered, so it is used unwrapped.
+        return BitoProMarketData()
+    if fx.venue == "twelvedata":
+        return CachedQuoteProvider(
+            TwelveDataMarketData(),
+            ttl_seconds=fx.cache_ttl_seconds,
+            max_serve_seconds=fx.max_serve_seconds,
+        )
+    raise RuntimeError(
+        f"Pair {config.active_pair.id!r} names an unknown fx venue {fx.venue!r}; "
+        "supported: bitopro, twelvedata"
+    )
+
+
 def open_live_quote_providers(
     config: AppConfig,
     *,
@@ -123,8 +149,9 @@ def open_live_quote_providers(
     tw_leg = tw_leg_provider or FubonTwLegMarketDataProcess(config.live.fubon_env_path)
     reporter.event(started_at, "startup", "init_binance")
     us_leg = us_leg_provider or BinanceMarketData()
-    reporter.event(started_at, "startup", "init_bitopro")
-    usdttwd = usdttwd_provider or BitoProMarketData()
+    fx_venue = config.active_pair.fx.venue
+    reporter.event(started_at, "startup", f"init_fx_{fx_venue}")
+    usdttwd = usdttwd_provider or build_fx_provider(config)
     return LiveProviderSet(
         tw_leg=tw_leg,
         us_leg=us_leg,
