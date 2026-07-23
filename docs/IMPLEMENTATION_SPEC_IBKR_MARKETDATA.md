@@ -62,6 +62,16 @@ IB Gateway (stable), logged into the **live** account.
 | Read-Only API | Enabled |
 | Trusted IP | `127.0.0.1` |
 
+**IB Gateway restarts daily.** Under **Configure → Settings → Lock and Exit** the
+behaviour is either *Auto logoff* (stops at the login screen, needs a human) or
+*Auto restart* (keeps the session and reconnects itself). Observed on 2026-07-23:
+the Gateway restarted and dropped to the login screen with no port listening.
+
+The adapter must therefore treat **"the port stopped listening" as an expected
+daily event**, not an exception: detect it, surface it clearly, and reconnect when
+the port returns. Do not crash the runtime, and do not silently retry forever with
+no visible state.
+
 **Every one of these must be configurable** — port especially, because the user may
 switch between Gateway and TWS. Do not hardcode.
 
@@ -181,9 +191,33 @@ reconnect behaviour, and error surfacing should look familiar, not novel.
 `useRTH=True` (the strategy trades the RTH session; the PoC's TradingView data is
 RTH trades, so this keeps the research and live paths aligned).
 
-- IBKR paces historical requests (roughly: no more than ~60 requests per 10 minutes,
-  and identical requests get throttled). Implement chunking with backoff and make
-  the pacing parameters configurable.
+#### Pacing — official limits, verified against IBKR documentation
+
+A pacing violation occurs on **any** of these, so the fetcher must respect all four:
+
+| Rule | Limit |
+|---|---|
+| Identical requests | Not within **15 seconds** of each other |
+| Same Contract + Exchange + TickType | Fewer than **6 requests within 2 seconds** |
+| Overall | No more than **60 requests per 10 minutes** |
+| `BID_ASK` requests | Counted **twice** toward the above (irrelevant here — we use `TRADES`) |
+
+Source: TWS API "Historical Data Limitations". IBKR states these "apply to all our
+clients and it is not possible to overcome them" — so treat them as hard constraints,
+not guidance. The 60-per-10-minutes rule is the binding one for a bulk backfill:
+budget one request per ~10 seconds sustained.
+
+Make every pacing parameter configurable, and implement exponential backoff on
+error 162 rather than retrying immediately.
+
+#### Timezone — a real trap
+
+IBKR returns bar timestamps in **the timezone selected on the TWS/Gateway login
+screen**, not UTC, unless `formatDate=2` is used (which returns UTC epoch values).
+
+**Use `formatDate=2`** and normalize to Taipei yourself via `lux_trader/core/time.py`.
+Never rely on the login-screen timezone — it is operator-configurable state that can
+silently change the meaning of every timestamp you store.
 - Output must match the PoC's OHLCV CSV schema so downstream scripts run unchanged:
   `timestamp,open,high,low,close,volume` with Taipei `+08:00` timestamps.
 
