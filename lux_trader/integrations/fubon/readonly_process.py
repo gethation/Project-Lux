@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import multiprocessing
-import threading
 import traceback
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -9,6 +7,7 @@ from typing import Any, Callable
 
 from ...core.models import BrokerName
 from ...reconciliation import BrokerAccountSnapshot
+from ..subprocess_transport import SubprocessTransport
 from .readonly import FubonReadOnlyBroker
 
 
@@ -77,16 +76,21 @@ class FubonReadOnlyBrokerProcess:
         self.timeout_seconds = float(timeout_seconds)
         self.terminate_timeout_seconds = float(terminate_timeout_seconds)
         self.worker_target = worker_target
-        self._context = multiprocessing.get_context("spawn")
-        self._connection: Connection | None = None
-        self._process: multiprocessing.Process | None = None
-        self._closed = False
-        self._lock = threading.RLock()
+        self._transport = SubprocessTransport(
+            worker_target=self.worker_target,
+            worker_args=(self.env_path, self.symbol),
+            process_name="project-lux-fubon-readonly",
+            broker_label="Fubon",
+            worker_label="Fubon readonly",
+            closed_message="Fubon readonly process is closed",
+            error_type=FubonReadOnlyWorkerError,
+            timeout_type=FubonReadOnlyWorkerTimeout,
+            terminate_timeout_seconds=self.terminate_timeout_seconds,
+        )
 
     @property
     def worker_pid(self) -> int | None:
-        process = self._process
-        return process.pid if process is not None and process.is_alive() else None
+        return self._transport.worker_pid
 
     def fetch_snapshot(self) -> BrokerAccountSnapshot:
         result = self._request_guarded("fetch_snapshot")
@@ -105,27 +109,19 @@ class FubonReadOnlyBrokerProcess:
         return result
 
     def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            if self._worker_is_alive():
-                try:
-                    self._request("close", timeout=self.terminate_timeout_seconds)
-                except Exception:
-                    pass
-            self._terminate_worker()
+        self._transport.close(
+            operation="close",
+            payload={"operation": "close"},
+            timeout=self.terminate_timeout_seconds,
+        )
 
     def restart_worker(self) -> None:
         """Discard a possibly stale SDK session; the next query starts clean."""
 
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("Fubon readonly process is closed")
-            self._terminate_worker()
+        self._transport.restart(require_open=True)
 
     def _request_guarded(self, operation: str) -> Any:
-        with self._lock:
+        with self._transport.lock:
             try:
                 return self._request(operation, timeout=self.timeout_seconds)
             except (FubonReadOnlyWorkerTimeout, FubonReadOnlyWorkerError):
@@ -133,76 +129,14 @@ class FubonReadOnlyBrokerProcess:
                 raise
 
     def _request(self, operation: str, *, timeout: float) -> Any:
-        if self._closed:
-            raise RuntimeError("Fubon readonly process is closed")
-        self._start_worker()
-        connection = self._connection
-        process = self._process
-        if connection is None or process is None or not process.is_alive():
-            raise FubonReadOnlyWorkerError("Fubon readonly worker is not running")
-        try:
-            connection.send({"operation": operation})
-        except (BrokenPipeError, EOFError, OSError) as exc:
-            raise FubonReadOnlyWorkerError(
-                f"worker pipe failed during {operation}: {exc}"
-            ) from exc
-        if not connection.poll(max(float(timeout), 0.0)):
-            raise FubonReadOnlyWorkerTimeout(
-                f"Fubon {operation} exceeded hard timeout of {timeout:.1f}s"
-            )
-        try:
-            response = connection.recv()
-        except (BrokenPipeError, EOFError, OSError) as exc:
-            raise FubonReadOnlyWorkerError(
-                f"worker exited during {operation}: {exc}"
-            ) from exc
-        if response.get("ok"):
-            return response.get("result")
-        raise FubonReadOnlyWorkerError(
-            f"Fubon worker {operation} failed: "
-            f"{response.get('error_type', 'RuntimeError')}: "
-            f"{response.get('error', 'unknown error')}"
+        return self._transport.request(
+            operation,
+            payload={"operation": operation},
+            timeout=timeout,
         )
-
-    def _start_worker(self) -> None:
-        if self._worker_is_alive():
-            return
-        self._terminate_worker()
-        parent, child = self._context.Pipe(duplex=True)
-        process = self._context.Process(
-            target=self.worker_target,
-            args=(child, self.env_path, self.symbol),
-            name="project-lux-fubon-readonly",
-            daemon=True,
-        )
-        process.start()
-        child.close()
-        self._connection = parent
-        self._process = process
-
-    def _worker_is_alive(self) -> bool:
-        return self._process is not None and self._process.is_alive()
 
     def _terminate_worker(self) -> None:
-        process = self._process
-        connection = self._connection
-        self._process = None
-        self._connection = None
-        if connection is not None:
-            try:
-                connection.close()
-            except OSError:
-                pass
-        if process is None:
-            return
-        if process.is_alive():
-            process.terminate()
-            process.join(self.terminate_timeout_seconds)
-        if process.is_alive():
-            process.kill()
-            process.join(self.terminate_timeout_seconds)
-        else:
-            process.join(timeout=0)
+        self._transport.terminate()
 
     def __enter__(self) -> "FubonReadOnlyBrokerProcess":
         return self
