@@ -379,15 +379,35 @@ Breaking change. **No migration.**
 1. Add a `pairs` table: `pair_id TEXT PRIMARY KEY`, `label TEXT`,
    `tw_leg_display TEXT`, `us_leg_display TEXT`, `tw_leg_venue TEXT`,
    `us_leg_venue TEXT`, plus whatever else the runtime needs to render identity.
-2. Add `pair_id` to every table carrying strategy state or market data:
+2. **Pair-scoped — add `pair_id`:**
    `strategy_state`, `events`, `orders`, `fills`, `positions`, `bars`, `trades`,
    `market_ticks`, `warmup_bars`, `execution_plans`, `execution_legs`,
    `execution_checks`, `execution_simulations`, `execution_outcomes`,
-   `pending_manual_closes`, `position_adjustments`, `margin_checks`.
-   **ASK** before adding `pair_id` to the broker/reconciliation tables
-   (`broker_reconciliation_runs`, `broker_snapshots`,
-   `broker_reconciliation_issues`, `fubon_*`) — those are account-scoped, not
-   pair-scoped, and the right answer is not obvious.
+   `pending_manual_closes`, `position_adjustments`.
+
+   **Account-scoped — do NOT add `pair_id`** (resolved with the owner; an earlier
+   revision of this spec wrongly listed `margin_checks` as pair-scoped):
+
+   | Table | Why it is account-scoped |
+   |---|---|
+   | `margin_checks` | Holds `fubon_equity`, `binance_equity`, ratios, and transfer guidance — all properties of one shared margin pool. The agreed policy is a **whole-account** red line, so a per-pair row would misrepresent it |
+   | `broker_reconciliation_runs` | One run covers the whole account |
+   | `broker_snapshots` | One fetch returns every position in the account |
+   | `fubon_session_events` | SDK session state belongs to the account |
+
+   **Reconciliation model (resolved):** one run per cycle covering the entire
+   account — a single snapshot fetch per broker, compared against the **combined**
+   expected position of all pairs. QFF and CCF are distinct TAIFEX product codes, so
+   individual discrepancies are attributable by symbol: **`broker_reconciliation_issues`
+   gets a `pair_id`** resolved from the issue's symbol, nullable for an issue that
+   belongs to no configured pair.
+
+   This shape is deliberate: it keeps broker API call volume flat as pairs are added,
+   and it is the only arrangement that can surface *a position in the account that no
+   pair claims* — which per-pair reconciliation would silently ignore.
+
+   `fubon_order_attempts` and `fubon_evidence_events` hang off individual orders, which
+   are pair-scoped; carry `pair_id` through from the owning order.
 3. `strategy_state`: drop `CHECK (id = 1)`; primary key becomes `pair_id`.
 4. Rename `qff_*` / `tsm_*` columns to `tw_leg_*` / `us_leg_*`.
 5. Bump the schema version and make the store **refuse to open an old store with a
