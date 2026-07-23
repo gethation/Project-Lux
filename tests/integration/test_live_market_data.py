@@ -20,11 +20,11 @@ from lux_trader.execution.intent import PairExecutionPlan
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.integrations.ccxt_market_data import CcxtTickerMarketData
 from lux_trader.integrations.fubon.market_data import (
-    FubonQffMarketData,
+    FubonTwLegMarketData,
     parse_fubon_books_quote,
 )
 from lux_trader.integrations.taifex.downloader import (
-    TaifexQffTradeDownloader,
+    TaifexTwLegTradeDownloader,
     parse_taifex_download_entries,
 )
 from lux_trader.market_data import (
@@ -32,11 +32,11 @@ from lux_trader.market_data import (
     LiveQuote,
     LiveQuoteSet,
     WarmupBuilder,
-    build_qff_expected_warmup_index,
-    build_qff_warmup_source_report,
+    build_tw_leg_expected_warmup_index,
+    build_tw_leg_warmup_source_report,
     parse_timestamp,
-    qff_symbol_to_taifex_contract_month,
-    select_qff_front_month,
+    tw_leg_symbol_to_taifex_contract_month,
+    select_tw_leg_front_month,
 )
 from lux_trader.runtime.live import LiveDryRunRunner, LiveExecuteRunner
 from lux_trader.runtime.live.bootstrap import (
@@ -44,17 +44,17 @@ from lux_trader.runtime.live.bootstrap import (
     run_live_startup_preflight,
 )
 from lux_trader.runtime.live.contracts import (
-    QffContractResolution,
+    TwLegContractResolution,
     cancel_entry_pending_for_contract_switch,
     mark_pending_contract_switch_if_needed,
-    resolve_qff_contract,
+    resolve_tw_leg_contract,
     resolve_force_exit_reason,
     should_force_exit_for_contract_policy,
     should_switch_contract_before_processing,
 )
 from lux_trader.runtime.live.engine import build_live_decision_snapshot
 from lux_trader.runtime.live.warmup import (
-    QffWarmupCheckRunner,
+    TwLegWarmupCheckRunner,
     WarmupRunner,
 )
 from lux_trader.core.models import (
@@ -77,7 +77,7 @@ from lux_trader.core.tradable_spread import TradableSpreadSnapshot
 from conftest import make_app_config
 
 
-class FakeQffProvider:
+class FakeTwLegProvider:
     def __init__(
         self,
         rows: pd.DataFrame | None = None,
@@ -115,7 +115,7 @@ class FakeQffProvider:
         self.restart_books_calls.append(symbol)
 
 
-class FakeQffCandidateProvider(FakeQffProvider):
+class FakeTwLegCandidateProvider(FakeTwLegProvider):
     def __init__(self, candidates: list[dict[str, object]]) -> None:
         super().__init__()
         self.candidates = candidates
@@ -173,8 +173,8 @@ class FakeLiveExecutionAdapter:
             fee_twd=leg.fee_twd,
             timestamp=leg.timestamp,
             row_index=leg.row_index,
-            qff_symbol=leg.qff_symbol,
-            qff_expiry=leg.qff_expiry,
+            tw_leg_symbol=leg.tw_leg_symbol,
+            tw_leg_expiry=leg.tw_leg_expiry,
             contract_policy_state=leg.contract_policy_state,
         )
         return ExecutionOutcome(
@@ -363,18 +363,18 @@ def small_live_config(tmp_path: Path) -> AppConfig:
             polling_seconds=0.0,
             minute_finalize_delay_seconds=1.0,
             stale_seconds=10.0,
-            qff_book_stale_seconds=55.0,
+            tw_leg_book_stale_seconds=55.0,
             sync_windows_time_on_startup=True,
             clock_skew_fail_seconds=60.0,
             windows_time_sync_timeout_seconds=15.0,
             max_leg_timestamp_skew_seconds=10.0,
             warmup_minutes=3,
-            qff_product="QFF",
-            qff_symbol="auto",
+            tw_leg_product="QFF",
+            tw_leg_symbol="auto",
             binance_symbol="TSM/USDT:USDT",
             bitopro_symbol="USDT/TWD",
             fubon_env_path=None,
-            taifex_qff_1m_csv=None,
+            taifex_tw_leg_1m_csv=None,
             taifex_use_network=False,
             taifex_cache_dir=tmp_path / "taifex_cache",
         ),
@@ -403,13 +403,13 @@ def test_load_config_defaults_live_freshness_and_clock_preflight(tmp_path) -> No
     config = load_config(write_minimal_config(tmp_path))
 
     assert config.live.stale_seconds == pytest.approx(10.0)
-    assert config.live.qff_book_stale_seconds == pytest.approx(55.0)
+    assert config.live.tw_leg_book_stale_seconds == pytest.approx(55.0)
     assert config.live.sync_windows_time_on_startup is True
     assert config.live.clock_skew_fail_seconds == pytest.approx(60.0)
     assert config.live.windows_time_sync_timeout_seconds == pytest.approx(15.0)
     assert config.live_execution_smoke.enabled is False
     assert config.live_execution_smoke.fubon_lots == 1
-    assert config.live_execution_smoke.tsm_units == pytest.approx(0.1)
+    assert config.live_execution_smoke.us_leg_units == pytest.approx(0.1)
 
 
 def test_project_config_relative_paths_resolve_from_project_root() -> None:
@@ -428,7 +428,7 @@ def test_load_config_reads_live_freshness_and_clock_preflight(tmp_path) -> None:
             "\n".join(
                 [
                     "stale_seconds = 10.0",
-                    "qff_book_stale_seconds = 42.5",
+                    "tw_leg_book_stale_seconds = 42.5",
                     "sync_windows_time_on_startup = false",
                     "clock_skew_fail_seconds = 12.5",
                     "windows_time_sync_timeout_seconds = 3.0",
@@ -438,7 +438,7 @@ def test_load_config_reads_live_freshness_and_clock_preflight(tmp_path) -> None:
     )
 
     assert config.live.stale_seconds == pytest.approx(10.0)
-    assert config.live.qff_book_stale_seconds == pytest.approx(42.5)
+    assert config.live.tw_leg_book_stale_seconds == pytest.approx(42.5)
     assert config.live.sync_windows_time_on_startup is False
     assert config.live.clock_skew_fail_seconds == pytest.approx(12.5)
     assert config.live.windows_time_sync_timeout_seconds == pytest.approx(3.0)
@@ -458,8 +458,8 @@ def test_load_config_reads_live_execution_smoke_config(tmp_path) -> None:
                 "fubon_symbol = 'TMFG6'",
                 "fubon_lots = 1",
                 "binance_symbol = 'TSM/USDT:USDT'",
-                "tsm_units = 0.1",
-                "qff_expiry = '202607'",
+                "us_leg_units = 0.1",
+                "tw_leg_expiry = '202607'",
             ]
         ),
         encoding="utf-8",
@@ -471,8 +471,8 @@ def test_load_config_reads_live_execution_smoke_config(tmp_path) -> None:
     assert config.live_execution_smoke.fubon_symbol == "TMFG6"
     assert config.live_execution_smoke.fubon_lots == 1
     assert config.live_execution_smoke.binance_symbol == "TSM/USDT:USDT"
-    assert config.live_execution_smoke.tsm_units == pytest.approx(0.1)
-    assert config.live_execution_smoke.qff_expiry == "202607"
+    assert config.live_execution_smoke.us_leg_units == pytest.approx(0.1)
+    assert config.live_execution_smoke.tw_leg_expiry == "202607"
 
 
 def test_live_startup_preflight_syncs_windows_time_and_accepts_clock_skew(tmp_path) -> None:
@@ -585,13 +585,13 @@ def test_live_startup_preflight_rejects_unavailable_market_time(tmp_path) -> Non
     assert "ERR clock_skew unavailable:RuntimeError" in terminal_output.getvalue()
 
 
-def test_live_runtime_clock_preflight_failure_stops_before_qff_provider(
+def test_live_runtime_clock_preflight_failure_stops_before_tw_leg_provider(
     tmp_path,
     monkeypatch,
 ) -> None:
     config = small_live_config(tmp_path)
-    qff = FakeQffProvider(pd.DataFrame())
-    tsm = FakeOhlcvProvider(pd.DataFrame())
+    tw_leg = FakeTwLegProvider(pd.DataFrame())
+    us_leg = FakeOhlcvProvider(pd.DataFrame())
     usd = FakeOhlcvProvider(pd.DataFrame())
 
     def fail_preflight(*_: object, **__: object) -> None:
@@ -602,16 +602,16 @@ def test_live_runtime_clock_preflight_failure_stops_before_qff_provider(
     with pytest.raises(RuntimeError, match="clock skew test"):
         LiveDryRunRunner(
             config,
-            qff_provider=qff,
-            tsm_provider=tsm,
+            tw_leg_provider=tw_leg,
+            us_leg_provider=us_leg,
             usdttwd_provider=usd,
             sleeper=lambda _: None,
         ).run(max_iterations=0)
 
-    assert qff.select_calls == 0
-    assert qff.fetch_1m_calls == []
-    assert qff.quote_calls == []
-    assert qff.restart_books_calls == []
+    assert tw_leg.select_calls == 0
+    assert tw_leg.fetch_1m_calls == []
+    assert tw_leg.quote_calls == []
+    assert tw_leg.restart_books_calls == []
 
 
 def test_live_runtime_skips_clock_preflight_when_clock_is_injected(
@@ -620,8 +620,8 @@ def test_live_runtime_skips_clock_preflight_when_clock_is_injected(
 ) -> None:
     config = small_live_config(tmp_path)
     seed_warmup_bars(config)
-    qff = FakeQffProvider(pd.DataFrame())
-    tsm = FakeOhlcvProvider(pd.DataFrame())
+    tw_leg = FakeTwLegProvider(pd.DataFrame())
+    us_leg = FakeOhlcvProvider(pd.DataFrame())
     usd = FakeOhlcvProvider(pd.DataFrame())
 
     def fail_preflight(*_: object, **__: object) -> None:
@@ -631,15 +631,15 @@ def test_live_runtime_skips_clock_preflight_when_clock_is_injected(
 
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=lambda: ts("2026-06-23T08:45:00+08:00"),
         sleeper=lambda _: None,
     ).run(max_iterations=0, skip_warmup=True)
 
     assert result.iterations == 0
-    assert qff.select_calls == 1
+    assert tw_leg.select_calls == 1
 
 
 def count_table(store: SQLiteStore, table: str) -> int:
@@ -678,12 +678,12 @@ def seed_warmup_bars(config: AppConfig) -> None:
         MarketBar(
             row_index=index,
             timestamp=ts(f"2026-06-18T08:4{index}:00+08:00"),
-            qff_close=100.0,
-            qff_close_filled=100.0,
-            tsm_twd_fair=100.0 + index,
+            tw_leg_close=100.0,
+            tw_leg_close_filled=100.0,
+            us_leg_twd_fair=100.0 + index,
             spread=float(index),
-            qff_symbol="QFFG6",
-            qff_expiry="2026-07-15",
+            tw_leg_symbol="QFFG6",
+            tw_leg_expiry="2026-07-15",
             contract_policy_state="active",
         )
         for index in range(config.strategy.zscore_window)
@@ -700,26 +700,26 @@ def seed_warmup_bars(config: AppConfig) -> None:
 def dry_run_quote_providers(
     quote_times: list[str],
     *,
-    qff_rows: pd.DataFrame | None = None,
-    tsm_rows: pd.DataFrame | None = None,
+    tw_leg_rows: pd.DataFrame | None = None,
+    us_leg_rows: pd.DataFrame | None = None,
     usd_rows: pd.DataFrame | None = None,
-    qff_price: float = 100.0,
-    tsm_price: float = 20.0,
+    tw_leg_price: float = 100.0,
+    us_leg_price: float = 20.0,
     usd_price: float = 30.0,
-) -> tuple[FakeQffProvider, FakeOhlcvProvider, FakeOhlcvProvider]:
-    default_qff_rows, default_tsm_rows, default_usd_rows = dry_run_warmup_rows()
+) -> tuple[FakeTwLegProvider, FakeOhlcvProvider, FakeOhlcvProvider]:
+    default_tw_leg_rows, default_us_leg_rows, default_usd_rows = dry_run_warmup_rows()
     return (
-        FakeQffProvider(
-            qff_rows if qff_rows is not None else default_qff_rows,
+        FakeTwLegProvider(
+            tw_leg_rows if tw_leg_rows is not None else default_tw_leg_rows,
             quotes=[
-                quote("qff", value, qff_price, bid=qff_price - 0.1, ask=qff_price + 0.1)
+                quote("tw_leg", value, tw_leg_price, bid=tw_leg_price - 0.1, ask=tw_leg_price + 0.1)
                 for value in quote_times
             ],
         ),
         FakeOhlcvProvider(
-            tsm_rows if tsm_rows is not None else default_tsm_rows,
+            us_leg_rows if us_leg_rows is not None else default_us_leg_rows,
             quotes=[
-                quote("tsm", value, tsm_price, bid=tsm_price - 0.01, ask=tsm_price + 0.01)
+                quote("us_leg", value, us_leg_price, bid=us_leg_price - 0.01, ask=us_leg_price + 0.01)
                 for value in quote_times
             ],
         ),
@@ -751,8 +751,8 @@ def test_live_dry_run_closed_calendar_skips_market_data_bars_and_margin_checks(
         ),
     )
     seed_warmup_bars(config)
-    qff = FakeQffProvider(pd.DataFrame())
-    tsm = FakeOhlcvProvider(pd.DataFrame())
+    tw_leg = FakeTwLegProvider(pd.DataFrame())
+    us_leg = FakeOhlcvProvider(pd.DataFrame())
     usd = FakeOhlcvProvider(pd.DataFrame())
     terminal_output = io.StringIO()
     margin_check_calls: list[datetime] = []
@@ -771,8 +771,8 @@ def test_live_dry_run_closed_calendar_skips_market_data_bars_and_margin_checks(
 
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=dry_run_clock(
             [
@@ -790,8 +790,8 @@ def test_live_dry_run_closed_calendar_skips_market_data_bars_and_margin_checks(
     assert result.iterations == 3
     assert result.bars_processed == 0
     assert result.plans_recorded == 0
-    assert qff.quote_calls == []
-    assert tsm.quote_calls == []
+    assert tw_leg.quote_calls == []
+    assert us_leg.quote_calls == []
     assert usd.quote_calls == []
     assert margin_check_calls == []
     output = terminal_output.getvalue()
@@ -816,12 +816,12 @@ def test_live_dry_run_closed_calendar_skips_market_data_bars_and_margin_checks(
         store.close()
 
 
-def test_live_runtime_tears_down_qff_books_during_non_trading_and_restarts_on_open(
+def test_live_runtime_tears_down_tw_leg_books_during_non_trading_and_restarts_on_open(
     tmp_path,
 ) -> None:
     config = small_live_config(tmp_path)
     seed_warmup_bars(config)
-    qff, tsm, usd = dry_run_quote_providers(
+    tw_leg, us_leg, usd = dry_run_quote_providers(
         [
             "2026-06-23T04:58:01+08:00",
             "2026-06-23T08:45:00+08:00",
@@ -835,8 +835,8 @@ def test_live_runtime_tears_down_qff_books_during_non_trading_and_restarts_on_op
 
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=dry_run_clock(
             [
@@ -852,30 +852,30 @@ def test_live_runtime_tears_down_qff_books_during_non_trading_and_restarts_on_op
     ).run(max_iterations=3, skip_warmup=True)
 
     assert result.iterations == 3
-    assert qff.teardown_books_calls == 1
-    assert qff.restart_books_calls == ["QFFG6"]
-    assert qff.quote_calls == ["QFFG6", "QFFG6"]
+    assert tw_leg.teardown_books_calls == 1
+    assert tw_leg.restart_books_calls == ["QFFG6"]
+    assert tw_leg.quote_calls == ["QFFG6", "QFFG6"]
     assert trading_session_events == [ts("2026-06-23T08:45:00+08:00")]
 
 
-def test_live_runtime_qff_watchdog_restarts_once_with_backoff(tmp_path) -> None:
+def test_live_runtime_tw_leg_watchdog_restarts_once_with_backoff(tmp_path) -> None:
     config = small_live_config(tmp_path)
     seed_warmup_bars(config)
-    qff_rows, tsm_rows, usd_rows = dry_run_warmup_rows()
-    qff = FakeQffProvider(
-        qff_rows,
+    tw_leg_rows, us_leg_rows, usd_rows = dry_run_warmup_rows()
+    tw_leg = FakeTwLegProvider(
+        tw_leg_rows,
         quotes=[
-            quote("qff", "2026-06-23T08:40:00+08:00", 100.0, bid=99.9, ask=100.1),
-            quote("qff", "2026-06-23T08:40:00+08:00", 100.0, bid=99.9, ask=100.1),
-            quote("qff", "2026-06-23T08:40:00+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("tw_leg", "2026-06-23T08:40:00+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("tw_leg", "2026-06-23T08:40:00+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("tw_leg", "2026-06-23T08:40:00+08:00", 100.0, bid=99.9, ask=100.1),
         ],
     )
-    tsm = FakeOhlcvProvider(
-        tsm_rows,
+    us_leg = FakeOhlcvProvider(
+        us_leg_rows,
         quotes=[
-            quote("tsm", "2026-06-23T08:45:01+08:00", 20.0, bid=19.99, ask=20.01),
-            quote("tsm", "2026-06-23T08:45:11+08:00", 20.0, bid=19.99, ask=20.01),
-            quote("tsm", "2026-06-23T08:45:20+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("us_leg", "2026-06-23T08:45:01+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("us_leg", "2026-06-23T08:45:11+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("us_leg", "2026-06-23T08:45:20+08:00", 20.0, bid=19.99, ask=20.01),
         ],
     )
     usd = FakeOhlcvProvider(
@@ -890,8 +890,8 @@ def test_live_runtime_qff_watchdog_restarts_once_with_backoff(tmp_path) -> None:
 
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=dry_run_clock(
             [
@@ -907,23 +907,23 @@ def test_live_runtime_qff_watchdog_restarts_once_with_backoff(tmp_path) -> None:
     ).run(max_iterations=3, skip_warmup=True)
 
     assert result.iterations == 3
-    assert qff.restart_books_calls == ["QFFG6"]
-    assert "WARN qff_reconnecting skip_signal" in terminal_output.getvalue()
+    assert tw_leg.restart_books_calls == ["QFFG6"]
+    assert "WARN tw_leg_reconnecting skip_signal" in terminal_output.getvalue()
 
 
 def test_live_runtime_uses_cached_quote_after_transient_fetch_failure(tmp_path) -> None:
     config = small_live_config(tmp_path)
     seed_warmup_bars(config)
-    qff, _, usd = dry_run_quote_providers(
+    tw_leg, _, usd = dry_run_quote_providers(
         [
             "2026-06-23T08:45:00+08:00",
             "2026-06-23T08:45:01+08:00",
         ]
     )
-    tsm = FakeOhlcvProvider(
+    us_leg = FakeOhlcvProvider(
         pd.DataFrame(),
         quotes=[
-            quote("tsm", "2026-06-23T08:45:00+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("us_leg", "2026-06-23T08:45:00+08:00", 20.0, bid=19.99, ask=20.01),
             RuntimeError("request timeout"),
         ],
     )
@@ -931,8 +931,8 @@ def test_live_runtime_uses_cached_quote_after_transient_fetch_failure(tmp_path) 
 
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=dry_run_clock(
             [
@@ -947,7 +947,7 @@ def test_live_runtime_uses_cached_quote_after_transient_fetch_failure(tmp_path) 
     ).run(max_iterations=2, skip_warmup=True)
 
     assert result.iterations == 2
-    assert "WARN fetch_tsm failed:RuntimeError" in terminal_output.getvalue()
+    assert "WARN fetch_us_leg failed:RuntimeError" in terminal_output.getvalue()
     store = SQLiteStore(config.store_path)
     try:
         store.initialize()
@@ -959,13 +959,13 @@ def test_live_runtime_uses_cached_quote_after_transient_fetch_failure(tmp_path) 
 def test_live_runtime_skips_iteration_when_fetch_fails_without_cached_quote(tmp_path) -> None:
     config = small_live_config(tmp_path)
     seed_warmup_bars(config)
-    qff = FakeQffProvider(
+    tw_leg = FakeTwLegProvider(
         pd.DataFrame(),
         quotes=[
-            quote("qff", "2026-06-23T08:45:00+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("tw_leg", "2026-06-23T08:45:00+08:00", 100.0, bid=99.9, ask=100.1),
         ],
     )
-    tsm = FakeOhlcvProvider(pd.DataFrame(), quotes=[RuntimeError("request timeout")])
+    us_leg = FakeOhlcvProvider(pd.DataFrame(), quotes=[RuntimeError("request timeout")])
     usd = FakeOhlcvProvider(
         pd.DataFrame(),
         quotes=[
@@ -976,8 +976,8 @@ def test_live_runtime_skips_iteration_when_fetch_fails_without_cached_quote(tmp_
 
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=lambda: ts("2026-06-23T08:45:00+08:00"),
         sleeper=lambda _: None,
@@ -986,7 +986,7 @@ def test_live_runtime_skips_iteration_when_fetch_fails_without_cached_quote(tmp_
 
     assert result.iterations == 1
     output = terminal_output.getvalue()
-    assert "WARN fetch_tsm failed:RuntimeError" in output
+    assert "WARN fetch_us_leg failed:RuntimeError" in output
     assert "WARN market_data_fetch skip_iteration" in output
     store = SQLiteStore(config.store_path)
     try:
@@ -1011,7 +1011,7 @@ def indicator_snapshot(zscore: float = 2.1) -> IndicatorSnapshot:
 
 
 def test_fubon_fetch_candidates_checks_afterhours_when_regular_is_empty() -> None:
-    provider = FubonQffMarketData(None)
+    provider = FubonTwLegMarketData(None)
     intraday = FakeFubonIntraday(
         {
             "REGULAR": {"data": []},
@@ -1041,7 +1041,7 @@ def test_fubon_fetch_candidates_checks_afterhours_when_regular_is_empty() -> Non
 
 
 def test_fubon_fetch_candidates_empty_sessions_error_includes_diagnostics() -> None:
-    provider = FubonQffMarketData(None)
+    provider = FubonTwLegMarketData(None)
     intraday = FakeFubonIntraday(
         {
             "REGULAR": {"data": []},
@@ -1063,8 +1063,8 @@ def test_fubon_fetch_candidates_empty_sessions_error_includes_diagnostics() -> N
     }
 
 
-def test_select_qff_front_month_skips_expired_contracts() -> None:
-    selected = select_qff_front_month(
+def test_select_tw_leg_front_month_skips_expired_contracts() -> None:
+    selected = select_tw_leg_front_month(
         [
             {"symbol": "QFF202606", "contractMonth": "202606"},
             {"symbol": "QFF202608", "contractMonth": "202608"},
@@ -1077,8 +1077,8 @@ def test_select_qff_front_month_skips_expired_contracts() -> None:
     assert selected.symbol == "QFF202607"
 
 
-def test_select_qff_front_month_accepts_fubon_end_date_fields() -> None:
-    selected = select_qff_front_month(
+def test_select_tw_leg_front_month_accepts_fubon_end_date_fields() -> None:
+    selected = select_tw_leg_front_month(
         [
             {"symbol": "QFFG6", "endDate": "2026-07-15"},
             {"symbol": "QFFH6", "settlementDate": "2026-08-19"},
@@ -1091,14 +1091,14 @@ def test_select_qff_front_month_accepts_fubon_end_date_fields() -> None:
     assert selected.symbol == "QFFG6"
 
 
-def test_select_qff_front_month_fails_when_expiry_is_unparseable() -> None:
+def test_select_tw_leg_front_month_fails_when_expiry_is_unparseable() -> None:
     with pytest.raises(RuntimeError, match="Unable to select"):
-        select_qff_front_month([{"symbol": "QFFUNKNOWN"}], product="QFF")
+        select_tw_leg_front_month([{"symbol": "QFFUNKNOWN"}], product="QFF")
 
 
-def test_qff_symbol_to_taifex_contract_month_accepts_fubon_code() -> None:
+def test_tw_leg_symbol_to_taifex_contract_month_accepts_fubon_code() -> None:
     assert (
-        qff_symbol_to_taifex_contract_month(
+        tw_leg_symbol_to_taifex_contract_month(
             "QFFG6",
             reference_date=datetime.fromisoformat("2026-06-18T00:00:00+08:00").date(),
         )
@@ -1106,11 +1106,11 @@ def test_qff_symbol_to_taifex_contract_month_accepts_fubon_code() -> None:
     )
 
 
-def test_resolve_qff_contract_normalizes_policy_selection_for_fubon_ordering(tmp_path) -> None:
+def test_resolve_tw_leg_contract_normalizes_policy_selection_for_fubon_ordering(tmp_path) -> None:
     config = make_app_config(tmp_path)
-    contract = resolve_qff_contract(
+    contract = resolve_tw_leg_contract(
         config,
-        FakeQffCandidateProvider(
+        FakeTwLegCandidateProvider(
             [{"symbol": "QFF202607", "contractMonth": "202607"}]
         ),
         now=ts("2026-06-18T08:45:00+08:00"),
@@ -1122,16 +1122,16 @@ def test_resolve_qff_contract_normalizes_policy_selection_for_fubon_ordering(tmp
     assert contract.selection.symbol == "QFF202607"
 
 
-def test_resolve_qff_contract_normalizes_front_month_selector_for_fubon_ordering(tmp_path) -> None:
+def test_resolve_tw_leg_contract_normalizes_front_month_selector_for_fubon_ordering(tmp_path) -> None:
     config = make_app_config(tmp_path)
     config = replace(
         config,
         contract_policy=replace(config.contract_policy, enabled=False),
     )
 
-    contract = resolve_qff_contract(
+    contract = resolve_tw_leg_contract(
         config,
-        FakeQffProvider(),
+        FakeTwLegProvider(),
         now=ts("2026-06-18T08:45:00+08:00"),
     )
 
@@ -1267,7 +1267,7 @@ def test_parse_fubon_books_quote_reads_top_level_bid_ask_and_sizes() -> None:
 
 
 def test_fubon_books_cache_fetch_quote_returns_latest_book() -> None:
-    provider = FubonQffMarketData(None, book_wait_timeout_seconds=0.0)
+    provider = FubonTwLegMarketData(None, book_wait_timeout_seconds=0.0)
     provider.intraday = FakeFubonIntraday({"REGULAR": {"data": []}, "AFTERHOURS": {"data": []}})
     websocket = FakeFubonWebSocket()
     provider.websocket = websocket
@@ -1299,7 +1299,7 @@ def test_fubon_books_cache_fetch_quote_returns_latest_book() -> None:
 
 
 def test_fubon_books_subscription_can_unsubscribe_old_symbol() -> None:
-    provider = FubonQffMarketData(None, book_wait_timeout_seconds=0.0)
+    provider = FubonTwLegMarketData(None, book_wait_timeout_seconds=0.0)
     provider.intraday = FakeFubonIntraday({"REGULAR": {"data": []}, "AFTERHOURS": {"data": []}})
     websocket = FakeFubonWebSocket()
     provider.websocket = websocket
@@ -1317,8 +1317,8 @@ def test_fubon_books_subscription_can_unsubscribe_old_symbol() -> None:
     assert websocket.unsubscriptions == [{"id": "sub-1"}]
 
 
-def test_fubon_qff_candles_merge_regular_and_afterhours_sessions() -> None:
-    provider = FubonQffMarketData(None)
+def test_fubon_tw_leg_candles_merge_regular_and_afterhours_sessions() -> None:
+    provider = FubonTwLegMarketData(None)
     intraday = FakeFubonIntraday(
         {
             "candles_regular": {
@@ -1354,7 +1354,7 @@ def test_fubon_qff_candles_merge_regular_and_afterhours_sessions() -> None:
 
 
 def test_fubon_books_restart_clears_cache_disconnects_and_resubscribes() -> None:
-    provider = FubonQffMarketData(None, book_wait_timeout_seconds=0.0)
+    provider = FubonTwLegMarketData(None, book_wait_timeout_seconds=0.0)
     provider.intraday = FakeFubonIntraday({"REGULAR": {"data": []}, "AFTERHOURS": {"data": []}})
     websocket = FakeFubonWebSocket()
     provider.websocket = websocket
@@ -1386,7 +1386,7 @@ def test_fubon_books_restart_clears_cache_disconnects_and_resubscribes() -> None
 
 
 def test_fubon_quote_rest_diagnostics_does_not_fill_book_fields() -> None:
-    provider = FubonQffMarketData(None, book_wait_timeout_seconds=0.0)
+    provider = FubonTwLegMarketData(None, book_wait_timeout_seconds=0.0)
     provider.intraday = FakeFubonIntraday({"REGULAR": {"data": []}, "AFTERHOURS": {"data": []}})
     provider.websocket = FakeFubonWebSocket()
 
@@ -1418,7 +1418,7 @@ def test_parse_taifex_download_entries_extracts_csv_links() -> None:
     assert entries[-1].csv_url.endswith("Daily_2026_06_18.zip")
 
 
-def test_taifex_qff_trade_downloader_aggregates_tick_csv_to_1m(tmp_path) -> None:
+def test_taifex_tw_leg_trade_downloader_aggregates_tick_csv_to_1m(tmp_path) -> None:
     zip_payload = make_taifex_zip(
         "\n".join(
             [
@@ -1439,7 +1439,7 @@ def test_taifex_qff_trade_downloader_aggregates_tick_csv_to_1m(tmp_path) -> None
             "DailydownloadCSV/Daily_2026_06_18.zip"
         ).encode("utf-8")
 
-    frame = TaifexQffTradeDownloader(
+    frame = TaifexTwLegTradeDownloader(
         tmp_path / "cache",
         http_get=http_get,
     ).fetch_1m(
@@ -1453,9 +1453,9 @@ def test_taifex_qff_trade_downloader_aggregates_tick_csv_to_1m(tmp_path) -> None
     assert frame.iloc[0]["close"] == 2420.0
 
 
-def test_warmup_builder_combines_qff_sources_and_forward_fills(tmp_path) -> None:
+def test_warmup_builder_combines_tw_leg_sources_and_forward_fills(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    fallback = FakeQffProvider(
+    fallback = FakeTwLegProvider(
         rows(
             [
                 ("2026-06-18T08:45:00+08:00", 100.0),
@@ -1463,8 +1463,8 @@ def test_warmup_builder_combines_qff_sources_and_forward_fills(tmp_path) -> None
             ]
         )
     )
-    intraday = FakeQffProvider(rows([("2026-06-18T08:47:00+08:00", 103.0)]))
-    tsm = FakeOhlcvProvider(
+    intraday = FakeTwLegProvider(rows([("2026-06-18T08:47:00+08:00", 103.0)]))
+    us_leg = FakeOhlcvProvider(
         rows(
             [
                 ("2026-06-18T08:45:00+08:00", 20.0),
@@ -1485,11 +1485,11 @@ def test_warmup_builder_combines_qff_sources_and_forward_fills(tmp_path) -> None
 
     bars = WarmupBuilder(
         live_config=config.live,
-        qff_intraday_provider=intraday,
-        qff_fallback_provider=fallback,
-        tsm_provider=tsm,
+        tw_leg_intraday_provider=intraday,
+        tw_leg_fallback_provider=fallback,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
-    ).build(qff_symbol="QFF202607", end=ts("2026-06-18T08:48:42+08:00"))
+    ).build(tw_leg_symbol="QFF202607", end=ts("2026-06-18T08:48:42+08:00"))
 
     assert len(bars) == 3
     assert [bar.timestamp for bar in bars] == [
@@ -1497,11 +1497,11 @@ def test_warmup_builder_combines_qff_sources_and_forward_fills(tmp_path) -> None
         ts("2026-06-18T08:46:00+08:00"),
         ts("2026-06-18T08:47:00+08:00"),
     ]
-    assert bars[1].qff_close is None
-    assert bars[1].qff_close_filled == 100.0
-    assert bars[2].qff_close_filled == 103.0
-    assert bars[2].tsm_twd_fair == 21.0 * 30.0 / 5.0
-    assert bars[2].spread == pytest.approx((bars[2].tsm_twd_fair - 103.0) / (bars[2].tsm_twd_fair + 103.0) * 200.0)
+    assert bars[1].tw_leg_close is None
+    assert bars[1].tw_leg_close_filled == 100.0
+    assert bars[2].tw_leg_close_filled == 103.0
+    assert bars[2].us_leg_twd_fair == 21.0 * 30.0 / 5.0
+    assert bars[2].spread == pytest.approx((bars[2].us_leg_twd_fair - 103.0) / (bars[2].us_leg_twd_fair + 103.0) * 200.0)
 
 
 def test_warmup_builder_does_not_fetch_fallback_when_intraday_is_sufficient(
@@ -1515,9 +1515,9 @@ def test_warmup_builder_does_not_fetch_fallback_when_intraday_is_sufficient(
             ("2026-06-18T08:47:00+08:00", 102.0),
         ]
     )
-    intraday = FakeQffProvider(intraday_rows)
-    fallback = FakeQffProvider(intraday_rows)
-    tsm = FakeOhlcvProvider(intraday_rows)
+    intraday = FakeTwLegProvider(intraday_rows)
+    fallback = FakeTwLegProvider(intraday_rows)
+    us_leg = FakeOhlcvProvider(intraday_rows)
     usd = FakeOhlcvProvider(
         rows(
             [
@@ -1530,11 +1530,11 @@ def test_warmup_builder_does_not_fetch_fallback_when_intraday_is_sufficient(
 
     bars = WarmupBuilder(
         live_config=config.live,
-        qff_intraday_provider=intraday,
-        qff_fallback_provider=fallback,
-        tsm_provider=tsm,
+        tw_leg_intraday_provider=intraday,
+        tw_leg_fallback_provider=fallback,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
-    ).build(qff_symbol="QFF202607", end=ts("2026-06-18T08:48:42+08:00"))
+    ).build(tw_leg_symbol="QFF202607", end=ts("2026-06-18T08:48:42+08:00"))
 
     assert len(bars) == 3
     assert intraday.fetch_1m_calls
@@ -1542,7 +1542,7 @@ def test_warmup_builder_does_not_fetch_fallback_when_intraday_is_sufficient(
 
 
 def test_expected_warmup_index_is_anchored_to_current_night_session() -> None:
-    warmup_index, session_index = build_qff_expected_warmup_index(
+    warmup_index, session_index = build_tw_leg_expected_warmup_index(
         start=ts("2026-06-18T13:40:00+08:00"),
         end=ts("2026-06-19T00:04:00+08:00"),
         count=3,
@@ -1572,12 +1572,12 @@ def test_warmup_builder_refuses_wholly_missing_current_night_session(
     with pytest.raises(RuntimeError, match="expected warmup window"):
         WarmupBuilder(
             live_config=config.live,
-            qff_intraday_provider=FakeQffProvider(day_only),
-            qff_fallback_provider=FakeQffProvider(day_only),
-            tsm_provider=FakeOhlcvProvider(pd.DataFrame()),
+            tw_leg_intraday_provider=FakeTwLegProvider(day_only),
+            tw_leg_fallback_provider=FakeTwLegProvider(day_only),
+            us_leg_provider=FakeOhlcvProvider(pd.DataFrame()),
             usdttwd_provider=FakeOhlcvProvider(pd.DataFrame()),
         ).build(
-            qff_symbol="QFF202607",
+            tw_leg_symbol="QFF202607",
             end=ts("2026-06-18T19:42:00+08:00"),
         )
 
@@ -1589,7 +1589,7 @@ def test_warmup_builder_refuses_when_forward_fill_ratio_too_high(tmp_path) -> No
         live=replace(config.live, warmup_forward_fill_max_ratio=0.2),
     )
     # Same data as the success case (1 of 3 minutes forward-filled = 0.33 > 0.2).
-    fallback = FakeQffProvider(
+    fallback = FakeTwLegProvider(
         rows(
             [
                 ("2026-06-18T08:45:00+08:00", 100.0),
@@ -1597,8 +1597,8 @@ def test_warmup_builder_refuses_when_forward_fill_ratio_too_high(tmp_path) -> No
             ]
         )
     )
-    intraday = FakeQffProvider(rows([("2026-06-18T08:47:00+08:00", 103.0)]))
-    tsm = FakeOhlcvProvider(
+    intraday = FakeTwLegProvider(rows([("2026-06-18T08:47:00+08:00", 103.0)]))
+    us_leg = FakeOhlcvProvider(
         rows(
             [
                 ("2026-06-18T08:45:00+08:00", 20.0),
@@ -1620,16 +1620,16 @@ def test_warmup_builder_refuses_when_forward_fill_ratio_too_high(tmp_path) -> No
     with pytest.raises(RuntimeError, match="forward-fill ratio"):
         WarmupBuilder(
             live_config=config.live,
-            qff_intraday_provider=intraday,
-            qff_fallback_provider=fallback,
-            tsm_provider=tsm,
+            tw_leg_intraday_provider=intraday,
+            tw_leg_fallback_provider=fallback,
+            us_leg_provider=us_leg,
             usdttwd_provider=usd,
-        ).build(qff_symbol="QFF202607", end=ts("2026-06-18T08:48:42+08:00"))
+        ).build(tw_leg_symbol="QFF202607", end=ts("2026-06-18T08:48:42+08:00"))
 
 
-def test_warmup_builder_refuses_stale_trailing_qff_data(tmp_path) -> None:
+def test_warmup_builder_refuses_stale_trailing_tw_leg_data(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    stale_qff = FakeQffProvider(
+    stale_tw_leg = FakeTwLegProvider(
         rows(
             [
                 ("2026-06-18T08:45:00+08:00", 100.0),
@@ -1653,15 +1653,15 @@ def test_warmup_builder_refuses_stale_trailing_qff_data(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="latest actual bar is stale"):
         WarmupBuilder(
             live_config=config.live,
-            qff_intraday_provider=stale_qff,
-            qff_fallback_provider=None,
-            tsm_provider=FakeOhlcvProvider(current_rows),
+            tw_leg_intraday_provider=stale_tw_leg,
+            tw_leg_fallback_provider=None,
+            us_leg_provider=FakeOhlcvProvider(current_rows),
             usdttwd_provider=FakeOhlcvProvider(current_rows),
-        ).build(qff_symbol="QFF202607", end=ts("2026-06-18T08:53:00+08:00"))
+        ).build(tw_leg_symbol="QFF202607", end=ts("2026-06-18T08:53:00+08:00"))
 
 
-def test_qff_warmup_source_report_tracks_precedence_and_quality() -> None:
-    report = build_qff_warmup_source_report(
+def test_tw_leg_warmup_source_report_tracks_precedence_and_quality() -> None:
+    report = build_tw_leg_warmup_source_report(
         [
             (
                 "taifex",
@@ -1677,22 +1677,22 @@ def test_qff_warmup_source_report_tracks_precedence_and_quality() -> None:
         ],
         start_minute=ts("2026-06-18T08:45:00+08:00"),
         end_minute=ts("2026-06-18T08:47:00+08:00"),
-        qff_fetch_start=ts("2026-06-18T08:44:00+08:00"),
+        tw_leg_fetch_start=ts("2026-06-18T08:44:00+08:00"),
     )
 
     assert report.null_count == 0
     assert report.mismatch_count == 1
     assert report.max_abs_diff == 1.0
-    assert report.frame.loc[0, "qff_close_filled"] == 100.0
-    assert report.frame.loc[1, "qff_close_filled"] == 100.0
+    assert report.frame.loc[0, "tw_leg_close_filled"] == 100.0
+    assert report.frame.loc[1, "tw_leg_close_filled"] == 100.0
     assert report.frame.loc[1, "source_used"] == "forward_fill"
-    assert report.frame.loc[2, "merged_qff_close"] == 103.0
+    assert report.frame.loc[2, "merged_tw_leg_close"] == 103.0
     assert report.frame.loc[2, "source_used"] == "fubon"
 
 
-def test_warmup_builder_uses_prior_qff_close_to_seed_forward_fill(tmp_path) -> None:
+def test_warmup_builder_uses_prior_tw_leg_close_to_seed_forward_fill(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    qff = FakeQffProvider(
+    tw_leg = FakeTwLegProvider(
         rows(
             [
                 ("2026-06-18T08:45:00+08:00", 99.0),
@@ -1700,7 +1700,7 @@ def test_warmup_builder_uses_prior_qff_close_to_seed_forward_fill(tmp_path) -> N
             ]
         )
     )
-    tsm = FakeOhlcvProvider(
+    us_leg = FakeOhlcvProvider(
         rows(
             [
                 ("2026-06-18T08:45:00+08:00", 20.0),
@@ -1721,21 +1721,21 @@ def test_warmup_builder_uses_prior_qff_close_to_seed_forward_fill(tmp_path) -> N
 
     bars = WarmupBuilder(
         live_config=config.live,
-        qff_intraday_provider=qff,
-        qff_fallback_provider=None,
-        tsm_provider=tsm,
+        tw_leg_intraday_provider=tw_leg,
+        tw_leg_fallback_provider=None,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
-    ).build(qff_symbol="QFF202607", end=ts("2026-06-18T08:48:00+08:00"))
+    ).build(tw_leg_symbol="QFF202607", end=ts("2026-06-18T08:48:00+08:00"))
 
-    assert bars[0].qff_close == 99.0
-    assert bars[0].qff_close_filled == 99.0
-    assert bars[1].qff_close_filled == 101.0
+    assert bars[0].tw_leg_close == 99.0
+    assert bars[0].tw_leg_close_filled == 99.0
+    assert bars[1].tw_leg_close_filled == 101.0
 
 
-def test_warmup_builder_fails_when_initial_qff_cannot_be_filled(tmp_path) -> None:
+def test_warmup_builder_fails_when_initial_tw_leg_cannot_be_filled(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    qff = FakeQffProvider(rows([("2026-06-18T08:46:00+08:00", 101.0)]))
-    tsm = FakeOhlcvProvider(
+    tw_leg = FakeTwLegProvider(rows([("2026-06-18T08:46:00+08:00", 101.0)]))
+    us_leg = FakeOhlcvProvider(
         rows(
             [
                 ("2026-06-18T08:45:00+08:00", 20.0),
@@ -1757,39 +1757,39 @@ def test_warmup_builder_fails_when_initial_qff_cannot_be_filled(tmp_path) -> Non
     with pytest.raises(RuntimeError, match="cannot forward-fill"):
         WarmupBuilder(
             live_config=config.live,
-            qff_intraday_provider=qff,
-            qff_fallback_provider=None,
-            tsm_provider=tsm,
+            tw_leg_intraday_provider=tw_leg,
+            tw_leg_fallback_provider=None,
+            us_leg_provider=us_leg,
             usdttwd_provider=usd,
-        ).build(qff_symbol="QFF202607", end=ts("2026-06-18T08:48:00+08:00"))
+        ).build(tw_leg_symbol="QFF202607", end=ts("2026-06-18T08:48:00+08:00"))
 
 
-def test_warmup_builder_fails_when_tsm_or_usd_is_missing(tmp_path) -> None:
+def test_warmup_builder_fails_when_us_leg_or_usd_is_missing(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    qff = FakeQffProvider(rows([("2026-06-18T08:45:00+08:00", 100.0)]))
-    tsm = FakeOhlcvProvider(rows([("2026-06-18T08:45:00+08:00", 20.0)]))
+    tw_leg = FakeTwLegProvider(rows([("2026-06-18T08:45:00+08:00", 100.0)]))
+    us_leg = FakeOhlcvProvider(rows([("2026-06-18T08:45:00+08:00", 20.0)]))
     usd = FakeOhlcvProvider(rows([("2026-06-18T08:45:00+08:00", 30.0)]))
 
     with pytest.raises(RuntimeError, match="missing minutes"):
         WarmupBuilder(
             live_config=config.live,
-            qff_intraday_provider=qff,
-            qff_fallback_provider=None,
-            tsm_provider=tsm,
+            tw_leg_intraday_provider=tw_leg,
+            tw_leg_fallback_provider=None,
+            us_leg_provider=us_leg,
             usdttwd_provider=usd,
-        ).build(qff_symbol="QFF202607", end=ts("2026-06-18T08:48:00+08:00"))
+        ).build(tw_leg_symbol="QFF202607", end=ts("2026-06-18T08:48:00+08:00"))
 
 
 def test_live_minute_bar_builder_finalizes_on_minute_crossing() -> None:
     builder = LiveMinuteBarBuilder(stale_seconds=10.0, max_leg_timestamp_skew_seconds=10.0)
     first = LiveQuoteSet(
-        qff=quote("qff", "2026-06-18T08:45:55+08:00", 100.0),
-        tsm=quote("tsm", "2026-06-18T08:45:55+08:00", 20.0),
+        tw_leg=quote("tw_leg", "2026-06-18T08:45:55+08:00", 100.0),
+        us_leg=quote("us_leg", "2026-06-18T08:45:55+08:00", 20.0),
         usdttwd=quote("usd", "2026-06-18T08:45:55+08:00", 30.0),
     )
     second = LiveQuoteSet(
-        qff=quote("qff", "2026-06-18T08:46:01+08:00", 101.0),
-        tsm=quote("tsm", "2026-06-18T08:46:01+08:00", 21.0),
+        tw_leg=quote("tw_leg", "2026-06-18T08:46:01+08:00", 101.0),
+        us_leg=quote("us_leg", "2026-06-18T08:46:01+08:00", 21.0),
         usdttwd=quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
     )
 
@@ -1799,19 +1799,19 @@ def test_live_minute_bar_builder_finalizes_on_minute_crossing() -> None:
     assert result is not None
     assert result.bar is not None
     assert result.bar.timestamp == ts("2026-06-18T08:45:00+08:00")
-    assert result.bar.qff_close_filled == 100.0
+    assert result.bar.tw_leg_close_filled == 100.0
 
 
-def test_live_minute_bar_builder_allows_qff_forward_fill_but_skips_stale_tsm() -> None:
+def test_live_minute_bar_builder_allows_tw_leg_forward_fill_but_skips_stale_us_leg() -> None:
     builder = LiveMinuteBarBuilder(stale_seconds=10.0, max_leg_timestamp_skew_seconds=10.0)
     first = LiveQuoteSet(
-        qff=quote("qff", "2026-06-18T08:45:55+08:00", 100.0),
-        tsm=quote("tsm", "2026-06-18T08:45:00+08:00", 20.0),
+        tw_leg=quote("tw_leg", "2026-06-18T08:45:55+08:00", 100.0),
+        us_leg=quote("us_leg", "2026-06-18T08:45:00+08:00", 20.0),
         usdttwd=quote("usd", "2026-06-18T08:45:55+08:00", 30.0),
     )
     stale = LiveQuoteSet(
-        qff=quote("qff", "2026-06-18T08:46:01+08:00", 101.0),
-        tsm=quote("tsm", "2026-06-18T08:46:01+08:00", 21.0),
+        tw_leg=quote("tw_leg", "2026-06-18T08:46:01+08:00", 101.0),
+        us_leg=quote("us_leg", "2026-06-18T08:46:01+08:00", 21.0),
         usdttwd=quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
     )
 
@@ -1822,17 +1822,17 @@ def test_live_minute_bar_builder_allows_qff_forward_fill_but_skips_stale_tsm() -
     assert result.skipped_reason == "market_data_stale"
 
 
-def test_live_minute_bar_builder_forward_fills_stale_qff_quote() -> None:
+def test_live_minute_bar_builder_forward_fills_stale_tw_leg_quote() -> None:
     builder = LiveMinuteBarBuilder(stale_seconds=10.0, max_leg_timestamp_skew_seconds=10.0)
-    builder.last_qff_close = 99.0
+    builder.last_tw_leg_close = 99.0
     first = LiveQuoteSet(
-        qff=quote("qff", "2026-06-18T08:44:00+08:00", 100.0),
-        tsm=quote("tsm", "2026-06-18T08:45:59+08:00", 20.0),
+        tw_leg=quote("tw_leg", "2026-06-18T08:44:00+08:00", 100.0),
+        us_leg=quote("us_leg", "2026-06-18T08:45:59+08:00", 20.0),
         usdttwd=quote("usd", "2026-06-18T08:45:59+08:00", 30.0),
     )
     second = LiveQuoteSet(
-        qff=quote("qff", "2026-06-18T08:46:01+08:00", 101.0),
-        tsm=quote("tsm", "2026-06-18T08:46:01+08:00", 21.0),
+        tw_leg=quote("tw_leg", "2026-06-18T08:46:01+08:00", 101.0),
+        us_leg=quote("us_leg", "2026-06-18T08:46:01+08:00", 21.0),
         usdttwd=quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
     )
 
@@ -1841,13 +1841,13 @@ def test_live_minute_bar_builder_forward_fills_stale_qff_quote() -> None:
 
     assert result is not None
     assert result.bar is not None
-    assert result.bar.qff_close is None
-    assert result.bar.qff_close_filled == 99.0
+    assert result.bar.tw_leg_close is None
+    assert result.bar.tw_leg_close_filled == 99.0
 
 
 def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    warmup_qff = FakeQffProvider(
+    warmup_tw_leg = FakeTwLegProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 100.0),
@@ -1856,7 +1856,7 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
             ]
         )
     )
-    warmup_tsm = FakeOhlcvProvider(
+    warmup_us_leg = FakeOhlcvProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 20.0),
@@ -1876,9 +1876,9 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
     )
     WarmupRunner(
         config,
-        qff_provider=warmup_qff,
-        qff_fallback_provider=None,
-        tsm_provider=warmup_tsm,
+        tw_leg_provider=warmup_tw_leg,
+        tw_leg_fallback_provider=None,
+        us_leg_provider=warmup_us_leg,
         usdttwd_provider=warmup_usd,
     ).run(reset_store=True, end=ts("2026-06-18T08:45:00+08:00"))
 
@@ -1891,7 +1891,7 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
             ts("2026-06-18T08:46:01+08:00"),
         ]
     )
-    qff = FakeQffProvider(
+    tw_leg = FakeTwLegProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 100.0),
@@ -1900,12 +1900,12 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
             ]
         ),
         quotes=[
-            quote("qff", "2026-06-18T08:45:59+08:00", 100.0, bid=99.9, ask=100.1),
-            quote("qff", "2026-06-18T08:46:00+08:00", 100.0, bid=99.9, ask=100.1),
-            quote("qff", "2026-06-18T08:46:01+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("tw_leg", "2026-06-18T08:45:59+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("tw_leg", "2026-06-18T08:46:00+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("tw_leg", "2026-06-18T08:46:01+08:00", 100.0, bid=99.9, ask=100.1),
         ]
     )
-    tsm = FakeOhlcvProvider(
+    us_leg = FakeOhlcvProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 20.0),
@@ -1914,9 +1914,9 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
             ]
         ),
         quotes=[
-            quote("tsm", "2026-06-18T08:45:59+08:00", 20.0, bid=19.99, ask=20.01),
-            quote("tsm", "2026-06-18T08:46:00+08:00", 20.0, bid=19.99, ask=20.01),
-            quote("tsm", "2026-06-18T08:46:01+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("us_leg", "2026-06-18T08:45:59+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("us_leg", "2026-06-18T08:46:00+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("us_leg", "2026-06-18T08:46:01+08:00", 20.0, bid=19.99, ask=20.01),
         ],
     )
     usd = FakeOhlcvProvider(
@@ -1938,8 +1938,8 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
 
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=lambda: next(clocks),
         sleeper=lambda _: None,
@@ -1976,7 +1976,7 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
 
 def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    warmup_qff = FakeQffProvider(
+    warmup_tw_leg = FakeTwLegProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 100.0),
@@ -1985,7 +1985,7 @@ def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
             ]
         )
     )
-    warmup_tsm = FakeOhlcvProvider(
+    warmup_us_leg = FakeOhlcvProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 20.0),
@@ -2005,9 +2005,9 @@ def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
     )
     WarmupRunner(
         config,
-        qff_provider=warmup_qff,
-        qff_fallback_provider=None,
-        tsm_provider=warmup_tsm,
+        tw_leg_provider=warmup_tw_leg,
+        tw_leg_fallback_provider=None,
+        us_leg_provider=warmup_us_leg,
         usdttwd_provider=warmup_usd,
     ).run(reset_store=True, end=ts("2026-06-18T08:45:00+08:00"))
 
@@ -2019,7 +2019,7 @@ def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
             ts("2026-06-18T08:46:01+08:00"),
         ]
     )
-    qff = FakeQffProvider(
+    tw_leg = FakeTwLegProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 100.0),
@@ -2028,11 +2028,11 @@ def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
             ]
         ),
         quotes=[
-            quote("qff", "2026-06-18T08:45:59+08:00", 100.0),
-            quote("qff", "2026-06-18T08:46:01+08:00", 100.0),
+            quote("tw_leg", "2026-06-18T08:45:59+08:00", 100.0),
+            quote("tw_leg", "2026-06-18T08:46:01+08:00", 100.0),
         ]
     )
-    tsm = FakeOhlcvProvider(
+    us_leg = FakeOhlcvProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 20.0),
@@ -2041,8 +2041,8 @@ def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
             ]
         ),
         quotes=[
-            quote("tsm", "2026-06-18T08:45:40+08:00", 20.0),
-            quote("tsm", "2026-06-18T08:46:01+08:00", 20.0),
+            quote("us_leg", "2026-06-18T08:45:40+08:00", 20.0),
+            quote("us_leg", "2026-06-18T08:46:01+08:00", 20.0),
         ],
     )
     usd = FakeOhlcvProvider(
@@ -2062,8 +2062,8 @@ def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
 
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=lambda: next(clocks),
         sleeper=lambda _: None,
@@ -2072,13 +2072,13 @@ def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
 
     assert result.bars_processed == 0
     assert result.skipped_minutes == 1
-    assert "WARN stale_tsm skipped_minute" in terminal_output.getvalue()
+    assert "WARN stale_us_leg skipped_minute" in terminal_output.getvalue()
 
 
 def test_live_dry_run_records_simulated_entry_and_opens_position(tmp_path) -> None:
     config = small_live_config(tmp_path)
     config = replace(config, strategy=replace(config.strategy, entry_z=1.0))
-    qff, tsm, usd = dry_run_quote_providers(
+    tw_leg, us_leg, usd = dry_run_quote_providers(
         [
             "2026-06-18T08:45:30+08:00",
             "2026-06-18T08:45:59+08:00",
@@ -2091,8 +2091,8 @@ def test_live_dry_run_records_simulated_entry_and_opens_position(tmp_path) -> No
 
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=dry_run_clock(
             [
@@ -2178,7 +2178,7 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
         "BINANCE_ALLOW_LIVE_ORDER",
     ):
         monkeypatch.setenv(name, "1")
-    qff, tsm, usd = dry_run_quote_providers(
+    tw_leg, us_leg, usd = dry_run_quote_providers(
         [
             "2026-06-18T08:45:30+08:00",
             "2026-06-18T08:45:59+08:00",
@@ -2187,26 +2187,26 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
             "2026-06-18T08:47:01+08:00",
         ]
     )
-    qff_adapter = FakeLiveExecutionAdapter(BrokerName.FUBON_QFF)
-    binance_adapter = FakeLiveExecutionAdapter(BrokerName.BINANCE_TSM)
+    tw_leg_adapter = FakeLiveExecutionAdapter(BrokerName.FUBON)
+    binance_adapter = FakeLiveExecutionAdapter(BrokerName.BINANCE)
     terminal_output = io.StringIO()
 
     result = LiveExecuteRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
-        fubon_adapter=qff_adapter,
+        fubon_adapter=tw_leg_adapter,
         binance_adapter=binance_adapter,
         readonly_brokers=(
             FixedPositionReadOnlyBroker(
-                broker=BrokerName.FUBON_QFF,
+                broker=BrokerName.FUBON,
                 symbol="QFFG6",
                 quantity=100.0,
                 fetched_at=ts("2026-06-18T08:47:01+08:00"),
             ),
             FixedPositionReadOnlyBroker(
-                broker=BrokerName.BINANCE_TSM,
+                broker=BrokerName.BINANCE,
                 symbol="TSM/USDT:USDT",
                 quantity=-(1_000_000.0 / (120.0 * 5.0)),
                 fetched_at=ts("2026-06-18T08:47:01+08:00"),
@@ -2229,7 +2229,7 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
 
     assert result.bars_processed == 2
     assert result.plans_recorded == 1
-    assert len(qff_adapter.plans) == 1
+    assert len(tw_leg_adapter.plans) == 1
     assert len(binance_adapter.plans) == 1
     output = terminal_output.getvalue()
     assert "EVENT warmup_auto start" in output
@@ -2251,7 +2251,7 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
         state = store.load_resume_state()
         assert state is not None
         assert state.strategy.state == StrategyState.OPEN
-        assert state.strategy.position_direction == Direction.SHORT_TSM_LONG_QFF
+        assert state.strategy.position_direction == Direction.SHORT_US_LONG_TW
         report = store.load_latest_reconciliation_report()
         assert report is not None
         assert report.status.value == "matched"
@@ -2264,25 +2264,25 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
         store.close()
 
 
-def _live_execute_resume_brokers(*, qff_quantity: float, tsm_quantity: float, at: str):
+def _live_execute_resume_brokers(*, tw_leg_quantity: float, us_leg_quantity: float, at: str):
     return (
         FixedPositionReadOnlyBroker(
-            broker=BrokerName.FUBON_QFF,
+            broker=BrokerName.FUBON,
             symbol="QFFG6",
-            quantity=qff_quantity,
+            quantity=tw_leg_quantity,
             fetched_at=ts(at),
         ),
         FixedPositionReadOnlyBroker(
-            broker=BrokerName.BINANCE_TSM,
+            broker=BrokerName.BINANCE,
             symbol="TSM/USDT:USDT",
-            quantity=tsm_quantity,
+            quantity=us_leg_quantity,
             fetched_at=ts(at),
         ),
     )
 
 
 def _run_live_execute_entry_to_open(config) -> None:
-    qff, tsm, usd = dry_run_quote_providers(
+    tw_leg, us_leg, usd = dry_run_quote_providers(
         [
             "2026-06-18T08:45:30+08:00",
             "2026-06-18T08:45:59+08:00",
@@ -2293,14 +2293,14 @@ def _run_live_execute_entry_to_open(config) -> None:
     )
     LiveExecuteRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
-        fubon_adapter=FakeLiveExecutionAdapter(BrokerName.FUBON_QFF),
-        binance_adapter=FakeLiveExecutionAdapter(BrokerName.BINANCE_TSM),
+        fubon_adapter=FakeLiveExecutionAdapter(BrokerName.FUBON),
+        binance_adapter=FakeLiveExecutionAdapter(BrokerName.BINANCE),
         readonly_brokers=_live_execute_resume_brokers(
-            qff_quantity=100.0,
-            tsm_quantity=-(1_000_000.0 / (120.0 * 5.0)),
+            tw_leg_quantity=100.0,
+            us_leg_quantity=-(1_000_000.0 / (120.0 * 5.0)),
             at="2026-06-18T08:47:01+08:00",
         ),
         clock=dry_run_clock(
@@ -2320,14 +2320,14 @@ def _run_live_execute_entry_to_open(config) -> None:
 
 
 def _resume_live_execute(config, *, readonly):
-    fresh_qff = rows(
+    fresh_tw_leg = rows(
         [
             ("2026-06-18T05:00:00+08:00", 100.0),
             ("2026-06-18T08:45:00+08:00", 100.0),
             ("2026-06-18T08:46:00+08:00", 100.0),
         ]
     )
-    fresh_tsm = rows(
+    fresh_us_leg = rows(
         [
             ("2026-06-18T05:00:00+08:00", 20.0),
             ("2026-06-18T08:45:00+08:00", 20.0),
@@ -2341,24 +2341,24 @@ def _resume_live_execute(config, *, readonly):
             ("2026-06-18T08:46:00+08:00", 30.0),
         ]
     )
-    qff, tsm, usd = dry_run_quote_providers(
+    tw_leg, us_leg, usd = dry_run_quote_providers(
         [
             "2026-06-18T08:47:30+08:00",
             "2026-06-18T08:47:59+08:00",
             "2026-06-18T08:48:01+08:00",
         ],
-        qff_rows=fresh_qff,
-        tsm_rows=fresh_tsm,
+        tw_leg_rows=fresh_tw_leg,
+        us_leg_rows=fresh_us_leg,
         usd_rows=fresh_usd,
     )
     terminal = io.StringIO()
     LiveExecuteRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
-        fubon_adapter=FakeLiveExecutionAdapter(BrokerName.FUBON_QFF),
-        binance_adapter=FakeLiveExecutionAdapter(BrokerName.BINANCE_TSM),
+        fubon_adapter=FakeLiveExecutionAdapter(BrokerName.FUBON),
+        binance_adapter=FakeLiveExecutionAdapter(BrokerName.BINANCE),
         readonly_brokers=readonly,
         clock=dry_run_clock(
             [
@@ -2401,8 +2401,8 @@ def test_live_execute_resume_keeps_open_when_broker_matches(
     output = _resume_live_execute(
         config,
         readonly=_live_execute_resume_brokers(
-            qff_quantity=100.0,
-            tsm_quantity=-(1_000_000.0 / (120.0 * 5.0)),
+            tw_leg_quantity=100.0,
+            us_leg_quantity=-(1_000_000.0 / (120.0 * 5.0)),
             at="2026-06-18T08:47:30+08:00",
         ),
     )
@@ -2429,8 +2429,8 @@ def test_live_execute_resume_pauses_when_broker_lost_position(
     output = _resume_live_execute(
         config,
         readonly=_live_execute_resume_brokers(
-            qff_quantity=0.0,
-            tsm_quantity=0.0,
+            tw_leg_quantity=0.0,
+            us_leg_quantity=0.0,
             at="2026-06-18T08:47:30+08:00",
         ),
     )
@@ -2469,9 +2469,9 @@ def test_live_execute_resume_keeps_position_when_broker_unreachable(
     _resume_live_execute(
         config,
         readonly=(
-            _RaisingReadOnlyBroker(BrokerName.FUBON_QFF),
+            _RaisingReadOnlyBroker(BrokerName.FUBON),
             FixedPositionReadOnlyBroker(
-                broker=BrokerName.BINANCE_TSM,
+                broker=BrokerName.BINANCE,
                 symbol="TSM/USDT:USDT",
                 quantity=-(1_000_000.0 / (120.0 * 5.0)),
                 fetched_at=ts("2026-06-18T08:47:30+08:00"),
@@ -2492,7 +2492,7 @@ def test_live_execute_resume_keeps_position_when_broker_unreachable(
 def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> None:
     config = small_live_config(tmp_path)
     config = replace(config, strategy=replace(config.strategy, entry_z=1.0))
-    first_qff, first_tsm, first_usd = dry_run_quote_providers(
+    first_tw_leg, first_us_leg, first_usd = dry_run_quote_providers(
         [
             "2026-06-18T08:45:30+08:00",
             "2026-06-18T08:45:59+08:00",
@@ -2504,8 +2504,8 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
 
     first_result = LiveDryRunRunner(
         config,
-        qff_provider=first_qff,
-        tsm_provider=first_tsm,
+        tw_leg_provider=first_tw_leg,
+        us_leg_provider=first_us_leg,
         usdttwd_provider=first_usd,
         clock=dry_run_clock(
             [
@@ -2524,14 +2524,14 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
 
     assert first_result.plans_recorded == 1
 
-    resume_qff = rows(
+    resume_tw_leg = rows(
         [
             ("2026-06-18T05:00:00+08:00", 100.0),
             ("2026-06-18T08:45:00+08:00", 100.0),
             ("2026-06-18T08:46:00+08:00", 100.0),
         ]
     )
-    resume_tsm = rows(
+    resume_us_leg = rows(
         [
             ("2026-06-18T05:00:00+08:00", 20.0),
             ("2026-06-18T08:45:00+08:00", 20.0),
@@ -2545,20 +2545,20 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
             ("2026-06-18T08:46:00+08:00", 30.0),
         ]
     )
-    second_qff, second_tsm, second_usd = dry_run_quote_providers(
+    second_tw_leg, second_us_leg, second_usd = dry_run_quote_providers(
         [
             "2026-06-18T08:47:30+08:00",
             "2026-06-18T08:47:59+08:00",
             "2026-06-18T08:48:01+08:00",
         ],
-        qff_rows=resume_qff,
-        tsm_rows=resume_tsm,
+        tw_leg_rows=resume_tw_leg,
+        us_leg_rows=resume_us_leg,
         usd_rows=resume_usd,
     )
     second_result = LiveDryRunRunner(
         config,
-        qff_provider=second_qff,
-        tsm_provider=second_tsm,
+        tw_leg_provider=second_tw_leg,
+        us_leg_provider=second_us_leg,
         usdttwd_provider=second_usd,
         clock=dry_run_clock(
             [
@@ -2601,8 +2601,8 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
         store.close()
 
 
-def test_reconnect_qff_provider_if_supported_relogins_and_stays_safe() -> None:
-    from lux_trader.runtime.live.contracts import reconnect_qff_provider_if_supported
+def test_reconnect_tw_leg_provider_if_supported_relogins_and_stays_safe() -> None:
+    from lux_trader.runtime.live.contracts import reconnect_tw_leg_provider_if_supported
 
     class _ReconProvider:
         def __init__(self, exc: Exception | None = None) -> None:
@@ -2618,26 +2618,26 @@ def test_reconnect_qff_provider_if_supported_relogins_and_stays_safe() -> None:
 
     out = io.StringIO()
     provider = _ReconProvider()
-    reconnect_qff_provider_if_supported(provider, LiveTerminalReporter(out, color=False), when)
+    reconnect_tw_leg_provider_if_supported(provider, LiveTerminalReporter(out, color=False), when)
     assert provider.calls == 1
     assert "reconnect_login" in out.getvalue()
 
     out_fail = io.StringIO()
     raising = _ReconProvider(exc=RuntimeError("login boom"))
-    reconnect_qff_provider_if_supported(
+    reconnect_tw_leg_provider_if_supported(
         raising, LiveTerminalReporter(out_fail, color=False), when
     )
     assert raising.calls == 1  # attempted
     assert "reconnect_failed" in out_fail.getvalue()  # caught, not propagated
 
     # A provider without reconnect support must be a no-op, never an error.
-    reconnect_qff_provider_if_supported(object(), LiveTerminalReporter(io.StringIO(), color=False), when)
+    reconnect_tw_leg_provider_if_supported(object(), LiveTerminalReporter(io.StringIO(), color=False), when)
 
 
 def test_live_dry_run_survives_contract_resolution_failure(tmp_path) -> None:
     config = small_live_config(tmp_path)
     config = replace(config, strategy=replace(config.strategy, entry_z=1.0))
-    qff, tsm, usd = dry_run_quote_providers(
+    tw_leg, us_leg, usd = dry_run_quote_providers(
         [
             "2026-06-18T08:45:30+08:00",
             "2026-06-18T08:45:59+08:00",
@@ -2649,7 +2649,7 @@ def test_live_dry_run_survives_contract_resolution_failure(tmp_path) -> None:
     # Startup resolves the contract once successfully; every later per-bar
     # re-resolution raises (mimicking a Fugle token-expired ticker lookup).
     calls = {"n": 0}
-    real_select = qff.select_front_month_symbol
+    real_select = tw_leg.select_front_month_symbol
 
     def failing_select(product: str) -> str:
         calls["n"] += 1
@@ -2657,14 +2657,14 @@ def test_live_dry_run_survives_contract_resolution_failure(tmp_path) -> None:
             raise RuntimeError("Fubon QFF ticker lookup token expired")
         return real_select(product)
 
-    qff.select_front_month_symbol = failing_select
+    tw_leg.select_front_month_symbol = failing_select
     terminal = io.StringIO()
 
     # The loop must survive the resolution failures rather than crash.
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=dry_run_clock(
             [
@@ -2707,18 +2707,18 @@ def open_position_state(*, state: StrategyState) -> StrategyRuntimeState:
     entry_time = ts("2026-06-18T08:40:00+08:00")
     return StrategyRuntimeState(
         state=state,
-        position_direction=Direction.SHORT_TSM_LONG_QFF,
+        position_direction=Direction.SHORT_US_LONG_TW,
         exit_signal_idx=0 if state == StrategyState.EXIT_PENDING else -1,
         exit_signal_time=ts("2026-06-18T08:45:00+08:00")
         if state == StrategyState.EXIT_PENDING
         else None,
         exit_signal_zscore=-0.1 if state == StrategyState.EXIT_PENDING else None,
-        entry_tsm=100.0,
-        entry_qff=100.0,
+        entry_us_leg=100.0,
+        entry_tw_leg=100.0,
         entry_zscore=2.2,
-        tsm_units=-10_000.0,
-        qff_units=10_000.0,
-        qff_contracts=100,
+        us_leg_units=-10_000.0,
+        tw_leg_units=10_000.0,
+        tw_leg_contracts=100,
         actual_leg_notional_twd=1_000_000.0,
         running_max_equity=2_000_000.0,
         open_trade={
@@ -2729,28 +2729,28 @@ def open_position_state(*, state: StrategyState) -> StrategyRuntimeState:
             "entry_time": entry_time,
             "entry_delay_minutes": 1,
             "entry_fill_zscore": 2.1,
-            "direction": Direction.SHORT_TSM_LONG_QFF.value,
-            "entry_tsm_twd_fair": 100.0,
-            "entry_qff_close": 100.0,
-            "tsm_units": -10_000.0,
-            "qff_units": 10_000.0,
-            "qff_contracts": 100,
-            "raw_qff_contracts": 100.0,
+            "direction": Direction.SHORT_US_LONG_TW.value,
+            "entry_us_leg_twd_fair": 100.0,
+            "entry_tw_leg_close": 100.0,
+            "us_leg_units": -10_000.0,
+            "tw_leg_units": 10_000.0,
+            "tw_leg_contracts": 100,
+            "raw_tw_leg_contracts": 100.0,
             "leg_notional_twd": 1_000_000.0,
             "actual_leg_notional_twd": 1_000_000.0,
-            "qff_contract_multiplier": 100.0,
-            "entry_tsm_fee_twd": 500.0,
-            "entry_qff_fee_twd": 500.0,
-            "entry_qff_tax_twd": 2.0,
+            "tw_leg_contract_multiplier": 100.0,
+            "entry_us_leg_fee_twd": 500.0,
+            "entry_tw_leg_fee_twd": 500.0,
+            "entry_tw_leg_tax_twd": 2.0,
             "entry_fee_twd": 1002.0,
-            "qff_symbol": "QFFG6",
-            "qff_expiry": "2026-07-15",
+            "tw_leg_symbol": "QFFG6",
+            "tw_leg_expiry": "2026-07-15",
             "contract_policy_state": "active",
         },
-        trading_qff_symbol="QFFG6",
-        trading_qff_expiry="2026-07-15",
-        eligible_active_qff_symbol="QFFG6",
-        eligible_active_qff_expiry="2026-07-15",
+        trading_tw_leg_symbol="QFFG6",
+        trading_tw_leg_expiry="2026-07-15",
+        eligible_active_tw_leg_symbol="QFFG6",
+        eligible_active_tw_leg_expiry="2026-07-15",
         last_warmup_symbol="QFFG6",
         contract_policy_state="active",
     )
@@ -2759,7 +2759,7 @@ def open_position_state(*, state: StrategyState) -> StrategyRuntimeState:
 def test_live_dry_run_exit_pending_records_exit_intent(tmp_path) -> None:
     config = small_live_config(tmp_path)
     seed_strategy_state(config, open_position_state(state=StrategyState.EXIT_PENDING))
-    qff, tsm, usd = dry_run_quote_providers(
+    tw_leg, us_leg, usd = dry_run_quote_providers(
         [
             "2026-06-18T08:45:30+08:00",
             "2026-06-18T08:45:59+08:00",
@@ -2769,8 +2769,8 @@ def test_live_dry_run_exit_pending_records_exit_intent(tmp_path) -> None:
 
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=dry_run_clock(
             [
@@ -2795,10 +2795,10 @@ def test_live_dry_run_exit_pending_records_exit_intent(tmp_path) -> None:
         assert plan["status"] == "recorded"
         assert plan["reason"] == "dry_run_exit_intent"
         sides = {leg["broker"]: leg["side"] for leg in plan["legs"]}
-        assert sides[BrokerName.BINANCE_TSM.value] == OrderSide.BUY.value
-        assert sides[BrokerName.FUBON_QFF.value] == OrderSide.SELL.value
-        assert plan["qff_symbol"] == "QFFG6"
-        assert plan["qff_expiry"] == "2026-07-15"
+        assert sides[BrokerName.BINANCE.value] == OrderSide.BUY.value
+        assert sides[BrokerName.FUBON.value] == OrderSide.SELL.value
+        assert plan["tw_leg_symbol"] == "QFFG6"
+        assert plan["tw_leg_expiry"] == "2026-07-15"
         assert plan["contract_policy_state"] == "active"
         assert count_table(store, "execution_outcomes") == 1
         assert count_table(store, "orders") == 2
@@ -2814,17 +2814,17 @@ def test_live_dry_run_exit_pending_records_exit_intent(tmp_path) -> None:
 def test_live_dry_run_force_exit_records_rollover_exit_intent(tmp_path) -> None:
     config = small_live_config(tmp_path)
     state = open_position_state(state=StrategyState.OPEN)
-    state.trading_qff_expiry = "2026-06-19"
-    state.open_trade["qff_expiry"] = "2026-06-19"
+    state.trading_tw_leg_expiry = "2026-06-19"
+    state.open_trade["tw_leg_expiry"] = "2026-06-19"
     seed_strategy_state(config, state)
-    force_qff_rows = rows(
+    force_tw_leg_rows = rows(
         [
             ("2026-06-18T13:32:00+08:00", 100.0),
             ("2026-06-18T13:33:00+08:00", 100.0),
             ("2026-06-18T13:34:00+08:00", 100.0),
         ]
     )
-    force_tsm_rows = rows(
+    force_us_leg_rows = rows(
         [
             ("2026-06-18T13:32:00+08:00", 20.0),
             ("2026-06-18T13:33:00+08:00", 20.0),
@@ -2838,21 +2838,21 @@ def test_live_dry_run_force_exit_records_rollover_exit_intent(tmp_path) -> None:
             ("2026-06-18T13:34:00+08:00", 25.0),
         ]
     )
-    qff, tsm, usd = dry_run_quote_providers(
+    tw_leg, us_leg, usd = dry_run_quote_providers(
         [
             "2026-06-18T13:35:30+08:00",
             "2026-06-18T13:35:59+08:00",
             "2026-06-18T13:36:01+08:00",
         ],
-        qff_rows=force_qff_rows,
-        tsm_rows=force_tsm_rows,
+        tw_leg_rows=force_tw_leg_rows,
+        us_leg_rows=force_us_leg_rows,
         usd_rows=force_usd_rows,
     )
 
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=dry_run_clock(
             [
@@ -2895,7 +2895,7 @@ def test_live_dry_run_force_exit_records_rollover_exit_intent(tmp_path) -> None:
 
 def test_live_runtime_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    qff = FakeQffProvider(
+    tw_leg = FakeTwLegProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 100.0),
@@ -2904,7 +2904,7 @@ def test_live_runtime_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
             ]
         )
     )
-    tsm = FakeOhlcvProvider(
+    us_leg = FakeOhlcvProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 20.0),
@@ -2926,8 +2926,8 @@ def test_live_runtime_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
 
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=lambda: ts("2026-06-18T08:45:00+08:00"),
         sleeper=lambda _: None,
@@ -2935,8 +2935,8 @@ def test_live_runtime_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
     ).run(reset_store=True, max_iterations=0)
 
     assert result.iterations == 0
-    assert result.qff_symbol == "QFFG6"
-    assert qff.fetch_1m_calls
+    assert result.tw_leg_symbol == "QFFG6"
+    assert tw_leg.fetch_1m_calls
     output = terminal_output.getvalue()
     assert "EVENT startup store_ready" in output
     assert "EVENT startup init_binance" in output
@@ -2965,7 +2965,7 @@ def test_live_runtime_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
 
 def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    warmup_qff = FakeQffProvider(
+    warmup_tw_leg = FakeTwLegProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 100.0),
@@ -2974,7 +2974,7 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
             ]
         )
     )
-    warmup_tsm = FakeOhlcvProvider(
+    warmup_us_leg = FakeOhlcvProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 20.0),
@@ -2994,9 +2994,9 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
     )
     WarmupRunner(
         config,
-        qff_provider=warmup_qff,
-        qff_fallback_provider=None,
-        tsm_provider=warmup_tsm,
+        tw_leg_provider=warmup_tw_leg,
+        tw_leg_fallback_provider=None,
+        us_leg_provider=warmup_us_leg,
         usdttwd_provider=warmup_usd,
     ).run(reset_store=True, end=ts("2026-06-18T08:45:00+08:00"))
 
@@ -3007,8 +3007,8 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
             ("2026-06-18T08:47:00+08:00", 112.0),
         ]
     )
-    live_qff = FakeQffProvider(fresh_rows)
-    live_tsm = FakeOhlcvProvider(fresh_rows)
+    live_tw_leg = FakeTwLegProvider(fresh_rows)
+    live_us_leg = FakeOhlcvProvider(fresh_rows)
     live_usd = FakeOhlcvProvider(
         rows(
             [
@@ -3022,16 +3022,16 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
 
     LiveDryRunRunner(
         config,
-        qff_provider=live_qff,
-        tsm_provider=live_tsm,
+        tw_leg_provider=live_tw_leg,
+        us_leg_provider=live_us_leg,
         usdttwd_provider=live_usd,
         clock=lambda: ts("2026-06-18T08:48:00+08:00"),
         sleeper=lambda _: None,
         reporter=LiveTerminalReporter(terminal_output, color=False),
     ).run(resume=True, max_iterations=0)
 
-    assert live_qff.fetch_1m_calls
-    assert live_tsm.fetch_ohlcv_calls
+    assert live_tw_leg.fetch_1m_calls
+    assert live_us_leg.fetch_ohlcv_calls
     assert live_usd.fetch_ohlcv_calls
     assert "EVENT warmup_auto start" in terminal_output.getvalue()
     assert "EVENT warmup_auto done_3" in terminal_output.getvalue()
@@ -3039,7 +3039,7 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
     store = SQLiteStore(config.store_path)
     try:
         store.initialize()
-        refreshed = store.load_indicator_seed_bars(3, qff_symbol="QFFG6")
+        refreshed = store.load_indicator_seed_bars(3, tw_leg_symbol="QFFG6")
         assert [bar.timestamp for bar in refreshed] == [
             ts("2026-06-18T08:45:00+08:00"),
             ts("2026-06-18T08:46:00+08:00"),
@@ -3055,14 +3055,14 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
 def test_live_runtime_non_resume_refreshes_existing_seed_by_default(tmp_path) -> None:
     config = small_live_config(tmp_path)
     seed_warmup_bars(config)
-    fresh_qff = rows(
+    fresh_tw_leg = rows(
         [
             ("2026-06-18T08:45:00+08:00", 110.0),
             ("2026-06-18T08:46:00+08:00", 111.0),
             ("2026-06-18T08:47:00+08:00", 112.0),
         ]
     )
-    fresh_tsm = rows(
+    fresh_us_leg = rows(
         [
             ("2026-06-18T08:45:00+08:00", 20.0),
             ("2026-06-18T08:46:00+08:00", 20.0),
@@ -3076,22 +3076,22 @@ def test_live_runtime_non_resume_refreshes_existing_seed_by_default(tmp_path) ->
             ("2026-06-18T08:47:00+08:00", 30.0),
         ]
     )
-    qff = FakeQffProvider(fresh_qff)
+    tw_leg = FakeTwLegProvider(fresh_tw_leg)
 
     LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=FakeOhlcvProvider(fresh_tsm),
+        tw_leg_provider=tw_leg,
+        us_leg_provider=FakeOhlcvProvider(fresh_us_leg),
         usdttwd_provider=FakeOhlcvProvider(fresh_usd),
         clock=lambda: ts("2026-06-18T08:48:00+08:00"),
         sleeper=lambda _: None,
     ).run(max_iterations=0)
 
-    assert qff.fetch_1m_calls
+    assert tw_leg.fetch_1m_calls
     store = SQLiteStore(config.store_path)
     try:
         store.initialize()
-        refreshed = store.load_indicator_seed_bars(3, qff_symbol="QFFG6")
+        refreshed = store.load_indicator_seed_bars(3, tw_leg_symbol="QFFG6")
         assert [bar.timestamp for bar in refreshed] == [
             ts("2026-06-18T08:45:00+08:00"),
             ts("2026-06-18T08:46:00+08:00"),
@@ -3104,22 +3104,22 @@ def test_live_runtime_non_resume_refreshes_existing_seed_by_default(tmp_path) ->
 def test_live_runtime_resume_refuses_cached_seed_when_refresh_fails(tmp_path) -> None:
     config = small_live_config(tmp_path)
     seed_warmup_bars(config)
-    qff = FakeQffProvider(pd.DataFrame())
-    tsm = FakeOhlcvProvider(pd.DataFrame())
+    tw_leg = FakeTwLegProvider(pd.DataFrame())
+    us_leg = FakeOhlcvProvider(pd.DataFrame())
     usd = FakeOhlcvProvider(pd.DataFrame())
 
     with pytest.raises(RuntimeError):
         LiveDryRunRunner(
             config,
-            qff_provider=qff,
-            tsm_provider=tsm,
+            tw_leg_provider=tw_leg,
+            us_leg_provider=us_leg,
             usdttwd_provider=usd,
             clock=lambda: ts("2026-06-18T08:48:00+08:00"),
             sleeper=lambda _: None,
         ).run(resume=True, max_iterations=0)
 
-    assert qff.fetch_1m_calls
-    assert tsm.fetch_ohlcv_calls == []
+    assert tw_leg.fetch_1m_calls
+    assert us_leg.fetch_ohlcv_calls == []
     assert usd.fetch_ohlcv_calls == []
 
 
@@ -3130,8 +3130,8 @@ def test_live_runtime_resume_rejects_skip_warmup(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="requires a fresh warmup rebuild"):
         LiveDryRunRunner(
             config,
-            qff_provider=FakeQffProvider(pd.DataFrame()),
-            tsm_provider=FakeOhlcvProvider(pd.DataFrame()),
+            tw_leg_provider=FakeTwLegProvider(pd.DataFrame()),
+            us_leg_provider=FakeOhlcvProvider(pd.DataFrame()),
             usdttwd_provider=FakeOhlcvProvider(pd.DataFrame()),
             clock=lambda: ts("2026-06-18T08:48:00+08:00"),
             sleeper=lambda _: None,
@@ -3140,7 +3140,7 @@ def test_live_runtime_resume_rejects_skip_warmup(tmp_path) -> None:
 
 def test_live_runtime_skip_warmup_requires_existing_seed(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    qff = FakeQffProvider(
+    tw_leg = FakeTwLegProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 100.0),
@@ -3149,7 +3149,7 @@ def test_live_runtime_skip_warmup_requires_existing_seed(tmp_path) -> None:
             ]
         )
     )
-    tsm = FakeOhlcvProvider(
+    us_leg = FakeOhlcvProvider(
         rows(
             [
                 ("2026-06-18T04:58:00+08:00", 20.0),
@@ -3171,15 +3171,15 @@ def test_live_runtime_skip_warmup_requires_existing_seed(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="Warmup seed is missing"):
         LiveDryRunRunner(
             config,
-            qff_provider=qff,
-            tsm_provider=tsm,
+            tw_leg_provider=tw_leg,
+            us_leg_provider=us_leg,
             usdttwd_provider=usd,
             clock=lambda: ts("2026-06-18T08:45:00+08:00"),
             sleeper=lambda _: None,
         ).run(reset_store=True, max_iterations=0, skip_warmup=True)
 
-    assert qff.fetch_1m_calls == []
-    assert tsm.fetch_ohlcv_calls == []
+    assert tw_leg.fetch_1m_calls == []
+    assert us_leg.fetch_ohlcv_calls == []
     assert usd.fetch_ohlcv_calls == []
 
 
@@ -3208,29 +3208,29 @@ def test_warmup_runner_rejects_live_order_flag_before_provider_calls(tmp_path) -
             expected_zscore_tolerance=1e-7,
         ),
     )
-    qff = FakeQffProvider(rows([("2026-06-18T08:45:00+08:00", 100.0)]))
-    tsm = FakeOhlcvProvider(rows([("2026-06-18T08:45:00+08:00", 20.0)]))
+    tw_leg = FakeTwLegProvider(rows([("2026-06-18T08:45:00+08:00", 100.0)]))
+    us_leg = FakeOhlcvProvider(rows([("2026-06-18T08:45:00+08:00", 20.0)]))
     usd = FakeOhlcvProvider(rows([("2026-06-18T08:45:00+08:00", 30.0)]))
 
     with pytest.raises(RuntimeError, match="allow_live_order"):
         WarmupRunner(
             config,
-            qff_provider=qff,
-            qff_fallback_provider=None,
-            tsm_provider=tsm,
+            tw_leg_provider=tw_leg,
+            tw_leg_fallback_provider=None,
+            us_leg_provider=us_leg,
             usdttwd_provider=usd,
         ).run(reset_store=True)
 
-    assert qff.select_calls == 0
-    assert qff.fetch_1m_calls == []
-    assert tsm.fetch_ohlcv_calls == []
+    assert tw_leg.select_calls == 0
+    assert tw_leg.fetch_1m_calls == []
+    assert us_leg.fetch_ohlcv_calls == []
     assert usd.fetch_ohlcv_calls == []
 
 
 def test_warmup_runner_fixed_symbol_skips_front_month_selector_and_writes_seed_only(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    config = replace(config, live=replace(config.live, qff_symbol="QFF202607"))
-    qff = FakeQffProvider(
+    config = replace(config, live=replace(config.live, tw_leg_symbol="QFF202607"))
+    tw_leg = FakeTwLegProvider(
         rows(
             [
                 ("2026-06-18T08:45:00+08:00", 100.0),
@@ -3239,7 +3239,7 @@ def test_warmup_runner_fixed_symbol_skips_front_month_selector_and_writes_seed_o
             ]
         )
     )
-    tsm = FakeOhlcvProvider(
+    us_leg = FakeOhlcvProvider(
         rows(
             [
                 ("2026-06-18T08:45:00+08:00", 20.0),
@@ -3260,16 +3260,16 @@ def test_warmup_runner_fixed_symbol_skips_front_month_selector_and_writes_seed_o
 
     result = WarmupRunner(
         config,
-        qff_provider=qff,
-        qff_fallback_provider=None,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        tw_leg_fallback_provider=None,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
     ).run(reset_store=True, end=ts("2026-06-18T08:48:00+08:00"))
 
     assert result.bars_written == 3
-    assert result.qff_symbol == "QFFG6"
-    assert qff.select_calls == 0
-    assert qff.fetch_1m_calls[0][0] == "QFFG6"
+    assert result.tw_leg_symbol == "QFFG6"
+    assert tw_leg.select_calls == 0
+    assert tw_leg.fetch_1m_calls[0][0] == "QFFG6"
 
     store = SQLiteStore(config.store_path)
     try:
@@ -3284,10 +3284,10 @@ def test_warmup_runner_fixed_symbol_skips_front_month_selector_and_writes_seed_o
         store.close()
 
 
-def test_qff_warmup_check_runner_uses_fubon_and_taifex_only(tmp_path) -> None:
+def test_tw_leg_warmup_check_runner_uses_fubon_and_taifex_only(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    qff = FakeQffProvider(rows([("2026-06-18T08:47:00+08:00", 103.0)]))
-    taifex = FakeQffProvider(
+    tw_leg = FakeTwLegProvider(rows([("2026-06-18T08:47:00+08:00", 103.0)]))
+    taifex = FakeTwLegProvider(
         rows(
             [
                 ("2026-06-18T08:44:00+08:00", 99.0),
@@ -3297,20 +3297,20 @@ def test_qff_warmup_check_runner_uses_fubon_and_taifex_only(tmp_path) -> None:
         )
     )
 
-    result = QffWarmupCheckRunner(
+    result = TwLegWarmupCheckRunner(
         config,
-        qff_provider=qff,
+        tw_leg_provider=tw_leg,
         taifex_provider=taifex,
     ).run(output_csv="", end=ts("2026-06-18T08:48:00+08:00"))
 
-    assert result.qff_symbol == "QFFG6"
+    assert result.tw_leg_symbol == "QFFG6"
     assert len(result.report.frame) == 3
     assert result.report.null_count == 0
     assert result.report.source_rows == {"taifex": 3, "fubon": 1}
     assert result.output_csv is None
 
 
-def test_qff_warmup_check_refuses_wholly_missing_current_session(tmp_path) -> None:
+def test_tw_leg_warmup_check_refuses_wholly_missing_current_session(tmp_path) -> None:
     config = small_live_config(tmp_path)
     day_only = rows(
         [
@@ -3321,10 +3321,10 @@ def test_qff_warmup_check_refuses_wholly_missing_current_session(tmp_path) -> No
     )
 
     with pytest.raises(RuntimeError, match="expected warmup window"):
-        QffWarmupCheckRunner(
+        TwLegWarmupCheckRunner(
             config,
-            qff_provider=FakeQffProvider(day_only),
-            taifex_provider=FakeQffProvider(day_only),
+            tw_leg_provider=FakeTwLegProvider(day_only),
+            taifex_provider=FakeTwLegProvider(day_only),
         ).run(output_csv="", end=ts("2026-06-18T19:42:00+08:00"))
 
 
@@ -3332,13 +3332,13 @@ def test_contract_switch_cancels_entry_pending_state(tmp_path) -> None:
     config = small_live_config(tmp_path)
     state = StrategyRuntimeState(
         state=StrategyState.ENTRY_PENDING,
-        candidate_direction=Direction.SHORT_TSM_LONG_QFF,
+        candidate_direction=Direction.SHORT_US_LONG_TW,
         candidate_idx=10,
         candidate_time=ts("2026-07-09T08:45:00+08:00"),
         candidate_zscore=2.1,
-        trading_qff_symbol="QFFG6",
+        trading_tw_leg_symbol="QFFG6",
     )
-    contract = QffContractResolution(
+    contract = TwLegContractResolution(
         symbol="QFFH6",
         expiry="2026-08-19",
         policy_state="active",
@@ -3444,7 +3444,7 @@ def test_live_decision_reports_tradable_snapshot_missing_reason(tmp_path) -> Non
         short_zscore=None,
         long_spread=None,
         long_zscore=None,
-        missing_reason="stale_qff",
+        missing_reason="stale_tw_leg",
     )
 
     decision, decision_type, decision_zscore, signal_block_reason = (
@@ -3459,18 +3459,18 @@ def test_live_decision_reports_tradable_snapshot_missing_reason(tmp_path) -> Non
     assert not decision.zscore_valid
     assert decision_type is None
     assert decision_zscore is None
-    assert signal_block_reason == "stale_qff"
+    assert signal_block_reason == "stale_tw_leg"
 
 
 def test_live_decision_uses_opposite_tradable_spread_for_exit(tmp_path) -> None:
     config = small_live_config(tmp_path)
     short_state = StrategyRuntimeState(
         state=StrategyState.OPEN,
-        position_direction=Direction.SHORT_TSM_LONG_QFF,
+        position_direction=Direction.SHORT_US_LONG_TW,
     )
     long_state = StrategyRuntimeState(
         state=StrategyState.OPEN,
-        position_direction=Direction.LONG_TSM_SHORT_QFF,
+        position_direction=Direction.LONG_US_SHORT_TW,
     )
     tradable = TradableSpreadSnapshot(
         mid_spread=0.5,
@@ -3505,10 +3505,10 @@ def test_live_decision_uses_opposite_tradable_spread_for_exit(tmp_path) -> None:
 def test_contract_switch_marks_open_position_as_pending_switch(tmp_path) -> None:
     state = StrategyRuntimeState(
         state=StrategyState.OPEN,
-        position_direction=Direction.SHORT_TSM_LONG_QFF,
-        trading_qff_symbol="QFFG6",
+        position_direction=Direction.SHORT_US_LONG_TW,
+        trading_tw_leg_symbol="QFFG6",
     )
-    contract = QffContractResolution(
+    contract = TwLegContractResolution(
         symbol="QFFH6",
         expiry="2026-08-19",
         policy_state="active",
@@ -3519,16 +3519,16 @@ def test_contract_switch_marks_open_position_as_pending_switch(tmp_path) -> None
 
     assert state.pending_symbol_switch
     assert state.contract_policy_state == "pending_symbol_switch"
-    assert state.eligible_active_qff_symbol == "QFFH6"
+    assert state.eligible_active_tw_leg_symbol == "QFFH6"
 
 
 def test_contract_policy_force_exit_helper_uses_configured_deadline(tmp_path) -> None:
     config = small_live_config(tmp_path)
     state = StrategyRuntimeState(
         state=StrategyState.OPEN,
-        position_direction=Direction.SHORT_TSM_LONG_QFF,
-        trading_qff_symbol="QFFG6",
-        trading_qff_expiry="2026-07-15",
+        position_direction=Direction.SHORT_US_LONG_TW,
+        trading_tw_leg_symbol="QFFG6",
+        trading_tw_leg_expiry="2026-07-15",
     )
 
     assert not should_force_exit_for_contract_policy(
@@ -3550,9 +3550,9 @@ def test_resolve_force_exit_reason_weekend_requires_open_position(tmp_path) -> N
     flat = StrategyRuntimeState(state=StrategyState.FLAT)
     open_far_expiry = StrategyRuntimeState(
         state=StrategyState.OPEN,
-        position_direction=Direction.SHORT_TSM_LONG_QFF,
-        trading_qff_symbol="QFF202607",
-        trading_qff_expiry="2026-07-15",
+        position_direction=Direction.SHORT_US_LONG_TW,
+        trading_tw_leg_symbol="QFF202607",
+        trading_tw_leg_expiry="2026-07-15",
     )
 
     # A flat strategy is never force-exited, even in the weekend grace window.
@@ -3573,9 +3573,9 @@ def test_resolve_force_exit_reason_prefers_expiry_over_weekend(tmp_path) -> None
     # (Fri 2026-06-19) 13:35, already past by the weekend bar, so rollover wins.
     open_near_expiry = StrategyRuntimeState(
         state=StrategyState.OPEN,
-        position_direction=Direction.SHORT_TSM_LONG_QFF,
-        trading_qff_symbol="QFF202606",
-        trading_qff_expiry="2026-06-22",
+        position_direction=Direction.SHORT_US_LONG_TW,
+        trading_tw_leg_symbol="QFF202606",
+        trading_tw_leg_expiry="2026-06-22",
     )
 
     assert (
@@ -3591,14 +3591,14 @@ def test_live_dry_run_weekend_force_exit_flattens_before_weekend(tmp_path) -> No
     seed_strategy_state(config, open_position_state(state=StrategyState.OPEN))
     # Warmup-rebuild inputs: three session minutes inside the Friday-night session
     # (2026-06-19 17:25 -> 2026-06-20 05:00), just before the live bar at 04:58.
-    warmup_qff = rows(
+    warmup_tw_leg = rows(
         [
             ("2026-06-20T04:55:00+08:00", 100.0),
             ("2026-06-20T04:56:00+08:00", 100.0),
             ("2026-06-20T04:57:00+08:00", 100.0),
         ]
     )
-    warmup_tsm = rows(
+    warmup_us_leg = rows(
         [
             ("2026-06-20T04:55:00+08:00", 20.0),
             ("2026-06-20T04:56:00+08:00", 20.0),
@@ -3612,21 +3612,21 @@ def test_live_dry_run_weekend_force_exit_flattens_before_weekend(tmp_path) -> No
             ("2026-06-20T04:57:00+08:00", 25.0),
         ]
     )
-    qff, tsm, usd = dry_run_quote_providers(
+    tw_leg, us_leg, usd = dry_run_quote_providers(
         [
             "2026-06-20T04:58:30+08:00",
             "2026-06-20T04:58:59+08:00",
             "2026-06-20T04:59:01+08:00",
         ],
-        qff_rows=warmup_qff,
-        tsm_rows=warmup_tsm,
+        tw_leg_rows=warmup_tw_leg,
+        us_leg_rows=warmup_us_leg,
         usd_rows=warmup_usd,
     )
 
     result = LiveDryRunRunner(
         config,
-        qff_provider=qff,
-        tsm_provider=tsm,
+        tw_leg_provider=tw_leg,
+        us_leg_provider=us_leg,
         usdttwd_provider=usd,
         clock=dry_run_clock(
             [

@@ -17,13 +17,13 @@ from lux_trader.core.sizing import size_position_for_direction
 TAIPEI = timezone.utc
 
 
-def make_bar(index: int, timestamp: datetime, qff_close: float | None = 100.0) -> MarketBar:
+def make_bar(index: int, timestamp: datetime, tw_leg_close: float | None = 100.0) -> MarketBar:
     return MarketBar(
         row_index=index,
         timestamp=timestamp,
-        qff_close=qff_close,
-        qff_close_filled=100.0,
-        tsm_twd_fair=100.0,
+        tw_leg_close=tw_leg_close,
+        tw_leg_close_filled=100.0,
+        us_leg_twd_fair=100.0,
         spread=0.0,
     )
 
@@ -103,9 +103,9 @@ def test_live_calendar_weekday_sessions_and_friday_close_only() -> None:
     assert friday_night.is_close_only
 
 
-def test_inactive_session_is_not_allowed_without_qff_trades() -> None:
+def test_inactive_session_is_not_allowed_without_tw_leg_trades() -> None:
     timestamp = datetime.fromisoformat("2026-06-13T08:45:00+08:00")
-    bars = TradingCalendar().annotate([make_bar(0, timestamp, qff_close=None)])
+    bars = TradingCalendar().annotate([make_bar(0, timestamp, tw_leg_close=None)])
 
     assert not bars[0].close_allowed
     assert not bars[0].entry_allowed
@@ -162,88 +162,88 @@ def test_weekend_force_exit_is_false_outside_trading_hours() -> None:
 
 
 def test_position_sizing_direction_signs(strategy_config, fee_config) -> None:
-    short_tsm = size_position_for_direction(
-        Direction.SHORT_TSM_LONG_QFF,
-        tsm_price=2500.0,
-        qff_price=250.0,
+    short_us_leg = size_position_for_direction(
+        Direction.SHORT_US_LONG_TW,
+        us_leg_price=2500.0,
+        tw_leg_price=250.0,
         strategy=strategy_config,
         fees=fee_config,
     )
-    long_tsm = size_position_for_direction(
-        Direction.LONG_TSM_SHORT_QFF,
-        tsm_price=2500.0,
-        qff_price=250.0,
+    long_us_leg = size_position_for_direction(
+        Direction.LONG_US_SHORT_TW,
+        us_leg_price=2500.0,
+        tw_leg_price=250.0,
         strategy=strategy_config,
         fees=fee_config,
     )
 
-    assert short_tsm is not None
-    assert long_tsm is not None
-    assert short_tsm.qff_contracts == 40
-    assert short_tsm.tsm_units == pytest.approx(-80.0)
-    assert short_tsm.tsm_units < 0
-    assert short_tsm.qff_units > 0
-    assert long_tsm.tsm_units == pytest.approx(80.0)
-    assert long_tsm.tsm_units > 0
-    assert long_tsm.qff_units < 0
+    assert short_us_leg is not None
+    assert long_us_leg is not None
+    assert short_us_leg.tw_leg_contracts == 40
+    assert short_us_leg.us_leg_units == pytest.approx(-80.0)
+    assert short_us_leg.us_leg_units < 0
+    assert short_us_leg.tw_leg_units > 0
+    assert long_us_leg.us_leg_units == pytest.approx(80.0)
+    assert long_us_leg.us_leg_units > 0
+    assert long_us_leg.tw_leg_units < 0
 
 
 def test_position_sizing_uses_binance_contract_quantity(strategy_config, fee_config) -> None:
     sizing = size_position_for_direction(
-        Direction.SHORT_TSM_LONG_QFF,
-        tsm_price=2880.31068,
-        qff_price=2487.5,
+        Direction.SHORT_US_LONG_TW,
+        us_leg_price=2880.31068,
+        tw_leg_price=2487.5,
         strategy=replace_strategy_notional(strategy_config, 240_000.0),
         fees=fee_config,
     )
 
     assert sizing is not None
-    assert sizing.qff_contracts == 1
+    assert sizing.tw_leg_contracts == 1
     assert sizing.actual_leg_notional_twd == pytest.approx(248_750.0)
-    assert sizing.tsm_units == pytest.approx(-17.27244229)
+    assert sizing.us_leg_units == pytest.approx(-17.27244229)
 
 
-def test_position_sizing_can_use_fixed_qff_lots(strategy_config, fee_config) -> None:
+def test_position_sizing_can_use_fixed_tw_leg_lots(strategy_config, fee_config) -> None:
     sizing = size_position_for_direction(
-        Direction.SHORT_TSM_LONG_QFF,
-        tsm_price=2880.31068,
-        qff_price=2487.5,
-        strategy=replace_strategy_qff_lots(strategy_config, 2),
+        Direction.SHORT_US_LONG_TW,
+        us_leg_price=2880.31068,
+        tw_leg_price=2487.5,
+        strategy=replace_strategy_tw_leg_lots(strategy_config, 2),
         fees=fee_config,
     )
 
     assert sizing is not None
-    assert sizing.qff_contracts == 2
-    assert sizing.raw_qff_contracts == 2.0
+    assert sizing.tw_leg_contracts == 2
+    assert sizing.raw_tw_leg_contracts == 2.0
     assert sizing.actual_leg_notional_twd == pytest.approx(497_500.0)
-    assert sizing.tsm_units == pytest.approx(-34.54488459)
+    assert sizing.us_leg_units == pytest.approx(-34.54488459)
 
 
-def test_fixed_qff_lots_preserves_direction_signs(strategy_config, fee_config) -> None:
+def test_fixed_tw_leg_lots_preserves_direction_signs(strategy_config, fee_config) -> None:
     sizing = size_position_for_direction(
-        Direction.LONG_TSM_SHORT_QFF,
-        tsm_price=2500.0,
-        qff_price=250.0,
-        strategy=replace_strategy_qff_lots(strategy_config, 3),
+        Direction.LONG_US_SHORT_TW,
+        us_leg_price=2500.0,
+        tw_leg_price=250.0,
+        strategy=replace_strategy_tw_leg_lots(strategy_config, 3),
         fees=fee_config,
     )
 
     assert sizing is not None
-    assert sizing.qff_contracts == -3
-    assert sizing.qff_units == -300.0
-    assert sizing.tsm_units == pytest.approx(6.0)
+    assert sizing.tw_leg_contracts == -3
+    assert sizing.tw_leg_units == -300.0
+    assert sizing.us_leg_units == pytest.approx(6.0)
 
 
-def test_tsm_fee_uses_binance_contract_twd_price(fee_config) -> None:
+def test_us_leg_fee_uses_binance_contract_twd_price(fee_config) -> None:
     costs = fill_costs(
-        tsm_units=-17.27244229,
-        tsm_price=2880.31068,
-        qff_contracts=1,
-        qff_price=2487.5,
+        us_leg_units=-17.27244229,
+        us_leg_price=2880.31068,
+        tw_leg_contracts=1,
+        tw_leg_price=2487.5,
         fees=fee_config,
     )
 
-    assert costs["tsm_fee_twd"] == pytest.approx(124.375)
+    assert costs["us_leg_fee_twd"] == pytest.approx(124.375)
 
 
 def replace_strategy_notional(strategy_config, leg_notional_twd: float):
@@ -254,11 +254,11 @@ def replace_strategy_notional(strategy_config, leg_notional_twd: float):
         initial_capital_twd=strategy_config.initial_capital_twd,
         max_entry_delay_minutes=strategy_config.max_entry_delay_minutes,
         zscore_window=strategy_config.zscore_window,
-        qff_lots=strategy_config.qff_lots,
+        tw_leg_lots=strategy_config.tw_leg_lots,
     )
 
 
-def replace_strategy_qff_lots(strategy_config, qff_lots: int):
+def replace_strategy_tw_leg_lots(strategy_config, tw_leg_lots: int):
     return strategy_config.__class__(
         entry_z=strategy_config.entry_z,
         exit_z=strategy_config.exit_z,
@@ -266,5 +266,5 @@ def replace_strategy_qff_lots(strategy_config, qff_lots: int):
         initial_capital_twd=strategy_config.initial_capital_twd,
         max_entry_delay_minutes=strategy_config.max_entry_delay_minutes,
         zscore_window=strategy_config.zscore_window,
-        qff_lots=qff_lots,
+        tw_leg_lots=tw_leg_lots,
     )

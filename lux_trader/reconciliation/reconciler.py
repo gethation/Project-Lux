@@ -19,26 +19,26 @@ class BrokerReconciler:
     def __init__(
         self,
         *,
-        tsm_units_tolerance: float = 1e-6,
-        qff_contract_tolerance: int = 0,
+        us_leg_units_tolerance: float = 1e-6,
+        tw_leg_contract_tolerance: int = 0,
     ) -> None:
-        self.tsm_units_tolerance = float(tsm_units_tolerance)
-        self.qff_contract_tolerance = int(qff_contract_tolerance)
+        self.us_leg_units_tolerance = float(us_leg_units_tolerance)
+        self.tw_leg_contract_tolerance = int(tw_leg_contract_tolerance)
 
     def reconcile(
         self,
         *,
         strategy_state: StrategyRuntimeState | None,
         brokers: tuple[ReadOnlyBroker, ...],
-        tsm_symbol: str,
-        qff_symbol: str,
+        us_leg_symbol: str,
+        tw_leg_symbol: str,
         timestamp: datetime | None = None,
     ) -> ReconciliationReport:
         timestamp = timestamp or datetime.now().astimezone()
         expected = self.expected_from_strategy(
             strategy_state,
-            tsm_symbol=tsm_symbol,
-            qff_symbol=qff_symbol,
+            us_leg_symbol=us_leg_symbol,
+            tw_leg_symbol=tw_leg_symbol,
             timestamp=timestamp,
         )
         snapshots = []
@@ -74,16 +74,16 @@ class BrokerReconciler:
         self,
         state: StrategyRuntimeState | None,
         *,
-        tsm_symbol: str,
-        qff_symbol: str,
+        us_leg_symbol: str,
+        tw_leg_symbol: str,
         timestamp: datetime,
     ) -> ExpectedBrokerState:
         has_position = (
             state is not None
             and state.position_direction is not None
             and (
-                abs(float(state.tsm_units)) > self.tsm_units_tolerance
-                or abs(float(state.qff_contracts)) > self.qff_contract_tolerance
+                abs(float(state.us_leg_units)) > self.us_leg_units_tolerance
+                or abs(float(state.tw_leg_contracts)) > self.tw_leg_contract_tolerance
             )
         )
         if state is None or not (
@@ -92,17 +92,17 @@ class BrokerReconciler:
         ):
             return ExpectedBrokerState(
                 timestamp=timestamp,
-                tsm_symbol=tsm_symbol,
-                qff_symbol=qff_symbol,
-                expected_tsm_units=0.0,
-                expected_qff_contracts=0,
+                us_leg_symbol=us_leg_symbol,
+                tw_leg_symbol=tw_leg_symbol,
+                expected_us_leg_units=0.0,
+                expected_tw_leg_contracts=0,
             )
         return ExpectedBrokerState(
             timestamp=timestamp,
-            tsm_symbol=tsm_symbol,
-            qff_symbol=state.trading_qff_symbol or qff_symbol,
-            expected_tsm_units=state.tsm_units,
-            expected_qff_contracts=state.qff_contracts,
+            us_leg_symbol=us_leg_symbol,
+            tw_leg_symbol=state.trading_tw_leg_symbol or tw_leg_symbol,
+            expected_us_leg_units=state.us_leg_units,
+            expected_tw_leg_contracts=state.tw_leg_contracts,
         )
 
     def _snapshot_issues(
@@ -112,19 +112,19 @@ class BrokerReconciler:
     ) -> list[ReconciliationIssue]:
         issues: list[ReconciliationIssue] = []
         expected_symbol = (
-            expected.tsm_symbol
-            if snapshot.broker == BrokerName.BINANCE_TSM
-            else expected.qff_symbol
+            expected.us_leg_symbol
+            if snapshot.broker == BrokerName.BINANCE
+            else expected.tw_leg_symbol
         )
         expected_quantity = (
-            expected.expected_tsm_units
-            if snapshot.broker == BrokerName.BINANCE_TSM
-            else float(expected.expected_qff_contracts)
+            expected.expected_us_leg_units
+            if snapshot.broker == BrokerName.BINANCE
+            else float(expected.expected_tw_leg_contracts)
         )
         tolerance = (
-            self.tsm_units_tolerance
-            if snapshot.broker == BrokerName.BINANCE_TSM
-            else float(self.qff_contract_tolerance)
+            self.us_leg_units_tolerance
+            if snapshot.broker == BrokerName.BINANCE
+            else float(self.tw_leg_contract_tolerance)
         )
         actual_quantity = sum(
             position.quantity

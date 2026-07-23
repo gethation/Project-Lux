@@ -71,20 +71,20 @@ def order_and_fill(
 def open_strategy() -> StrategyRuntimeState:
     return StrategyRuntimeState(
         state=StrategyState.OPEN,
-        position_direction=Direction.SHORT_TSM_LONG_QFF,
-        tsm_units=-100.0,
-        qff_contracts=2,
-        trading_qff_symbol=SYMBOL_QFF,
+        position_direction=Direction.SHORT_US_LONG_TW,
+        us_leg_units=-100.0,
+        tw_leg_contracts=2,
+        trading_tw_leg_symbol=SYMBOL_QFF,
     )
 
 
 def matching_brokers() -> tuple[FakeReadOnlyBroker, FakeReadOnlyBroker]:
     return (
         FakeReadOnlyBroker(
-            BrokerName.BINANCE_TSM,
+            BrokerName.BINANCE,
             positions=(
                 BrokerPositionSnapshot(
-                    broker=BrokerName.BINANCE_TSM,
+                    broker=BrokerName.BINANCE,
                     symbol=SYMBOL_TSM,
                     quantity=-100.0,
                 ),
@@ -92,10 +92,10 @@ def matching_brokers() -> tuple[FakeReadOnlyBroker, FakeReadOnlyBroker]:
             fetched_at=ts(),
         ),
         FakeReadOnlyBroker(
-            BrokerName.FUBON_QFF,
+            BrokerName.FUBON,
             positions=(
                 BrokerPositionSnapshot(
-                    broker=BrokerName.FUBON_QFF,
+                    broker=BrokerName.FUBON,
                     symbol=SYMBOL_QFF,
                     quantity=2.0,
                 ),
@@ -111,13 +111,13 @@ def test_post_trade_reconciliation_matches_broker_and_recorded_fills(tmp_path) -
         store.initialize()
         for order, fill in (
             order_and_fill(
-                broker=BrokerName.BINANCE_TSM,
+                broker=BrokerName.BINANCE,
                 symbol=SYMBOL_TSM,
                 side=OrderSide.SELL,
                 quantity=100.0,
             ),
             order_and_fill(
-                broker=BrokerName.FUBON_QFF,
+                broker=BrokerName.FUBON,
                 symbol=SYMBOL_QFF,
                 side=OrderSide.BUY,
                 quantity=2.0,
@@ -130,8 +130,8 @@ def test_post_trade_reconciliation_matches_broker_and_recorded_fills(tmp_path) -
             store=store,
             strategy_state=open_strategy(),
             brokers=matching_brokers(),
-            tsm_symbol=SYMBOL_TSM,
-            qff_symbol=SYMBOL_QFF,
+            us_leg_symbol=SYMBOL_TSM,
+            tw_leg_symbol=SYMBOL_QFF,
             timestamp=ts(),
         )
 
@@ -148,7 +148,7 @@ def test_post_trade_reconciliation_warns_when_recorded_fills_do_not_match_state(
     try:
         store.initialize()
         order, fill = order_and_fill(
-            broker=BrokerName.BINANCE_TSM,
+            broker=BrokerName.BINANCE,
             symbol=SYMBOL_TSM,
             side=OrderSide.SELL,
             quantity=100.0,
@@ -160,8 +160,8 @@ def test_post_trade_reconciliation_warns_when_recorded_fills_do_not_match_state(
             store=store,
             strategy_state=open_strategy(),
             brokers=matching_brokers(),
-            tsm_symbol=SYMBOL_TSM,
-            qff_symbol=SYMBOL_QFF,
+            us_leg_symbol=SYMBOL_TSM,
+            tw_leg_symbol=SYMBOL_QFF,
             timestamp=ts(),
         )
 
@@ -172,7 +172,7 @@ def test_post_trade_reconciliation_warns_when_recorded_fills_do_not_match_state(
             if issue.issue_type == "recorded_fill_position_mismatch"
         ]
         assert len(fill_issues) == 1
-        assert fill_issues[0].broker == BrokerName.FUBON_QFF
+        assert fill_issues[0].broker == BrokerName.FUBON
         assert fill_issues[0].expected_quantity == pytest.approx(2.0)
         assert fill_issues[0].actual_quantity == pytest.approx(0.0)
     finally:

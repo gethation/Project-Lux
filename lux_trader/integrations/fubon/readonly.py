@@ -48,7 +48,7 @@ OPEN_ORDER_STATUS_KEYWORDS = (
 
 
 class FubonReadOnlyBroker:
-    broker = BrokerName.FUBON_QFF
+    broker = BrokerName.FUBON
 
     def __init__(
         self,
@@ -240,7 +240,7 @@ def normalize_fubon_position(
     if signed_quantity == 0:
         return None
     return BrokerPositionSnapshot(
-        broker=BrokerName.FUBON_QFF,
+        broker=BrokerName.FUBON,
         symbol=symbol,
         quantity=signed_quantity,
         raw=raw,
@@ -280,7 +280,7 @@ def normalize_fubon_order(row: Any) -> BrokerOrderSnapshot | None:
     )
     quantity = fubon_first_float(raw, "quantity", "qty", "lot", "lots") or 0.0
     return BrokerOrderSnapshot(
-        broker=BrokerName.FUBON_QFF,
+        broker=BrokerName.FUBON,
         order_id=order_id or "UNKNOWN",
         symbol=symbol or "UNKNOWN",
         side=parse_order_side(
@@ -295,7 +295,7 @@ def normalize_fubon_order(row: Any) -> BrokerOrderSnapshot | None:
 def normalize_fubon_margin(row: Any) -> BrokerMarginSnapshot | None:
     raw = fubon_raw_row(row)
     return BrokerMarginSnapshot(
-        broker=BrokerName.FUBON_QFF,
+        broker=BrokerName.FUBON,
         currency=fubon_first_text(raw, "currency", "currency_code") or "TWD",
         equity=fubon_first_float(
             raw,

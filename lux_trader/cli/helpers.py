@@ -33,19 +33,19 @@ def require_readonly_broker_enabled() -> None:
         )
 
 
-def reconciliation_qff_symbol(config: object, strategy_state: object) -> str:
-    trading_symbol = getattr(strategy_state, "trading_qff_symbol", None)
-    return str(trading_symbol or config.live.qff_symbol)
+def reconciliation_tw_leg_symbol(config: object, strategy_state: object) -> str:
+    trading_symbol = getattr(strategy_state, "trading_tw_leg_symbol", None)
+    return str(trading_symbol or config.live.tw_leg_symbol)
 
 
 def build_real_readonly_brokers(
     config: object,
     *,
-    qff_symbol: str | None = None,
+    tw_leg_symbol: str | None = None,
 ) -> tuple[ReadOnlyBroker, ReadOnlyBroker]:
     fubon_symbol = None
-    if qff_symbol and str(qff_symbol).strip().lower() != "auto":
-        fubon_symbol = str(qff_symbol).strip()
+    if tw_leg_symbol and str(tw_leg_symbol).strip().lower() != "auto":
+        fubon_symbol = str(tw_leg_symbol).strip()
     return (
         FubonReadOnlyBroker(config.live.fubon_env_path, symbol=fubon_symbol),
         BinanceReadOnlyBroker(
@@ -66,7 +66,7 @@ def build_reconciliation_brokers(
     require_readonly_broker_enabled()
     return build_real_readonly_brokers(
         config,
-        qff_symbol=reconciliation_qff_symbol(config, strategy_state),
+        tw_leg_symbol=reconciliation_tw_leg_symbol(config, strategy_state),
     )
 
 

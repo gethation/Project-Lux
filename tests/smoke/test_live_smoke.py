@@ -13,13 +13,13 @@ from lux_trader.config import AppConfig, load_config
 from lux_trader.core.time import TAIPEI_TZ
 from lux_trader.integrations.binance.market_data import BinanceMarketData
 from lux_trader.integrations.bitopro.market_data import BitoProMarketData
-from lux_trader.integrations.fubon.market_data import FubonQffMarketData
+from lux_trader.integrations.fubon.market_data import FubonTwLegMarketData
 from lux_trader.market_data import floor_minute
 from lux_trader.runtime.live import (
     LiveDryRunRunner,
-    QffWarmupCheckRunner,
+    TwLegWarmupCheckRunner,
     WarmupRunner,
-    resolve_qff_contract,
+    resolve_tw_leg_contract,
 )
 from lux_trader.terminal_ui import LiveTerminalReporter
 
@@ -54,34 +54,34 @@ def remove_sqlite_family(path: Path) -> None:
             target.unlink()
 
 
-def test_live_marketdata_providers_fetch_quotes_and_qff_candles() -> None:
+def test_live_marketdata_providers_fetch_quotes_and_tw_leg_candles() -> None:
     config = load_smoke_config()
-    qff = FubonQffMarketData(config.live.fubon_env_path)
+    tw_leg = FubonTwLegMarketData(config.live.fubon_env_path)
     try:
-        contract = resolve_qff_contract(
+        contract = resolve_tw_leg_contract(
             config,
-            qff,
+            tw_leg,
             now=datetime.now(TAIPEI_TZ),
         )
-        if config.live.qff_symbol.lower() == "auto" and config.contract_policy.enabled:
+        if config.live.tw_leg_symbol.lower() == "auto" and config.contract_policy.enabled:
             assert contract.expiry is not None
             assert contract.policy_state == "active"
 
-        qff_quote = qff.fetch_quote(contract.symbol)
-        assert qff_quote.price > 0
-        if qff_quote.bid is not None or qff_quote.ask is not None:
-            assert qff_quote.bid is not None
-            assert qff_quote.ask is not None
-            assert qff_quote.bid > 0
-            assert qff_quote.ask > 0
+        tw_leg_quote = tw_leg.fetch_quote(contract.symbol)
+        assert tw_leg_quote.price > 0
+        if tw_leg_quote.bid is not None or tw_leg_quote.ask is not None:
+            assert tw_leg_quote.bid is not None
+            assert tw_leg_quote.ask is not None
+            assert tw_leg_quote.bid > 0
+            assert tw_leg_quote.ask > 0
 
         end = floor_minute(datetime.now(TAIPEI_TZ)) - timedelta(minutes=1)
         start = end - timedelta(days=7)
-        qff_candles = qff.fetch_1m(contract.symbol, start, end)
-        assert not qff_candles.empty
-        assert qff_candles["close"].notna().all()
+        tw_leg_candles = tw_leg.fetch_1m(contract.symbol, start, end)
+        assert not tw_leg_candles.empty
+        assert tw_leg_candles["close"].notna().all()
     finally:
-        qff.close()
+        tw_leg.close()
 
     binance_quote = BinanceMarketData().fetch_quote(
         config.live.binance_symbol
@@ -101,9 +101,9 @@ def test_live_marketdata_providers_fetch_quotes_and_qff_candles() -> None:
     assert bitopro_quote.ask > 0
 
 
-def test_qff_warmup_check_smoke_uses_fubon_and_taifex_network() -> None:
+def test_tw_leg_warmup_check_smoke_uses_fubon_and_taifex_network() -> None:
     config = load_smoke_config()
-    result = QffWarmupCheckRunner(config).run(output_csv="")
+    result = TwLegWarmupCheckRunner(config).run(output_csv="")
 
     assert len(result.report.frame) == config.live.warmup_minutes
     assert result.report.null_count == 0
@@ -135,8 +135,8 @@ def test_warmup_live_smoke_writes_seed_bars_only() -> None:
             """
             SELECT COUNT(*)
             FROM warmup_bars
-            WHERE qff_close_filled IS NULL
-               OR tsm_twd_fair IS NULL
+            WHERE tw_leg_close_filled IS NULL
+               OR us_leg_twd_fair IS NULL
                OR spread IS NULL
             """
         ).fetchone()[0]
@@ -185,7 +185,7 @@ def test_live_startup_smoke_auto_warmup_and_resume() -> None:
                 "SELECT source, COUNT(*) FROM market_ticks GROUP BY source"
             ).fetchall()
         }
-        assert {"fubon_qff", "binanceusdm", "bitopro"}.issubset(source_counts)
+        assert {"fubon_tw_leg", "binanceusdm", "bitopro"}.issubset(source_counts)
         book_counts = {
             source: count
             for source, count in connection.execute(
@@ -203,17 +203,17 @@ def test_live_startup_smoke_auto_warmup_and_resume() -> None:
             """
             SELECT COUNT(*)
             FROM warmup_bars
-            WHERE qff_close_filled IS NULL
-               OR tsm_twd_fair IS NULL
+            WHERE tw_leg_close_filled IS NULL
+               OR us_leg_twd_fair IS NULL
                OR spread IS NULL
-               OR qff_symbol IS NULL
+               OR tw_leg_symbol IS NULL
             """
         ).fetchone()[0]
         assert null_count == 0
         selected_symbols = connection.execute(
-            "SELECT DISTINCT qff_symbol FROM warmup_bars"
+            "SELECT DISTINCT tw_leg_symbol FROM warmup_bars"
         ).fetchall()
-        assert selected_symbols == [(first_result.qff_symbol,)]
+        assert selected_symbols == [(first_result.tw_leg_symbol,)]
         skipped_events = connection.execute(
             """
             SELECT COUNT(*)
@@ -222,7 +222,7 @@ def test_live_startup_smoke_auto_warmup_and_resume() -> None:
                 'market_data_stale',
                 'leg_timestamp_skew',
                 'missing_required_quote',
-                'missing_qff_forward_fill'
+                'missing_tw_leg_forward_fill'
             )
             """
         ).fetchone()[0]

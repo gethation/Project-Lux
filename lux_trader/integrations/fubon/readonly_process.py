@@ -60,7 +60,7 @@ def _fubon_readonly_worker(
 class FubonReadOnlyBrokerProcess:
     """Hard-timeout process boundary for reconciliation/account queries."""
 
-    broker = BrokerName.FUBON_QFF
+    broker = BrokerName.FUBON
 
     def __init__(
         self,

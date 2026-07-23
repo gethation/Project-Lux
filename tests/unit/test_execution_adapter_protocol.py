@@ -8,7 +8,7 @@ from lux_trader.execution import (
 )
 from lux_trader.integrations.binance.execution import (
     BinanceExecutionPreflight,
-    BinanceTsmExecutionAdapter,
+    BinanceUsLegExecutionAdapter,
 )
 from lux_trader.integrations.fubon.execution import (
     FubonExecutionPreflight,
@@ -21,7 +21,7 @@ from lux_trader.integrations.fubon.execution_process import (
 
 def test_execution_adapters_share_the_formal_protocol() -> None:
     adapters = (
-        BinanceTsmExecutionAdapter("TSM/USDT:USDT"),
+        BinanceUsLegExecutionAdapter("TSM/USDT:USDT"),
         FubonFutureExecutionAdapter("TMFG6"),
         FubonFutureExecutionProcess("TMFG6"),
     )
@@ -46,7 +46,7 @@ def test_fubon_only_capabilities_stay_on_narrow_protocols() -> None:
         assert isinstance(adapter, OrderRecordsProvider)
         assert isinstance(adapter, SessionHealthProvider)
         assert not isinstance(
-            BinanceTsmExecutionAdapter("TSM/USDT:USDT"), OrderRecordsProvider
+            BinanceUsLegExecutionAdapter("TSM/USDT:USDT"), OrderRecordsProvider
         )
     finally:
         adapter.close()

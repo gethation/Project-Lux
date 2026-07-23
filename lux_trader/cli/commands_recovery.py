@@ -63,13 +63,13 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
             readonly=bool(args.readonly),
         )
         report = BrokerReconciler(
-            tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
-            qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
+            us_leg_units_tolerance=config.broker_reconciliation.us_leg_units_tolerance,
+            tw_leg_contract_tolerance=config.broker_reconciliation.tw_leg_contract_tolerance,
         ).reconcile(
             strategy_state=prospective_state,
             brokers=brokers,
-            tsm_symbol=config.live.binance_symbol,
-            qff_symbol=helpers.reconciliation_qff_symbol(config, state),
+            us_leg_symbol=config.live.binance_symbol,
+            tw_leg_symbol=helpers.reconciliation_tw_leg_symbol(config, state),
             timestamp=observed_at,
         )
         if report.status != ReconciliationStatus.MATCHED:
@@ -84,18 +84,18 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
                 )
             return 1
 
-        qff_symbol = helpers.reconciliation_qff_symbol(config, state)
+        tw_leg_symbol = helpers.reconciliation_tw_leg_symbol(config, state)
         recovery_id = manual_flat_recovery_id(
             row_index=resume_state.row_index,
-            tsm_units=state.tsm_units,
-            qff_contracts=state.qff_contracts,
-            qff_symbol=qff_symbol,
+            us_leg_units=state.us_leg_units,
+            tw_leg_contracts=state.tw_leg_contracts,
+            tw_leg_symbol=tw_leg_symbol,
         )
         print(
             "Manual-flat recovery verified: "
             f"recovery_id={recovery_id}, "
-            f"binance_adjustment={-state.tsm_units:g}, "
-            f"fubon_adjustment={-state.qff_contracts:g}, "
+            f"binance_adjustment={-state.us_leg_units:g}, "
+            f"fubon_adjustment={-state.tw_leg_contracts:g}, "
             "brokers=flat, open_orders=0, pnl_status=pending"
         )
         if not args.apply:
@@ -107,10 +107,10 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
             recovery_id=recovery_id,
             created_at=observed_at,
             row_index=resume_state.row_index,
-            qff_symbol=qff_symbol,
-            tsm_symbol=config.live.binance_symbol,
-            tsm_adjustment=-float(state.tsm_units),
-            qff_adjustment=-float(state.qff_contracts),
+            tw_leg_symbol=tw_leg_symbol,
+            us_leg_symbol=config.live.binance_symbol,
+            us_leg_adjustment=-float(state.us_leg_units),
+            tw_leg_adjustment=-float(state.tw_leg_contracts),
             reason=str(args.reason).strip(),
             original_state=original_state,
         )
@@ -130,9 +130,9 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
             {
                 "recovery_id": recovery_id,
                 "reason": str(args.reason).strip(),
-                "tsm_adjustment": -float(original_state.tsm_units),
-                "qff_adjustment": -float(original_state.qff_contracts),
-                "qff_symbol": qff_symbol,
+                "us_leg_adjustment": -float(original_state.us_leg_units),
+                "tw_leg_adjustment": -float(original_state.tw_leg_contracts),
+                "tw_leg_symbol": tw_leg_symbol,
                 "pnl_status": "pending",
             },
         )
@@ -153,20 +153,20 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
 def strategy_has_position(state: object) -> bool:
     return bool(
         getattr(state, "position_direction", None) is not None
-        or abs(float(getattr(state, "tsm_units", 0.0) or 0.0)) > 1e-12
-        or int(getattr(state, "qff_contracts", 0) or 0) != 0
+        or abs(float(getattr(state, "us_leg_units", 0.0) or 0.0)) > 1e-12
+        or int(getattr(state, "tw_leg_contracts", 0) or 0) != 0
     )
 
 
 def clear_strategy_exposure(state: object) -> None:
     state.position_direction = None
     state.open_trade = None
-    state.tsm_units = 0.0
-    state.qff_units = 0.0
-    state.qff_contracts = 0
+    state.us_leg_units = 0.0
+    state.tw_leg_units = 0.0
+    state.tw_leg_contracts = 0
     state.actual_leg_notional_twd = 0.0
-    state.entry_tsm = None
-    state.entry_qff = None
+    state.entry_us_leg = None
+    state.entry_tw_leg = None
     state.entry_zscore = None
     state.exit_signal_idx = -1
     state.exit_signal_time = None
@@ -178,9 +178,9 @@ def clear_strategy_exposure(state: object) -> None:
 
 
 def manual_flat_recovery_id(
-    *, row_index: int, tsm_units: float, qff_contracts: int, qff_symbol: str
+    *, row_index: int, us_leg_units: float, tw_leg_contracts: int, tw_leg_symbol: str
 ) -> str:
-    identity = f"{row_index}|{tsm_units:.12g}|{qff_contracts}|{qff_symbol}"
+    identity = f"{row_index}|{us_leg_units:.12g}|{tw_leg_contracts}|{tw_leg_symbol}"
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     return f"manual-flat-{row_index}-{digest}"
 

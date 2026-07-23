@@ -30,8 +30,8 @@ class PaperBroker(Broker):
             fee_twd=request.fee_twd,
             timestamp=request.timestamp,
             row_index=request.row_index,
-            qff_symbol=request.qff_symbol,
-            qff_expiry=request.qff_expiry,
+            tw_leg_symbol=request.tw_leg_symbol,
+            tw_leg_expiry=request.tw_leg_expiry,
             contract_policy_state=request.contract_policy_state,
         )
         return result, fill

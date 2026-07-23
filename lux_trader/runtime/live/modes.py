@@ -8,9 +8,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
+from lux_trader.integrations.binance.execution import BinanceUsLegExecutionAdapter
 from lux_trader.config import AppConfig
-from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, QffContractSelection
+from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, TwLegContractSelection
 from lux_trader.core.calendar import live_session_status
 from lux_trader.execution.intent import (
     ExecutionPlanType,
@@ -30,9 +30,9 @@ from lux_trader.execution.price_policy import apply_live_touch_market_price_poli
 from lux_trader.integrations.binance.market_data import BinanceMarketData
 from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.execution_process import FubonFutureExecutionProcess
-from lux_trader.integrations.fubon.market_data import FubonQffMarketData
+from lux_trader.integrations.fubon.market_data import FubonTwLegMarketData
 from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
-from lux_trader.integrations.taifex.downloader import TaifexQffTradeDownloader
+from lux_trader.integrations.taifex.downloader import TaifexTwLegTradeDownloader
 from lux_trader.core.fees import fill_costs
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.execution.gate import (
@@ -40,21 +40,21 @@ from lux_trader.execution.gate import (
     evaluate_live_execution_gate,
 )
 from lux_trader.market_data import (
-    CsvQffWarmupProvider,
+    CsvTwLegWarmupProvider,
     LiveMinuteBarBuilder,
     LiveQuoteSet,
     OhlcvProvider,
     QFF_FORWARD_FILL_LOOKBACK,
-    QffWarmupSourceReport,
-    QffWarmupProvider,
+    TwLegWarmupSourceReport,
+    TwLegWarmupProvider,
     QuoteProvider,
     WarmupBuilder,
-    build_qff_session_index,
-    build_qff_session_warmup_index,
-    build_qff_warmup_source_report,
+    build_tw_leg_session_index,
+    build_tw_leg_session_warmup_index,
+    build_tw_leg_warmup_source_report,
     floor_minute,
     parse_timestamp,
-    prioritized_qff_close_frame,
+    prioritized_tw_leg_close_frame,
 )
 from lux_trader.store import SQLiteStore
 from lux_trader.core.models import (
@@ -124,8 +124,8 @@ class LiveModeHandler:
         self,
         store: SQLiteStore,
         *,
-        qff_symbol: str,
-        qff_expiry: str | None,
+        tw_leg_symbol: str,
+        tw_leg_expiry: str | None,
     ) -> None:
         return None
 
@@ -136,8 +136,8 @@ class LiveModeHandler:
         strategy: PairStrategy,
         indicator: Any,
         row_index: int,
-        qff_symbol: str,
-        qff_expiry: str | None,
+        tw_leg_symbol: str,
+        tw_leg_expiry: str | None,
         reporter: Any,
         timestamp: datetime,
     ) -> None:
@@ -176,8 +176,8 @@ class LiveModeHandler:
         decision_spread_type: str | None,
         quote_set: LiveQuoteSet | None,
         force_exit_reason: str | None,
-        qff_symbol: str,
-        qff_expiry: str | None,
+        tw_leg_symbol: str,
+        tw_leg_expiry: str | None,
     ) -> LiveModeBarResult:
         raise NotImplementedError
 
@@ -199,8 +199,8 @@ class DryRunLiveModeHandler(LiveModeHandler):
         self,
         store: SQLiteStore,
         *,
-        qff_symbol: str,
-        qff_expiry: str | None,
+        tw_leg_symbol: str,
+        tw_leg_expiry: str | None,
     ) -> None:
         self.recorder = DryRunExecutionRecorder(
             store,
@@ -239,8 +239,8 @@ class DryRunLiveModeHandler(LiveModeHandler):
         decision_spread_type: str | None,
         quote_set: LiveQuoteSet | None,
         force_exit_reason: str | None,
-        qff_symbol: str,
-        qff_expiry: str | None,
+        tw_leg_symbol: str,
+        tw_leg_expiry: str | None,
     ) -> LiveModeBarResult:
         if self.coordinator is None:
             raise RuntimeError("dry-run coordinator is not initialized")
@@ -269,7 +269,7 @@ class DryRunLiveModeHandler(LiveModeHandler):
                 bar.timestamp,
                 force_exit_reason,
                 force_exit_event_message(force_exit_reason, mode_prefix="dry-run "),
-                {"qff_symbol": qff_symbol, "qff_expiry": qff_expiry},
+                {"tw_leg_symbol": tw_leg_symbol, "tw_leg_expiry": tw_leg_expiry},
             )
         elif strategy.state.state == StrategyState.ENTRY_PENDING:
             result, plan, outcome = execute_dry_run_entry(
@@ -425,11 +425,11 @@ class LiveExecuteModeHandler(LiveModeHandler):
         self,
         store: SQLiteStore,
         *,
-        qff_symbol: str,
-        qff_expiry: str | None,
+        tw_leg_symbol: str,
+        tw_leg_expiry: str | None,
     ) -> None:
         if self.binance_adapter is None:
-            self.binance_adapter = BinanceTsmExecutionAdapter(
+            self.binance_adapter = BinanceUsLegExecutionAdapter(
                 self.config.live.binance_symbol,
                 self.config.live.fubon_env_path,
                 leverage=self.config.binance_execution.leverage,
@@ -438,7 +438,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
             )
         if self.fubon_adapter is None:
             self.fubon_adapter = FubonFutureExecutionProcess(
-                qff_symbol,
+                tw_leg_symbol,
                 self.config.live.fubon_env_path,
             )
         if self.readonly_brokers is None:
@@ -451,18 +451,18 @@ class LiveExecuteModeHandler(LiveModeHandler):
             )
         if self.post_trade_reconciler is None:
             self.post_trade_reconciler = PostTradeReconciler(
-                tsm_units_tolerance=(
-                    self.config.broker_reconciliation.tsm_units_tolerance
+                us_leg_units_tolerance=(
+                    self.config.broker_reconciliation.us_leg_units_tolerance
                 ),
-                qff_contract_tolerance=(
-                    self.config.broker_reconciliation.qff_contract_tolerance
+                tw_leg_contract_tolerance=(
+                    self.config.broker_reconciliation.tw_leg_contract_tolerance
                 ),
             )
         self.coordinator = RealExecutionCoordinator(
             store=store,
             binance_adapter=self.binance_adapter,
             fubon_adapter=self.fubon_adapter,
-            qff_first=self.config.live_execution.qff_first,
+            tw_leg_first=self.config.live_execution.tw_leg_first,
         )
         health = getattr(self.fubon_adapter, "session_health", None)
         preflight = getattr(self.fubon_adapter, "preflight", None)
@@ -485,8 +485,8 @@ class LiveExecuteModeHandler(LiveModeHandler):
         strategy: PairStrategy,
         indicator: Any,
         row_index: int,
-        qff_symbol: str,
-        qff_expiry: str | None,
+        tw_leg_symbol: str,
+        tw_leg_expiry: str | None,
         reporter: Any,
         timestamp: datetime,
     ) -> None:
@@ -497,8 +497,8 @@ class LiveExecuteModeHandler(LiveModeHandler):
         state = strategy.state
         has_position = (
             state.position_direction is not None
-            or abs(float(state.tsm_units or 0.0)) > 1e-12
-            or int(state.qff_contracts or 0) != 0
+            or abs(float(state.us_leg_units or 0.0)) > 1e-12
+            or int(state.tw_leg_contracts or 0) != 0
         )
         if not has_position:
             return
@@ -508,8 +508,8 @@ class LiveExecuteModeHandler(LiveModeHandler):
             store=store,
             strategy_state=state,
             brokers=self.readonly_brokers,
-            tsm_symbol=self.config.live.binance_symbol,
-            qff_symbol=state.trading_qff_symbol or qff_symbol,
+            us_leg_symbol=self.config.live.binance_symbol,
+            tw_leg_symbol=state.trading_tw_leg_symbol or tw_leg_symbol,
             timestamp=timestamp,
         )
         run_id = store.record_reconciliation_report(report)
@@ -555,8 +555,8 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 store=store,
                 strategy_state=state,
                 brokers=self.readonly_brokers,
-                tsm_symbol=self.config.live.binance_symbol,
-                qff_symbol=state.trading_qff_symbol or qff_symbol,
+                us_leg_symbol=self.config.live.binance_symbol,
+                tw_leg_symbol=state.trading_tw_leg_symbol or tw_leg_symbol,
                 timestamp=timestamp,
             )
             confirmed_run_id = store.record_reconciliation_report(confirmed)
@@ -615,8 +615,8 @@ class LiveExecuteModeHandler(LiveModeHandler):
         decision_spread_type: str | None,
         quote_set: LiveQuoteSet | None,
         force_exit_reason: str | None,
-        qff_symbol: str,
-        qff_expiry: str | None,
+        tw_leg_symbol: str,
+        tw_leg_expiry: str | None,
     ) -> LiveModeBarResult:
         if self.coordinator is None:
             raise RuntimeError("live execution coordinator is not initialized")
@@ -645,7 +645,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 bar.timestamp,
                 force_exit_reason,
                 force_exit_event_message(force_exit_reason, mode_prefix="live-execute "),
-                {"qff_symbol": qff_symbol, "qff_expiry": qff_expiry},
+                {"tw_leg_symbol": tw_leg_symbol, "tw_leg_expiry": tw_leg_expiry},
             )
         elif strategy.state.state == StrategyState.ENTRY_PENDING:
             if self.reconciliation_entry_blocked:
@@ -755,7 +755,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 reporter=reporter,
                 strategy=strategy,
                 bar=bar,
-                qff_symbol=qff_symbol,
+                tw_leg_symbol=tw_leg_symbol,
             )
             if self._last_reconciliation_requires_pause:
                 strategy.state.state = StrategyState.PAUSED
@@ -778,7 +778,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
         reporter: Any,
         strategy: PairStrategy,
         bar: MarketBar,
-        qff_symbol: str,
+        tw_leg_symbol: str,
     ) -> ReconciliationReport:
         if self.post_trade_reconciler is None or self.readonly_brokers is None:
             raise RuntimeError("post-trade reconciliation is not initialized")
@@ -787,8 +787,8 @@ class LiveExecuteModeHandler(LiveModeHandler):
             store=store,
             strategy_state=strategy.state,
             brokers=self.readonly_brokers,
-            tsm_symbol=self.config.live.binance_symbol,
-            qff_symbol=strategy.state.trading_qff_symbol or qff_symbol,
+            us_leg_symbol=self.config.live.binance_symbol,
+            tw_leg_symbol=strategy.state.trading_tw_leg_symbol or tw_leg_symbol,
             timestamp=bar.timestamp,
         )
         self._record_post_trade_reconciliation(store, bar, report)
@@ -835,8 +835,8 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 store=store,
                 strategy_state=strategy.state,
                 brokers=self.readonly_brokers,
-                tsm_symbol=self.config.live.binance_symbol,
-                qff_symbol=strategy.state.trading_qff_symbol or qff_symbol,
+                us_leg_symbol=self.config.live.binance_symbol,
+                tw_leg_symbol=strategy.state.trading_tw_leg_symbol or tw_leg_symbol,
                 timestamp=bar.timestamp,
             )
             self._record_post_trade_reconciliation(store, bar, confirmed)
@@ -944,8 +944,8 @@ def execute_dry_run_entry(
 
     sizing = size_position_for_direction(
         state.candidate_direction,
-        bar.tsm_twd_fair,
-        bar.qff_close_filled,
+        bar.us_leg_twd_fair,
+        bar.tw_leg_close_filled,
         strategy.strategy,
         strategy.fees,
     )
@@ -955,7 +955,7 @@ def execute_dry_run_entry(
         return (
             strategy.mark_to_market_result(
                 action=StrategyAction.ENTRY_CANCEL,
-                reason="qff_contracts_rounded_to_zero",
+                reason="tw_leg_contracts_rounded_to_zero",
                 bar=bar,
             ),
             None,
@@ -963,16 +963,16 @@ def execute_dry_run_entry(
         )
 
     costs = fill_costs(
-        tsm_units=sizing.tsm_units,
-        tsm_price=bar.tsm_twd_fair,
-        qff_contracts=sizing.qff_contracts,
-        qff_price=bar.qff_close_filled,
+        us_leg_units=sizing.us_leg_units,
+        us_leg_price=bar.us_leg_twd_fair,
+        tw_leg_contracts=sizing.tw_leg_contracts,
+        tw_leg_price=bar.tw_leg_close_filled,
         fees=strategy.fees,
     )
     requests = strategy.build_entry_order_requests(
         bar=bar,
-        tsm_units=sizing.tsm_units,
-        qff_contracts=sizing.qff_contracts,
+        us_leg_units=sizing.us_leg_units,
+        tw_leg_contracts=sizing.tw_leg_contracts,
         costs=costs,
     )
     plan = pair_execution_plan_from_order_requests(
@@ -989,7 +989,7 @@ def execute_dry_run_entry(
             quote_set,
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
-            tsm_contract_multiplier=strategy.fees.tsm_contract_multiplier,
+            us_leg_contract_multiplier=strategy.fees.us_leg_contract_multiplier,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:
@@ -1031,7 +1031,7 @@ def execute_dry_run_exit(
     exit_reason: str,
 ) -> tuple[Any, PairExecutionPlan | None, ExecutionOutcome | None]:
     state = strategy.state
-    if state.position_direction is None or state.qff_contracts == 0:
+    if state.position_direction is None or state.tw_leg_contracts == 0:
         state.state = StrategyState.ERROR
         return (
             strategy.mark_to_market_result(
@@ -1043,10 +1043,10 @@ def execute_dry_run_exit(
             None,
         )
     costs = fill_costs(
-        tsm_units=state.tsm_units,
-        tsm_price=bar.tsm_twd_fair,
-        qff_contracts=state.qff_contracts,
-        qff_price=bar.qff_close_filled,
+        us_leg_units=state.us_leg_units,
+        us_leg_price=bar.us_leg_twd_fair,
+        tw_leg_contracts=state.tw_leg_contracts,
+        tw_leg_price=bar.tw_leg_close_filled,
         fees=strategy.fees,
     )
     requests = strategy.build_exit_order_requests(bar=bar, costs=costs)
@@ -1064,7 +1064,7 @@ def execute_dry_run_exit(
             quote_set,
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
-            tsm_contract_multiplier=strategy.fees.tsm_contract_multiplier,
+            us_leg_contract_multiplier=strategy.fees.us_leg_contract_multiplier,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:
@@ -1141,8 +1141,8 @@ def execute_live_entry(
 
     sizing = size_position_for_direction(
         state.candidate_direction,
-        bar.tsm_twd_fair,
-        bar.qff_close_filled,
+        bar.us_leg_twd_fair,
+        bar.tw_leg_close_filled,
         strategy.strategy,
         strategy.fees,
     )
@@ -1152,7 +1152,7 @@ def execute_live_entry(
         return (
             strategy.mark_to_market_result(
                 action=StrategyAction.ENTRY_CANCEL,
-                reason="qff_contracts_rounded_to_zero",
+                reason="tw_leg_contracts_rounded_to_zero",
                 bar=bar,
             ),
             None,
@@ -1160,16 +1160,16 @@ def execute_live_entry(
         )
 
     costs = fill_costs(
-        tsm_units=sizing.tsm_units,
-        tsm_price=bar.tsm_twd_fair,
-        qff_contracts=sizing.qff_contracts,
-        qff_price=bar.qff_close_filled,
+        us_leg_units=sizing.us_leg_units,
+        us_leg_price=bar.us_leg_twd_fair,
+        tw_leg_contracts=sizing.tw_leg_contracts,
+        tw_leg_price=bar.tw_leg_close_filled,
         fees=strategy.fees,
     )
     requests = strategy.build_entry_order_requests(
         bar=bar,
-        tsm_units=sizing.tsm_units,
-        qff_contracts=sizing.qff_contracts,
+        us_leg_units=sizing.us_leg_units,
+        tw_leg_contracts=sizing.tw_leg_contracts,
         costs=costs,
     )
     plan = pair_execution_plan_from_order_requests(
@@ -1186,7 +1186,7 @@ def execute_live_entry(
             quote_set,
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
-            tsm_contract_multiplier=strategy.fees.tsm_contract_multiplier,
+            us_leg_contract_multiplier=strategy.fees.us_leg_contract_multiplier,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:
@@ -1194,9 +1194,9 @@ def execute_live_entry(
             executed_sizing = position_sizing_from_fills(
                 state.candidate_direction,
                 outcome.fills,
-                tsm_symbol=strategy.tsm_symbol,
-                qff_symbol=bar.qff_symbol or "QFF",
-                qff_contract_multiplier=strategy.fees.qff_contract_multiplier,
+                us_leg_symbol=strategy.us_leg_symbol,
+                tw_leg_symbol=bar.tw_leg_symbol or "QFF",
+                tw_leg_contract_multiplier=strategy.fees.tw_leg_contract_multiplier,
             )
         except ExecutedPositionError:
             clear_entry_candidate(state)
@@ -1211,10 +1211,10 @@ def execute_live_entry(
                 outcome,
             )
         executed_costs = fill_costs(
-            tsm_units=executed_sizing.tsm_units,
-            tsm_price=bar.tsm_twd_fair,
-            qff_contracts=executed_sizing.qff_contracts,
-            qff_price=bar.qff_close_filled,
+            us_leg_units=executed_sizing.us_leg_units,
+            us_leg_price=bar.us_leg_twd_fair,
+            tw_leg_contracts=executed_sizing.tw_leg_contracts,
+            tw_leg_price=bar.tw_leg_close_filled,
             fees=strategy.fees,
         )
         result = strategy.apply_entry_execution(
@@ -1255,7 +1255,7 @@ def execute_live_exit(
     exit_reason: str,
 ) -> tuple[Any, PairExecutionPlan | None, ExecutionOutcome | None]:
     state = strategy.state
-    if state.position_direction is None or state.qff_contracts == 0:
+    if state.position_direction is None or state.tw_leg_contracts == 0:
         state.state = StrategyState.ERROR
         return (
             strategy.mark_to_market_result(
@@ -1267,10 +1267,10 @@ def execute_live_exit(
             None,
         )
     costs = fill_costs(
-        tsm_units=state.tsm_units,
-        tsm_price=bar.tsm_twd_fair,
-        qff_contracts=state.qff_contracts,
-        qff_price=bar.qff_close_filled,
+        us_leg_units=state.us_leg_units,
+        us_leg_price=bar.us_leg_twd_fair,
+        tw_leg_contracts=state.tw_leg_contracts,
+        tw_leg_price=bar.tw_leg_close_filled,
         fees=strategy.fees,
     )
     requests = strategy.build_exit_order_requests(bar=bar, costs=costs)
@@ -1288,7 +1288,7 @@ def execute_live_exit(
             quote_set,
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
-            tsm_contract_multiplier=strategy.fees.tsm_contract_multiplier,
+            us_leg_contract_multiplier=strategy.fees.us_leg_contract_multiplier,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:

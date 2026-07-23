@@ -59,11 +59,11 @@ def test_store_records_and_loads_latest_reconciliation_report(tmp_path: Path) ->
         report = BrokerReconciler().reconcile(
             strategy_state=None,
             brokers=(
-                FakeReadOnlyBroker(BrokerName.BINANCE_TSM),
-                FakeReadOnlyBroker(BrokerName.FUBON_QFF),
+                FakeReadOnlyBroker(BrokerName.BINANCE),
+                FakeReadOnlyBroker(BrokerName.FUBON),
             ),
-            tsm_symbol="TSM/USDT:USDT",
-            qff_symbol="QFFG6",
+            us_leg_symbol="TSM/USDT:USDT",
+            tw_leg_symbol="QFFG6",
         )
         run_id = store.record_reconciliation_report(report)
         store.commit()
@@ -72,7 +72,7 @@ def test_store_records_and_loads_latest_reconciliation_report(tmp_path: Path) ->
         assert loaded is not None
         assert run_id == 1
         assert loaded.status == ReconciliationStatus.MATCHED
-        assert loaded.expected.qff_symbol == "QFFG6"
+        assert loaded.expected.tw_leg_symbol == "QFFG6"
         assert count_table(store.connection, "broker_reconciliation_runs") == 1
         assert count_table(store.connection, "broker_snapshots") == 2
         assert count_table(store.connection, "broker_reconciliation_issues") == 0

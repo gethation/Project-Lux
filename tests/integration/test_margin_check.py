@@ -36,11 +36,11 @@ write_config = partial(write_test_config, margin_enabled=True)
 
 def fubon_broker(equity_twd: float, maint_twd: float = 103_500.0) -> FakeReadOnlyBroker:
     return FakeReadOnlyBroker(
-        BrokerName.FUBON_QFF,
+        BrokerName.FUBON,
         account_id="FAKE-FUBON",
         margins=(
             BrokerMarginSnapshot(
-                broker=BrokerName.FUBON_QFF,
+                broker=BrokerName.FUBON,
                 currency="TWD",
                 equity=equity_twd,
                 raw={"today_equity": equity_twd, "maintenance_margin": maint_twd},
@@ -51,11 +51,11 @@ def fubon_broker(equity_twd: float, maint_twd: float = 103_500.0) -> FakeReadOnl
 
 def binance_broker(equity_usdt: float, maint_usdt: float = 800.0) -> FakeReadOnlyBroker:
     return FakeReadOnlyBroker(
-        BrokerName.BINANCE_TSM,
+        BrokerName.BINANCE,
         account_id="FAKE-BINANCE",
         margins=(
             BrokerMarginSnapshot(
-                broker=BrokerName.BINANCE_TSM,
+                broker=BrokerName.BINANCE,
                 currency="USDT",
                 equity=equity_usdt,
                 raw={
@@ -251,16 +251,16 @@ def test_monitor_daily_guard_survives_restart_via_store(
         store.close()
 
 
-def test_monitor_margin_notional_prefers_fixed_qff_lots(
+def test_monitor_margin_notional_prefers_fixed_tw_leg_lots(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("LUX_READONLY_BROKER", "1")
     config = load_config(
         write_config(
             tmp_path,
-            qff_lots=1,
+            tw_leg_lots=1,
             margin_leg_notional_twd=1_000_000.0,
-            qff_symbol="auto",
+            tw_leg_symbol="auto",
         )
     )
     store = open_store(tmp_path)
@@ -276,11 +276,11 @@ def test_monitor_margin_notional_prefers_fixed_qff_lots(
                 MarketBar(
                     row_index=0,
                     timestamp=ts("2026-07-06T09:59:00+08:00"),
-                    qff_close=2500.0,
-                    qff_close_filled=2500.0,
-                    tsm_twd_fair=3000.0,
+                    tw_leg_close=2500.0,
+                    tw_leg_close_filled=2500.0,
+                    us_leg_twd_fair=3000.0,
                     spread=0.0,
-                    qff_symbol="QFFG6",
+                    tw_leg_symbol="QFFG6",
                 )
             ]
         )
@@ -397,7 +397,7 @@ def test_monitor_broker_failure_warns_and_retries_after_backoff(
     store = open_store(tmp_path)
     reporter = RecordingReporter()
     failing = FakeReadOnlyBroker(
-        BrokerName.FUBON_QFF, fetch_error=RuntimeError("fubon down")
+        BrokerName.FUBON, fetch_error=RuntimeError("fubon down")
     )
     monitor = MarginMonitor(
         config,

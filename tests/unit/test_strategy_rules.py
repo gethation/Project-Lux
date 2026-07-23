@@ -5,10 +5,10 @@ from lux_trader.core.strategy import should_exit
 
 
 def test_exit_z_one_requires_crossing_to_opposite_side() -> None:
-    assert not should_exit(0.0, Direction.SHORT_TSM_LONG_QFF, 1.0)
-    assert not should_exit(-0.99, Direction.SHORT_TSM_LONG_QFF, 1.0)
-    assert should_exit(-1.01, Direction.SHORT_TSM_LONG_QFF, 1.0)
+    assert not should_exit(0.0, Direction.SHORT_US_LONG_TW, 1.0)
+    assert not should_exit(-0.99, Direction.SHORT_US_LONG_TW, 1.0)
+    assert should_exit(-1.01, Direction.SHORT_US_LONG_TW, 1.0)
 
-    assert not should_exit(0.0, Direction.LONG_TSM_SHORT_QFF, 1.0)
-    assert not should_exit(0.99, Direction.LONG_TSM_SHORT_QFF, 1.0)
-    assert should_exit(1.01, Direction.LONG_TSM_SHORT_QFF, 1.0)
+    assert not should_exit(0.0, Direction.LONG_US_SHORT_TW, 1.0)
+    assert not should_exit(0.99, Direction.LONG_US_SHORT_TW, 1.0)
+    assert should_exit(1.01, Direction.LONG_US_SHORT_TW, 1.0)

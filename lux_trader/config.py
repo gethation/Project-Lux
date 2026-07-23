@@ -17,16 +17,16 @@ class StrategyConfig:
     initial_capital_twd: float
     max_entry_delay_minutes: int
     zscore_window: int
-    qff_lots: int | None = None
+    tw_leg_lots: int | None = None
 
 
 @dataclass(frozen=True)
 class FeeConfig:
-    tsm_fee_bps: float
-    qff_fee_per_contract_twd: float
-    qff_tax_rate: float
-    qff_contract_multiplier: float
-    tsm_contract_multiplier: float = 5.0
+    us_leg_fee_bps: float
+    tw_leg_fee_per_contract_twd: float
+    tw_leg_tax_rate: float
+    tw_leg_contract_multiplier: float
+    us_leg_contract_multiplier: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -55,18 +55,18 @@ class LiveMarketDataConfig:
     polling_seconds: float
     minute_finalize_delay_seconds: float
     stale_seconds: float
-    qff_book_stale_seconds: float
+    tw_leg_book_stale_seconds: float
     sync_windows_time_on_startup: bool
     clock_skew_fail_seconds: float
     windows_time_sync_timeout_seconds: float
     max_leg_timestamp_skew_seconds: float
     warmup_minutes: int
-    qff_product: str
-    qff_symbol: str
+    tw_leg_product: str
+    tw_leg_symbol: str
     binance_symbol: str
     bitopro_symbol: str
     fubon_env_path: Path | None
-    taifex_qff_1m_csv: Path | None
+    taifex_tw_leg_1m_csv: Path | None
     taifex_use_network: bool
     taifex_cache_dir: Path
     # Max share of warmup minutes allowed to be QFF forward-filled before the
@@ -75,15 +75,15 @@ class LiveMarketDataConfig:
     # Max consecutive QFF trading minutes that may be forward-filled at the
     # end of the warmup window.  This independently prevents a long-stale feed
     # from passing merely because the other historical minutes are complete.
-    warmup_qff_max_trailing_fill_minutes: int = 5
+    warmup_tw_leg_max_trailing_fill_minutes: int = 5
 
 
 @dataclass(frozen=True)
 class BrokerReconciliationConfig:
     enabled: bool
     fail_on_mismatch: bool
-    tsm_units_tolerance: float
-    qff_contract_tolerance: int
+    us_leg_units_tolerance: float
+    tw_leg_contract_tolerance: int
 
 
 @dataclass(frozen=True)
@@ -91,7 +91,7 @@ class LiveExecutionConfig:
     enabled: bool
     require_readonly_reconciliation: bool
     max_plan_age_seconds: int
-    qff_first: bool
+    tw_leg_first: bool
 
 
 @dataclass(frozen=True)
@@ -100,8 +100,8 @@ class LiveExecutionSmokeConfig:
     fubon_symbol: str
     fubon_lots: int
     binance_symbol: str
-    tsm_units: float
-    qff_expiry: str | None = None
+    us_leg_units: float
+    tw_leg_expiry: str | None = None
 
 
 @dataclass(frozen=True)
@@ -144,8 +144,8 @@ class NtfyConfig:
 class AppConfig:
     input_csv: Path
     store_path: Path
-    qff_ohlcv_csv: Path | None
-    tsm_ohlcv_csv: Path | None
+    tw_leg_ohlcv_csv: Path | None
+    us_leg_ohlcv_csv: Path | None
     usdttwd_ohlcv_csv: Path | None
     strategy: StrategyConfig
     fees: FeeConfig
@@ -192,11 +192,11 @@ def load_config(path: Path) -> AppConfig:
     store_path = Path(paths["store_path"]).expanduser()
     if not store_path.is_absolute():
         store_path = root / store_path
-    qff_ohlcv_csv = optional_path(paths.get("qff_ohlcv_csv"), root)
-    tsm_ohlcv_csv = optional_path(paths.get("tsm_ohlcv_csv"), root)
+    tw_leg_ohlcv_csv = optional_path(paths.get("tw_leg_ohlcv_csv"), root)
+    us_leg_ohlcv_csv = optional_path(paths.get("us_leg_ohlcv_csv"), root)
     usdttwd_ohlcv_csv = optional_path(paths.get("usdttwd_ohlcv_csv"), root)
     fubon_env_path = optional_path(live.get("fubon_env_path"), root)
-    taifex_qff_1m_csv = optional_path(live.get("taifex_qff_1m_csv"), root)
+    taifex_tw_leg_1m_csv = optional_path(live.get("taifex_tw_leg_1m_csv"), root)
     taifex_cache_dir = required_path(
         live.get("taifex_cache_dir", r"data\taifex_cache"), root
     )
@@ -204,8 +204,8 @@ def load_config(path: Path) -> AppConfig:
     return AppConfig(
         input_csv=input_csv,
         store_path=store_path,
-        qff_ohlcv_csv=qff_ohlcv_csv,
-        tsm_ohlcv_csv=tsm_ohlcv_csv,
+        tw_leg_ohlcv_csv=tw_leg_ohlcv_csv,
+        us_leg_ohlcv_csv=us_leg_ohlcv_csv,
         usdttwd_ohlcv_csv=usdttwd_ohlcv_csv,
         strategy=StrategyConfig(
             entry_z=float(strategy.get("entry_z", 2.0)),
@@ -214,17 +214,17 @@ def load_config(path: Path) -> AppConfig:
             initial_capital_twd=float(strategy.get("initial_capital_twd", 2_000_000.0)),
             max_entry_delay_minutes=int(strategy.get("max_entry_delay_minutes", 15)),
             zscore_window=int(strategy.get("zscore_window", 500)),
-            qff_lots=optional_positive_int(
-                strategy.get("qff_lots"),
-                "strategy.qff_lots",
+            tw_leg_lots=optional_positive_int(
+                strategy.get("tw_leg_lots"),
+                "strategy.tw_leg_lots",
             ),
         ),
         fees=FeeConfig(
-            tsm_fee_bps=float(fees.get("tsm_fee_bps", 5.0)),
-            qff_fee_per_contract_twd=float(fees.get("qff_fee_per_contract_twd", 5.0)),
-            qff_tax_rate=float(fees.get("qff_tax_rate", 0.00002)),
-            qff_contract_multiplier=float(fees.get("qff_contract_multiplier", 100.0)),
-            tsm_contract_multiplier=float(fees.get("tsm_contract_multiplier", 5.0)),
+            us_leg_fee_bps=float(fees.get("us_leg_fee_bps", 5.0)),
+            tw_leg_fee_per_contract_twd=float(fees.get("tw_leg_fee_per_contract_twd", 5.0)),
+            tw_leg_tax_rate=float(fees.get("tw_leg_tax_rate", 0.00002)),
+            tw_leg_contract_multiplier=float(fees.get("tw_leg_contract_multiplier", 100.0)),
+            us_leg_contract_multiplier=float(fees.get("us_leg_contract_multiplier", 5.0)),
         ),
         safety=SafetyConfig(
             allow_live_order=bool(safety.get("allow_live_order", False)),
@@ -259,7 +259,7 @@ def load_config(path: Path) -> AppConfig:
                 live.get("minute_finalize_delay_seconds", 1.0)
             ),
             stale_seconds=float(live.get("stale_seconds", 10.0)),
-            qff_book_stale_seconds=float(live.get("qff_book_stale_seconds", 55.0)),
+            tw_leg_book_stale_seconds=float(live.get("tw_leg_book_stale_seconds", 55.0)),
             sync_windows_time_on_startup=bool(
                 live.get("sync_windows_time_on_startup", True)
             ),
@@ -271,19 +271,19 @@ def load_config(path: Path) -> AppConfig:
                 live.get("max_leg_timestamp_skew_seconds", 10.0)
             ),
             warmup_minutes=int(live.get("warmup_minutes", 500)),
-            qff_product=str(live.get("qff_product", "QFF")).strip().upper(),
-            qff_symbol=str(live.get("qff_symbol", "auto")).strip(),
+            tw_leg_product=str(live.get("tw_leg_product", "QFF")).strip().upper(),
+            tw_leg_symbol=str(live.get("tw_leg_symbol", "auto")).strip(),
             binance_symbol=str(live.get("binance_symbol", "TSM/USDT:USDT")).strip(),
             bitopro_symbol=str(live.get("bitopro_symbol", "USDT/TWD")).strip(),
             fubon_env_path=fubon_env_path,
-            taifex_qff_1m_csv=taifex_qff_1m_csv,
+            taifex_tw_leg_1m_csv=taifex_tw_leg_1m_csv,
             taifex_use_network=bool(live.get("taifex_use_network", True)),
             taifex_cache_dir=taifex_cache_dir,
             warmup_forward_fill_max_ratio=float(
                 live.get("warmup_forward_fill_max_ratio", 0.9)
             ),
-            warmup_qff_max_trailing_fill_minutes=int(
-                live.get("warmup_qff_max_trailing_fill_minutes", 5)
+            warmup_tw_leg_max_trailing_fill_minutes=int(
+                live.get("warmup_tw_leg_max_trailing_fill_minutes", 5)
             ),
         ),
         broker_reconciliation=BrokerReconciliationConfig(
@@ -291,11 +291,11 @@ def load_config(path: Path) -> AppConfig:
             fail_on_mismatch=bool(
                 broker_reconciliation.get("fail_on_mismatch", False)
             ),
-            tsm_units_tolerance=float(
-                broker_reconciliation.get("tsm_units_tolerance", 1e-6)
+            us_leg_units_tolerance=float(
+                broker_reconciliation.get("us_leg_units_tolerance", 1e-6)
             ),
-            qff_contract_tolerance=int(
-                broker_reconciliation.get("qff_contract_tolerance", 0)
+            tw_leg_contract_tolerance=int(
+                broker_reconciliation.get("tw_leg_contract_tolerance", 0)
             ),
         ),
         live_execution=LiveExecutionConfig(
@@ -304,14 +304,14 @@ def load_config(path: Path) -> AppConfig:
                 live_execution.get("require_readonly_reconciliation", True)
             ),
             max_plan_age_seconds=int(live_execution.get("max_plan_age_seconds", 120)),
-            qff_first=bool(live_execution.get("qff_first", True)),
+            tw_leg_first=bool(live_execution.get("tw_leg_first", True)),
         ),
         live_execution_smoke=LiveExecutionSmokeConfig(
             enabled=bool(live_execution_smoke.get("enabled", False)),
             fubon_symbol=str(
                 live_execution_smoke.get(
                     "fubon_symbol",
-                    live.get("qff_symbol", "TMFG6"),
+                    live.get("tw_leg_symbol", "TMFG6"),
                 )
             ).strip(),
             fubon_lots=optional_positive_int(
@@ -328,15 +328,15 @@ def load_config(path: Path) -> AppConfig:
                     live.get("binance_symbol", "TSM/USDT:USDT"),
                 )
             ).strip(),
-            tsm_units=optional_positive_float(
+            us_leg_units=optional_positive_float(
                 live_execution_smoke.get(
-                    "tsm_units",
-                    live_execution.get("smoke_test_tsm_units", 0.1),
+                    "us_leg_units",
+                    live_execution.get("smoke_test_us_leg_units", 0.1),
                 ),
-                "live_execution_smoke.tsm_units",
+                "live_execution_smoke.us_leg_units",
             )
             or 0.1,
-            qff_expiry=optional_text(live_execution_smoke.get("qff_expiry")),
+            tw_leg_expiry=optional_text(live_execution_smoke.get("tw_leg_expiry")),
         ),
         binance_execution=BinanceExecutionConfig(
             leverage=int(binance_execution.get("leverage", 1)),

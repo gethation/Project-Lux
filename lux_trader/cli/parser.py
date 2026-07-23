@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 
-PAIR_ID = "qff_tsm"
+PAIR_ID = "tw_leg_us_leg"
 
 
 def add_ui_arguments(parser: argparse.ArgumentParser) -> None:

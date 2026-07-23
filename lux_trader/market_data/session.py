@@ -17,7 +17,7 @@ from ..core.contracts import parse_contract_expiry, row_get, row_to_dict
 from ..core.time import TAIPEI_TZ, ensure_taipei
 from .normalization import close_series
 from .parsing import parse_optional_float, parse_timestamp
-from .types import QffContractCandidate
+from .types import TwLegContractCandidate
 
 
 QFF_FORWARD_FILL_LOOKBACK = timedelta(days=14)
@@ -45,34 +45,34 @@ def market_time(hour: int, minute: int) -> datetime.time:
     return datetime.min.replace(hour=hour, minute=minute).time()
 
 
-def build_qff_session_index(
-    qff_close: pd.Series,
+def build_tw_leg_session_index(
+    tw_leg_close: pd.Series,
     *,
     end: datetime | None = None,
 ) -> pd.DatetimeIndex:
-    qff_close = qff_close.dropna().sort_index()
-    if qff_close.empty:
+    tw_leg_close = tw_leg_close.dropna().sort_index()
+    if tw_leg_close.empty:
         return pd.DatetimeIndex([], tz=TAIPEI_TZ)
     end_ts = (
         pd.Timestamp(ensure_taipei(end))
         if end is not None
-        else qff_close.index.max()
+        else tw_leg_close.index.max()
     )
-    qff_close = qff_close.loc[qff_close.index <= end_ts]
-    if qff_close.empty:
+    tw_leg_close = tw_leg_close.loc[tw_leg_close.index <= end_ts]
+    if tw_leg_close.empty:
         return pd.DatetimeIndex([], tz=TAIPEI_TZ)
 
     pieces: list[pd.DatetimeIndex] = []
-    first_timestamp = qff_close.index.min().to_pydatetime()
+    first_timestamp = tw_leg_close.index.min().to_pydatetime()
     first_day = min(first_timestamp.date(), session_start_date(first_timestamp))
     last_day = end_ts.date()
     for day in pd.date_range(first_day, last_day, freq="D", tz=TAIPEI_TZ):
         day_date = day.date()
         day_mask = [
             ts.date() == day_date and in_day_session(ts.to_pydatetime())
-            for ts in qff_close.index
+            for ts in tw_leg_close.index
         ]
-        if qff_close.loc[day_mask].notna().any():
+        if tw_leg_close.loc[day_mask].notna().any():
             pieces.append(
                 pd.date_range(
                     datetime.combine(
@@ -92,9 +92,9 @@ def build_qff_session_index(
         night_mask = [
             session_start_date(ts.to_pydatetime()) == day_date
             and in_night_session(ts.to_pydatetime())
-            for ts in qff_close.index
+            for ts in tw_leg_close.index
         ]
-        if qff_close.loc[night_mask].notna().any():
+        if tw_leg_close.loc[night_mask].notna().any():
             pieces.append(
                 pd.date_range(
                     datetime.combine(
@@ -114,17 +114,17 @@ def build_qff_session_index(
     if not pieces:
         return pd.DatetimeIndex([], tz=TAIPEI_TZ)
     index = pieces[0].append(pieces[1:]).unique().sort_values()
-    index = index[(index >= qff_close.index.min()) & (index <= end_ts)]
+    index = index[(index >= tw_leg_close.index.min()) & (index <= end_ts)]
     return pd.DatetimeIndex(index)
 
 
-def build_qff_session_warmup_index(
-    qff_close: pd.Series,
+def build_tw_leg_session_warmup_index(
+    tw_leg_close: pd.Series,
     *,
     end: datetime,
     count: int,
 ) -> pd.DatetimeIndex:
-    session_index = build_qff_session_index(qff_close, end=end)
+    session_index = build_tw_leg_session_index(tw_leg_close, end=end)
     if len(session_index) < count:
         raise RuntimeError(
             f"QFF session warmup has only {len(session_index)} bars, need {count}"
@@ -132,7 +132,7 @@ def build_qff_session_warmup_index(
     return pd.DatetimeIndex(session_index[-count:])
 
 
-def build_qff_expected_session_index(
+def build_tw_leg_expected_session_index(
     *,
     start: datetime,
     end: datetime,
@@ -140,7 +140,7 @@ def build_qff_expected_session_index(
 ) -> pd.DatetimeIndex:
     """Return every QFF trading minute required by the live calendar.
 
-    Unlike :func:`build_qff_session_index`, this index is anchored to the
+    Unlike :func:`build_tw_leg_session_index`, this index is anchored to the
     requested time range rather than inferred from whatever rows a provider
     happened to return.  A wholly missing current day/night session therefore
     remains visible to warmup freshness checks instead of disappearing.
@@ -168,7 +168,7 @@ def build_qff_expected_session_index(
     return pd.DatetimeIndex(expected)
 
 
-def build_qff_expected_warmup_index(
+def build_tw_leg_expected_warmup_index(
     *,
     start: datetime,
     end: datetime,
@@ -176,7 +176,7 @@ def build_qff_expected_warmup_index(
     closed_dates: Iterable[date] = (),
 ) -> tuple[pd.DatetimeIndex, pd.DatetimeIndex]:
     """Return ``(last_count_minutes, full_fill_index)`` for live warmup."""
-    session_index = build_qff_expected_session_index(
+    session_index = build_tw_leg_expected_session_index(
         start=start,
         end=end,
         closed_dates=closed_dates,
@@ -189,7 +189,7 @@ def build_qff_expected_warmup_index(
     return pd.DatetimeIndex(session_index[-count:]), session_index
 
 
-def prioritized_qff_close_frame(
+def prioritized_tw_leg_close_frame(
     frames: list[tuple[str, pd.DataFrame]],
 ) -> pd.DataFrame:
     combined_parts: list[pd.DataFrame] = []
@@ -217,7 +217,7 @@ def prioritized_qff_close_frame(
     return combined.drop_duplicates("timestamp", keep="last").set_index("timestamp")
 
 
-def qff_symbol_to_taifex_contract_month(
+def tw_leg_symbol_to_taifex_contract_month(
     symbol: str,
     *,
     reference_date: date | None = None,
@@ -243,14 +243,14 @@ def qff_symbol_to_taifex_contract_month(
     return f"{year}{month:02d}"
 
 
-def select_qff_front_month(
+def select_tw_leg_front_month(
     candidates: list[Any],
     *,
     product: str = "QFF",
     today: date | None = None,
-) -> QffContractCandidate:
+) -> TwLegContractCandidate:
     today = today or datetime.now(TAIPEI_TZ).date()
-    parsed: list[QffContractCandidate] = []
+    parsed: list[TwLegContractCandidate] = []
     rejected: list[str] = []
 
     for row in candidates:
@@ -273,7 +273,7 @@ def select_qff_front_month(
             continue
         if expiry >= today:
             parsed.append(
-                QffContractCandidate(symbol=symbol, expiry=expiry, raw=raw)
+                TwLegContractCandidate(symbol=symbol, expiry=expiry, raw=raw)
             )
 
     if not parsed:
@@ -286,15 +286,15 @@ def select_qff_front_month(
 
 __all__ = [
     "QFF_FORWARD_FILL_LOOKBACK",
-    "build_qff_session_index",
-    "build_qff_session_warmup_index",
-    "build_qff_expected_session_index",
-    "build_qff_expected_warmup_index",
+    "build_tw_leg_session_index",
+    "build_tw_leg_session_warmup_index",
+    "build_tw_leg_expected_session_index",
+    "build_tw_leg_expected_warmup_index",
     "floor_minute",
     "parse_optional_float",
     "parse_timestamp",
-    "prioritized_qff_close_frame",
-    "qff_symbol_to_taifex_contract_month",
-    "select_qff_front_month",
+    "prioritized_tw_leg_close_frame",
+    "tw_leg_symbol_to_taifex_contract_month",
+    "select_tw_leg_front_month",
 ]
 

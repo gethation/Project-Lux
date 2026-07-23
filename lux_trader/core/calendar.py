@@ -184,7 +184,7 @@ class TradingCalendar:
         night_active: set[datetime.date] = set()
 
         for bar in rows:
-            if bar.qff_close is None:
+            if bar.tw_leg_close is None:
                 continue
             if in_day_session(bar.timestamp):
                 day_active.add(bar.timestamp.date())

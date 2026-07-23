@@ -5,8 +5,8 @@
 [paths]
 store_path = 'data\project_lux_live_execute.sqlite3'
 input_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff_tsm_spread_zscore_1m_taipei_qff_session_w500.csv'
-qff_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
-tsm_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\binance_tsmusdtp_1m_taipei.csv'
+tw_leg_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
+us_leg_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\binance_tsmusdtp_1m_taipei.csv'
 usdttwd_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\bitopro_usdttwd_1m_taipei.csv'
 
 [strategy]
@@ -16,14 +16,14 @@ leg_notional_twd = 1000000.0
 initial_capital_twd = 2000000.0
 max_entry_delay_minutes = 15
 zscore_window = 500
-qff_lots = 1
+tw_leg_lots = 1
 
 [fees]
-tsm_fee_bps = 5.0
-qff_fee_per_contract_twd = 88.0
-qff_tax_rate = 0.00002
-qff_contract_multiplier = 100.0
-tsm_contract_multiplier = 5.0
+us_leg_fee_bps = 5.0
+tw_leg_fee_per_contract_twd = 88.0
+tw_leg_tax_rate = 0.00002
+tw_leg_contract_multiplier = 100.0
+us_leg_contract_multiplier = 5.0
 
 [safety]
 allow_live_order = true
@@ -65,7 +65,7 @@ closed_dates = [
 polling_seconds = 1.0
 minute_finalize_delay_seconds = 1.0
 stale_seconds = 10.0
-qff_book_stale_seconds = 55.0
+tw_leg_book_stale_seconds = 55.0
 sync_windows_time_on_startup = true
 clock_skew_fail_seconds = 60.0
 windows_time_sync_timeout_seconds = 15.0
@@ -73,8 +73,8 @@ max_leg_timestamp_skew_seconds = 10.0
 warmup_minutes = 500
 warmup_forward_fill_max_ratio = 0.9
 warmup_qff_max_trailing_fill_minutes = 5
-qff_product = 'QFF'
-qff_symbol = 'auto'
+tw_leg_product = 'QFF'
+tw_leg_symbol = 'auto'
 binance_symbol = 'TSM/USDT:USDT'
 bitopro_symbol = 'USDT/TWD'
 fubon_env_path = 'env'
@@ -85,14 +85,14 @@ taifex_qff_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.
 [broker_reconciliation]
 enabled = true
 fail_on_mismatch = true
-tsm_units_tolerance = 0.000001
-qff_contract_tolerance = 0
+us_leg_units_tolerance = 0.000001
+tw_leg_contract_tolerance = 0
 
 [live_execution]
 enabled = true
 require_readonly_reconciliation = true
 max_plan_age_seconds = 120
-qff_first = true
+tw_leg_first = true
 
 [binance_execution]
 leverage = 4

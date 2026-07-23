@@ -110,7 +110,7 @@ def test_bar_does_not_publish_periodic_status() -> None:
     snapshot = SimpleNamespace(mid_spread=10.83, short_zscore=-2.12, long_zscore=-1.86)
     state = SimpleNamespace(
         state=SimpleNamespace(value="open"),
-        position_direction=Direction.LONG_TSM_SHORT_QFF,
+        position_direction=Direction.LONG_US_SHORT_TW,
     )
     account = SimpleNamespace(
         combined_upnl_twd=12345.0,
@@ -147,13 +147,13 @@ def test_dry_run_filled_execution_is_clearly_labeled_and_lists_both_fills() -> N
     ntfy, publisher = reporter(mode="live-dry-run")
     plan = SimpleNamespace(
         plan_type=ExecutionPlanType.ENTRY,
-        direction=Direction.SHORT_TSM_LONG_QFF,
+        direction=Direction.SHORT_US_LONG_TW,
     )
     fills = (
         Fill(
             fill_id="f1",
             order_id="o1",
-            broker=BrokerName.BINANCE_TSM,
+            broker=BrokerName.BINANCE,
             symbol="TSM/USDT:USDT",
             side=OrderSide.SELL,
             quantity=2.5,
@@ -165,7 +165,7 @@ def test_dry_run_filled_execution_is_clearly_labeled_and_lists_both_fills() -> N
         Fill(
             fill_id="f2",
             order_id="o2",
-            broker=BrokerName.FUBON_QFF,
+            broker=BrokerName.FUBON,
             symbol="QFFQ6",
             side=OrderSide.BUY,
             quantity=1.0,
@@ -190,8 +190,8 @@ def test_dry_run_filled_execution_is_clearly_labeled_and_lists_both_fills() -> N
     assert message.priority == ALERT_PRIORITY
     assert "[DRY-RUN]" in message.title
     assert "mode=DRY-RUN" in message.message
-    assert "BINANCE_TSM TSM/USDT:USDT sell qty=2.5 price=105.25" in message.message
-    assert "FUBON_QFF QFFQ6 buy qty=1 price=842" in message.message
+    assert "BINANCE TSM/USDT:USDT sell qty=2.5 price=105.25" in message.message
+    assert "FUBON QFFQ6 buy qty=1 price=842" in message.message
     assert "trade_pnl_twd" not in message.message
 
 
@@ -199,10 +199,10 @@ def test_filled_exit_notification_includes_authoritative_trade_pnl() -> None:
     ntfy, publisher = reporter()
     plan = SimpleNamespace(
         plan_type=ExecutionPlanType.EXIT,
-        direction=Direction.LONG_TSM_SHORT_QFF,
+        direction=Direction.LONG_US_SHORT_TW,
     )
     fill = SimpleNamespace(
-        broker=SimpleNamespace(value="fubon_qff"),
+        broker=SimpleNamespace(value="fubon_tw_leg"),
         symbol="QFFQ6",
         side=SimpleNamespace(value="buy"),
         quantity=1.0,
@@ -236,13 +236,13 @@ def test_filled_exit_notification_marks_missing_trade_pnl_unavailable() -> None:
     ntfy, publisher = reporter()
     plan = SimpleNamespace(
         plan_type=ExecutionPlanType.EXIT,
-        direction=Direction.LONG_TSM_SHORT_QFF,
+        direction=Direction.LONG_US_SHORT_TW,
     )
     outcome = SimpleNamespace(
         status=ExecutionOutcomeStatus.FILLED,
         fills=(
             SimpleNamespace(
-                broker=SimpleNamespace(value="fubon_qff"),
+                broker=SimpleNamespace(value="fubon_tw_leg"),
                 symbol="QFFQ6",
                 side=SimpleNamespace(value="buy"),
                 quantity=1.0,
@@ -262,12 +262,12 @@ def test_partial_execution_publishes_fill_and_error_notifications() -> None:
     ntfy, publisher = reporter()
     plan = SimpleNamespace(
         plan_type=ExecutionPlanType.EXIT,
-        direction=Direction.LONG_TSM_SHORT_QFF,
+        direction=Direction.LONG_US_SHORT_TW,
     )
     fill = Fill(
         fill_id="f1",
         order_id="o1",
-        broker=BrokerName.BINANCE_TSM,
+        broker=BrokerName.BINANCE,
         symbol="TSM/USDT:USDT",
         side=OrderSide.SELL,
         quantity=1.0,
@@ -372,7 +372,7 @@ def seed_status_bars(path, count: int) -> None:
         start = ts()
         for index in range(count):
             state = "open" if index == count - 1 else "flat"
-            position = "long_tsm_short_qff" if state == "open" else "flat"
+            position = "long_us_short_tw" if state == "open" else "flat"
             connection.execute(
                 """
                 INSERT INTO bars (

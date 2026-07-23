@@ -17,7 +17,7 @@ from ..serialization import safe_jsonable
 
 
 class BinanceReadOnlyBroker:
-    broker = BrokerName.BINANCE_TSM
+    broker = BrokerName.BINANCE
 
     def __init__(
         self,
@@ -133,7 +133,7 @@ def normalize_binance_position(
     if quantity is None or quantity == 0:
         return None
     return BrokerPositionSnapshot(
-        broker=BrokerName.BINANCE_TSM,
+        broker=BrokerName.BINANCE,
         symbol=symbol,
         quantity=quantity,
         raw=raw,
@@ -148,7 +148,7 @@ def normalize_binance_order(
     if quantity is None:
         quantity = parse_optional_float(row.get("remaining"))
     return BrokerOrderSnapshot(
-        broker=BrokerName.BINANCE_TSM,
+        broker=BrokerName.BINANCE,
         order_id=str(row.get("id") or row.get("clientOrderId") or "UNKNOWN"),
         symbol=str(row.get("symbol") or "UNKNOWN"),
         side=parse_order_side(row.get("side")),
@@ -190,7 +190,7 @@ def normalize_binance_margins(
         )
         rows.append(
             BrokerMarginSnapshot(
-                broker=BrokerName.BINANCE_TSM,
+                broker=BrokerName.BINANCE,
                 currency=currency,
                 equity=(
                     total_margin_balance

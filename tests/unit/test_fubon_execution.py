@@ -161,14 +161,14 @@ def fubon_leg(
     quantity: float = 1.0,
 ) -> ExecutionLeg:
     return ExecutionLeg(
-        broker=BrokerName.FUBON_QFF,
+        broker=BrokerName.FUBON,
         symbol=symbol,
         side=side,
         quantity=quantity,
         price=100.0,
         timestamp=ts(),
         row_index=1,
-        qff_symbol=symbol,
+        tw_leg_symbol=symbol,
         order_type=order_type,
     )
 
@@ -183,7 +183,7 @@ def execution_plan(
     return PairExecutionPlan(
         plan_id=f"PLAN-{plan_type.value}",
         plan_type=plan_type,
-        direction=Direction.SHORT_TSM_LONG_QFF,
+        direction=Direction.SHORT_US_LONG_TW,
         timestamp=ts(),
         row_index=1,
         legs=(fubon_leg(side=side, order_type=order_type),)
@@ -191,7 +191,7 @@ def execution_plan(
         else legs,
         order_type=order_type,
         reason="test",
-        qff_symbol=SYMBOL,
+        tw_leg_symbol=SYMBOL,
     )
 
 
@@ -269,11 +269,11 @@ def fubon_repr_order_result() -> dict:
     }
 
 
-def qff_repr_order_result() -> dict:
+def tw_leg_repr_order_result() -> dict:
     return {
         "value": """FutOptOrderResult {
-    order_no: "qff-order",
-    seq_no: "qff-seq",
+    order_no: "tw_leg-order",
+    seq_no: "tw_leg-seq",
     symbol: "QFF",
     expiry_date: "202607",
     buy_sell: Sell,
@@ -367,7 +367,7 @@ def test_adapter_fetch_order_records_filters_by_contract_identity() -> None:
     fake_sdk = FakeSdk(
         order_results=[
             other_tmf_month,
-            qff_repr_order_result(),
+            tw_leg_repr_order_result(),
             fubon_repr_order_result(),
         ]
     )
@@ -418,7 +418,7 @@ def test_normalize_fubon_order_symbol_converts_market_and_broker_aliases() -> No
     )
 
 
-def test_contract_identity_supports_tmf_and_qff_aliases() -> None:
+def test_contract_identity_supports_tmf_and_tw_leg_aliases() -> None:
     tmf = FubonContractIdentity.from_symbol(
         "TMFG6",
         reference_date=date(2026, 6, 25),
@@ -427,7 +427,7 @@ def test_contract_identity_supports_tmf_and_qff_aliases() -> None:
         "FITMN07",
         reference_date=date(2026, 7, 2),
     )
-    qff = FubonContractIdentity.from_symbol(
+    tw_leg = FubonContractIdentity.from_symbol(
         "QFFG6",
         reference_date=date(2026, 6, 25),
     )
@@ -459,11 +459,11 @@ def test_contract_identity_supports_tmf_and_qff_aliases() -> None:
         side=OrderSide.BUY,
         lot=1,
     )
-    assert qff.product == "QFF"
-    assert qff.contract_month == "202607"
-    assert "FIQFF" in qff.broker_symbols
-    assert qff.matches(fubon_raw_row(qff_repr_order_result()), side=OrderSide.SELL, lot=2)
-    assert qff.matches(
+    assert tw_leg.product == "QFF"
+    assert tw_leg.contract_month == "202607"
+    assert "FIQFF" in tw_leg.broker_symbols
+    assert tw_leg.matches(fubon_raw_row(tw_leg_repr_order_result()), side=OrderSide.SELL, lot=2)
+    assert tw_leg.matches(
         {
             "symbol": "FIQFF",
             "expiry_date": "202607",

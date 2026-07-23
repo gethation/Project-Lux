@@ -12,9 +12,9 @@ def make_bar(index: int, spread: float) -> MarketBar:
     return MarketBar(
         row_index=index,
         timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(minutes=index),
-        qff_close=100.0,
-        qff_close_filled=100.0,
-        tsm_twd_fair=100.0,
+        tw_leg_close=100.0,
+        tw_leg_close_filled=100.0,
+        us_leg_twd_fair=100.0,
         spread=spread,
         entry_allowed=True,
         close_allowed=True,

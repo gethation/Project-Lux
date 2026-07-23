@@ -25,7 +25,7 @@ from lux_trader.reconciliation import (
     ReconciliationStatus,
 )
 from lux_trader.reconciliation.post_trade import PostTradeReconciler
-from lux_trader.runtime.live import LiveDryRunRunner, WarmupRunner, resolve_qff_contract
+from lux_trader.runtime.live import LiveDryRunRunner, WarmupRunner, resolve_tw_leg_contract
 from lux_trader.runtime.live.lease import assert_live_lease_available
 from lux_trader.store import SQLiteStore
 from lux_trader.terminal_ui import LiveTerminalReporter, NullLiveReporter
@@ -64,7 +64,7 @@ def build_live_reporter(args: argparse.Namespace, config: object, *, mode: str):
     return with_ntfy(
         DashboardReporter(
             mode=mode,
-            qff_symbol=config.live.qff_symbol,
+            tw_leg_symbol=config.live.tw_leg_symbol,
             binance_symbol=config.live.binance_symbol,
             bitopro_symbol=config.live.bitopro_symbol,
             gate_text=gate_text,
@@ -101,7 +101,7 @@ def command_live_dry_run(args: argparse.Namespace) -> int:
         f"bars_processed={result.bars_processed}, "
         f"skipped_minutes={result.skipped_minutes}, "
         f"plans_recorded={result.plans_recorded}, "
-        f"qff_symbol={result.qff_symbol}"
+        f"tw_leg_symbol={result.tw_leg_symbol}"
     )
     return 0
 
@@ -132,9 +132,9 @@ def command_live_status(args: argparse.Namespace) -> int:
         print(
             "- position: "
             f"direction={direction}, "
-            f"tsm_units={state.tsm_units}, "
-            f"qff_contracts={state.qff_contracts}, "
-            f"qff_symbol={state.trading_qff_symbol or '-'}"
+            f"us_leg_units={state.us_leg_units}, "
+            f"tw_leg_contracts={state.tw_leg_contracts}, "
+            f"tw_leg_symbol={state.trading_tw_leg_symbol or '-'}"
         )
         print(f"- realized_pnl_twd: {state.realized_pnl}")
         if state.pnl_status != "complete":
@@ -229,13 +229,13 @@ def reconcile_brokers_to_store(
                 readonly=readonly,
             )
         report = BrokerReconciler(
-            tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
-            qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
+            us_leg_units_tolerance=config.broker_reconciliation.us_leg_units_tolerance,
+            tw_leg_contract_tolerance=config.broker_reconciliation.tw_leg_contract_tolerance,
         ).reconcile(
             strategy_state=strategy_state,
             brokers=active_brokers,
-            tsm_symbol=config.live.binance_symbol,
-            qff_symbol=helpers.reconciliation_qff_symbol(config, strategy_state),
+            us_leg_symbol=config.live.binance_symbol,
+            tw_leg_symbol=helpers.reconciliation_tw_leg_symbol(config, strategy_state),
             timestamp=observed_at,
         )
         run_id = store.record_reconciliation_report(report)
@@ -278,33 +278,33 @@ def command_clear_pause(args: argparse.Namespace) -> int:
         pending_manual_close = store.load_pending_manual_close()
         if pending_manual_close is not None:
             report = PostTradeReconciler(
-                tsm_units_tolerance=(
-                    config.broker_reconciliation.tsm_units_tolerance
+                us_leg_units_tolerance=(
+                    config.broker_reconciliation.us_leg_units_tolerance
                 ),
-                qff_contract_tolerance=(
-                    config.broker_reconciliation.qff_contract_tolerance
+                tw_leg_contract_tolerance=(
+                    config.broker_reconciliation.tw_leg_contract_tolerance
                 ),
             ).reconcile(
                 store=store,
                 strategy_state=state,
                 brokers=brokers,
-                tsm_symbol=config.live.binance_symbol,
-                qff_symbol=helpers.reconciliation_qff_symbol(config, state),
+                us_leg_symbol=config.live.binance_symbol,
+                tw_leg_symbol=helpers.reconciliation_tw_leg_symbol(config, state),
                 timestamp=timestamp,
             )
         else:
             report = BrokerReconciler(
-                tsm_units_tolerance=(
-                    config.broker_reconciliation.tsm_units_tolerance
+                us_leg_units_tolerance=(
+                    config.broker_reconciliation.us_leg_units_tolerance
                 ),
-                qff_contract_tolerance=(
-                    config.broker_reconciliation.qff_contract_tolerance
+                tw_leg_contract_tolerance=(
+                    config.broker_reconciliation.tw_leg_contract_tolerance
                 ),
             ).reconcile(
                 strategy_state=state,
                 brokers=brokers,
-                tsm_symbol=config.live.binance_symbol,
-                qff_symbol=helpers.reconciliation_qff_symbol(config, state),
+                us_leg_symbol=config.live.binance_symbol,
+                tw_leg_symbol=helpers.reconciliation_tw_leg_symbol(config, state),
                 timestamp=timestamp,
             )
         store.record_reconciliation_report(report)
@@ -323,8 +323,8 @@ def command_clear_pause(args: argparse.Namespace) -> int:
 
         has_position = (
             state.position_direction is not None
-            or abs(float(state.tsm_units or 0.0)) > 1e-12
-            or int(state.qff_contracts or 0) != 0
+            or abs(float(state.us_leg_units or 0.0)) > 1e-12
+            or int(state.tw_leg_contracts or 0) != 0
         )
         target = StrategyState.OPEN if has_position else StrategyState.FLAT
         state.state = target
@@ -444,7 +444,7 @@ def command_warmup_live(args: argparse.Namespace) -> int:
     print(
         "Warmup complete: "
         f"bars_written={result.bars_written}, "
-        f"qff_symbol={result.qff_symbol}, "
+        f"tw_leg_symbol={result.tw_leg_symbol}, "
         f"start={result.start}, "
         f"end={result.end}"
     )
@@ -461,22 +461,22 @@ def live_session_label(session_status: object) -> str:
     return "open"
 
 
-def qff_book_diagnostic_lines(
-    qff_quote: object,
+def tw_leg_book_diagnostic_lines(
+    tw_leg_quote: object,
     observed_at: datetime,
     stale_seconds: float,
 ) -> list[str]:
-    quote_timestamp = ensure_taipei(getattr(qff_quote, "timestamp"))
+    quote_timestamp = ensure_taipei(getattr(tw_leg_quote, "timestamp"))
     age_sec = max((ensure_taipei(observed_at) - quote_timestamp).total_seconds(), 0.0)
     stale = age_sec > stale_seconds
     lines = [
-        f"qff_book_timestamp={quote_timestamp.isoformat()}",
-        f"qff_book_age_sec={age_sec:.3f}",
-        f"qff_book_stale={str(stale).lower()}",
+        f"tw_leg_book_timestamp={quote_timestamp.isoformat()}",
+        f"tw_leg_book_age_sec={age_sec:.3f}",
+        f"tw_leg_book_stale={str(stale).lower()}",
     ]
     if stale:
         lines.append(
-            f"WARN stale_qff_book age_sec={age_sec:.3f} threshold={stale_seconds}"
+            f"WARN stale_tw_leg_book age_sec={age_sec:.3f} threshold={stale_seconds}"
         )
     return lines
 
@@ -503,7 +503,7 @@ def run_live_doctor_checks(config: object) -> list[str]:
         f"store_path={config.store_path}",
         f"polling_seconds={config.live.polling_seconds}",
         f"warmup_minutes={config.live.warmup_minutes}",
-        f"qff_symbol={config.live.qff_symbol}",
+        f"tw_leg_symbol={config.live.tw_leg_symbol}",
         f"binance_symbol={config.live.binance_symbol}",
         f"bitopro_symbol={config.live.bitopro_symbol}",
         f"live_session={live_session_label(session_status)}",
@@ -515,43 +515,43 @@ def run_live_doctor_checks(config: object) -> list[str]:
     if helpers.live_marketdata_enabled():
         from lux_trader.integrations.binance.market_data import BinanceMarketData
         from lux_trader.integrations.bitopro.market_data import BitoProMarketData
-        from lux_trader.integrations.fubon.market_data import FubonQffMarketData
+        from lux_trader.integrations.fubon.market_data import FubonTwLegMarketData
 
-        qff = FubonQffMarketData(config.live.fubon_env_path)
+        tw_leg = FubonTwLegMarketData(config.live.fubon_env_path)
         try:
-            qff_contract = resolve_qff_contract(config, qff)
-            checks.append(f"qff_active_symbol={qff_contract.symbol}")
-            checks.append(f"qff_active_expiry={qff_contract.expiry}")
-            checks.append(f"qff_contract_policy={qff_contract.policy_state}")
-            session_counts = getattr(qff, "last_candidate_session_counts", {})
+            tw_leg_contract = resolve_tw_leg_contract(config, tw_leg)
+            checks.append(f"tw_leg_active_symbol={tw_leg_contract.symbol}")
+            checks.append(f"tw_leg_active_expiry={tw_leg_contract.expiry}")
+            checks.append(f"tw_leg_contract_policy={tw_leg_contract.policy_state}")
+            session_counts = getattr(tw_leg, "last_candidate_session_counts", {})
             if session_counts:
                 checks.append(
-                    "qff_candidate_session_counts="
+                    "tw_leg_candidate_session_counts="
                     f"{json.dumps(session_counts, sort_keys=True)}"
                 )
-            if qff_contract.selection is not None:
+            if tw_leg_contract.selection is not None:
                 checks.append(
-                    "qff_business_days_to_expiry="
-                    f"{qff_contract.selection.business_days_to_expiry}"
+                    "tw_leg_business_days_to_expiry="
+                    f"{tw_leg_contract.selection.business_days_to_expiry}"
                 )
             try:
-                qff.ensure_books_subscription(qff_contract.symbol)
-                qff_quote = qff.fetch_quote(qff_contract.symbol)
+                tw_leg.ensure_books_subscription(tw_leg_contract.symbol)
+                tw_leg_quote = tw_leg.fetch_quote(tw_leg_contract.symbol)
                 checks.append(
-                    "qff_book="
-                    f"price={qff_quote.price} bid={qff_quote.bid} ask={qff_quote.ask} "
-                    f"bid_size={qff_quote.bid_size} ask_size={qff_quote.ask_size}"
+                    "tw_leg_book="
+                    f"price={tw_leg_quote.price} bid={tw_leg_quote.bid} ask={tw_leg_quote.ask} "
+                    f"bid_size={tw_leg_quote.bid_size} ask_size={tw_leg_quote.ask_size}"
                 )
                 checks.extend(
-                    qff_book_diagnostic_lines(
-                        qff_quote,
+                    tw_leg_book_diagnostic_lines(
+                        tw_leg_quote,
                         observed_at,
-                        config.live.qff_book_stale_seconds,
+                        config.live.tw_leg_book_stale_seconds,
                     )
                 )
             except Exception as exc:
                 checks.append(
-                    "WARN qff_book_unavailable "
+                    "WARN tw_leg_book_unavailable "
                     f"{type(exc).__name__}: {exc}"
                 )
             binance_quote = BinanceMarketData().fetch_quote(
@@ -573,7 +573,7 @@ def run_live_doctor_checks(config: object) -> list[str]:
                 f"ask_size={bitopro_quote.ask_size}"
             )
         finally:
-            qff.close()
+            tw_leg.close()
     else:
         checks.append(
             f"live_marketdata=disabled (set {helpers.LIVE_MARKETDATA_ENV}=1 "

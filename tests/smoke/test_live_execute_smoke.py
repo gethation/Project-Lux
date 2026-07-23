@@ -32,7 +32,7 @@ from lux_trader.execution.intent import (
 )
 from lux_trader.execution.outcome import ExecutionOutcome
 from lux_trader.execution.real_coordinator import RealExecutionCoordinator
-from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
+from lux_trader.integrations.binance.execution import BinanceUsLegExecutionAdapter
 from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
@@ -45,7 +45,7 @@ EXEC_SMOKE_CONFIG = Path("configs/config.live.exec.smoke.local.toml")
 SMOKE_FUBON_SYMBOL = "TMFG6"
 SMOKE_FUBON_LOTS = 1.0
 SMOKE_TSM_UNITS = 0.1
-SMOKE_DIRECTION = Direction.SHORT_TSM_LONG_QFF
+SMOKE_DIRECTION = Direction.SHORT_US_LONG_TW
 
 REQUIRED_ENV_GATES = (
     "LUX_READONLY_BROKER",
@@ -73,13 +73,13 @@ def load_exec_smoke_config() -> AppConfig:
         pytest.skip("M6 execution smoke requires [live_execution] enabled=true")
     if not config.live_execution_smoke.enabled:
         pytest.skip("M6 execution smoke requires [live_execution_smoke] enabled=true")
-    if not config.live_execution.qff_first:
-        pytest.skip("M6 execution smoke requires live_execution.qff_first=true")
+    if not config.live_execution.tw_leg_first:
+        pytest.skip("M6 execution smoke requires live_execution.tw_leg_first=true")
 
     smoke = config.live_execution_smoke
     assert smoke.fubon_symbol == SMOKE_FUBON_SYMBOL
     assert smoke.fubon_lots == int(SMOKE_FUBON_LOTS)
-    assert smoke.tsm_units == pytest.approx(SMOKE_TSM_UNITS)
+    assert smoke.us_leg_units == pytest.approx(SMOKE_TSM_UNITS)
     assert smoke.binance_symbol == config.live.binance_symbol
     return config
 
@@ -114,18 +114,18 @@ def smoke_state(config: AppConfig, *, open_position: bool) -> StrategyRuntimeSta
     if not open_position:
         return StrategyRuntimeState(
             state=StrategyState.FLAT,
-            trading_qff_symbol=smoke.fubon_symbol,
-            trading_qff_expiry=smoke.qff_expiry,
+            trading_tw_leg_symbol=smoke.fubon_symbol,
+            trading_tw_leg_expiry=smoke.tw_leg_expiry,
             contract_policy_state="active",
         )
     return StrategyRuntimeState(
         state=StrategyState.OPEN,
         position_direction=SMOKE_DIRECTION,
-        tsm_units=-float(smoke.tsm_units),
-        qff_units=float(smoke.fubon_lots),
-        qff_contracts=int(smoke.fubon_lots),
-        trading_qff_symbol=smoke.fubon_symbol,
-        trading_qff_expiry=smoke.qff_expiry,
+        us_leg_units=-float(smoke.us_leg_units),
+        tw_leg_units=float(smoke.fubon_lots),
+        tw_leg_contracts=int(smoke.fubon_lots),
+        trading_tw_leg_symbol=smoke.fubon_symbol,
+        trading_tw_leg_expiry=smoke.tw_leg_expiry,
         contract_policy_state="active",
     )
 
@@ -140,14 +140,14 @@ def record_reconciliation(
     brokers = smoke_readonly_brokers(config)
     try:
         report = PostTradeReconciler(
-            tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
-            qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
+            us_leg_units_tolerance=config.broker_reconciliation.us_leg_units_tolerance,
+            tw_leg_contract_tolerance=config.broker_reconciliation.tw_leg_contract_tolerance,
         ).reconcile(
             store=store,
             strategy_state=state,
             brokers=brokers,
-            tsm_symbol=config.live_execution_smoke.binance_symbol,
-            qff_symbol=config.live_execution_smoke.fubon_symbol,
+            us_leg_symbol=config.live_execution_smoke.binance_symbol,
+            tw_leg_symbol=config.live_execution_smoke.fubon_symbol,
             timestamp=datetime.now(TAIPEI_TZ),
         )
     finally:
@@ -181,7 +181,7 @@ def build_smoke_plan(
     common = {
         "timestamp": timestamp,
         "row_index": row_index,
-        "qff_expiry": smoke.qff_expiry,
+        "tw_leg_expiry": smoke.tw_leg_expiry,
         "contract_policy_state": "active",
         "order_type": ExecutionOrderType.MARKET.value,
         "expected_price": 1.0,
@@ -190,21 +190,21 @@ def build_smoke_plan(
     }
     legs = (
         ExecutionLeg(
-            broker=BrokerName.FUBON_QFF,
+            broker=BrokerName.FUBON,
             symbol=smoke.fubon_symbol,
             side=fubon_side,
             quantity=float(smoke.fubon_lots),
             price=1.0,
-            qff_symbol=smoke.fubon_symbol,
+            tw_leg_symbol=smoke.fubon_symbol,
             **common,
         ),
         ExecutionLeg(
-            broker=BrokerName.BINANCE_TSM,
+            broker=BrokerName.BINANCE,
             symbol=smoke.binance_symbol,
             side=binance_side,
-            quantity=float(smoke.tsm_units),
+            quantity=float(smoke.us_leg_units),
             price=1.0,
-            qff_symbol=smoke.fubon_symbol,
+            tw_leg_symbol=smoke.fubon_symbol,
             **common,
         ),
     )
@@ -221,8 +221,8 @@ def build_smoke_plan(
         row_index=row_index,
         legs=legs,
         reason=f"m6_execution_smoke_{plan_type.value}",
-        qff_symbol=smoke.fubon_symbol,
-        qff_expiry=smoke.qff_expiry,
+        tw_leg_symbol=smoke.fubon_symbol,
+        tw_leg_expiry=smoke.tw_leg_expiry,
         contract_policy_state="active",
         order_type=ExecutionOrderType.MARKET.value,
         price_policy="m6_execution_smoke_market",
@@ -291,8 +291,8 @@ def assert_smoke_quantities(
     plan_type: str,
 ) -> None:
     legs = latest_plan_legs(connection, plan_type)
-    fubon_leg = legs["FUBON_QFF"]
-    binance_leg = legs["BINANCE_TSM"]
+    fubon_leg = legs["FUBON"]
+    binance_leg = legs["BINANCE"]
     assert fubon_leg["symbol"] == SMOKE_FUBON_SYMBOL
     assert fubon_leg["quantity"] == pytest.approx(SMOKE_FUBON_LOTS)
     assert binance_leg["quantity"] == pytest.approx(SMOKE_TSM_UNITS)
@@ -347,14 +347,14 @@ def test_real_live_execute_entry_and_exit_returns_flat() -> None:
         "smoke quantities "
         f"fubon_symbol={smoke.fubon_symbol} "
         f"fubon_lots={smoke.fubon_lots:g} "
-        f"tsm_symbol={smoke.binance_symbol} "
-        f"tsm_units={smoke.tsm_units:g}"
+        f"us_leg_symbol={smoke.binance_symbol} "
+        f"us_leg_units={smoke.us_leg_units:g}"
     )
     remove_sqlite_family(config.store_path)
     print_m6_stage("sqlite store reset")
 
     store = SQLiteStore(config.store_path)
-    binance_adapter = BinanceTsmExecutionAdapter(
+    binance_adapter = BinanceUsLegExecutionAdapter(
         smoke.binance_symbol,
         config.live.fubon_env_path,
         leverage=config.binance_execution.leverage,
@@ -378,7 +378,7 @@ def test_real_live_execute_entry_and_exit_returns_flat() -> None:
             store=store,
             binance_adapter=binance_adapter,
             fubon_adapter=fubon_adapter,
-            qff_first=config.live_execution.qff_first,
+            tw_leg_first=config.live_execution.tw_leg_first,
         )
 
         entry_plan = build_smoke_plan(

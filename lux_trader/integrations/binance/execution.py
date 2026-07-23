@@ -44,8 +44,8 @@ BINANCE_EXECUTION_SMOKE_ENV_GATES = (
 BinanceExecutionPreflight = ExecutionPreflight
 
 
-class BinanceTsmExecutionAdapter:
-    broker = BrokerName.BINANCE_TSM
+class BinanceUsLegExecutionAdapter:
+    broker = BrokerName.BINANCE
 
     def __init__(
         self,
@@ -473,7 +473,7 @@ class BinanceTsmExecutionAdapter:
         self,
         plan: PairExecutionPlan,
     ) -> tuple[ExecutionLeg | None, str | None]:
-        matches = [leg for leg in plan.legs if leg.broker == BrokerName.BINANCE_TSM]
+        matches = [leg for leg in plan.legs if leg.broker == BrokerName.BINANCE]
         if len(matches) != 1:
             return None, "plan must contain exactly one Binance TSM leg"
         leg = matches[0]
@@ -559,8 +559,8 @@ class BinanceTsmExecutionAdapter:
                     fee_twd=leg.fee_twd,
                     timestamp=self.clock(),
                     row_index=leg.row_index,
-                    qff_symbol=leg.qff_symbol,
-                    qff_expiry=leg.qff_expiry,
+                    tw_leg_symbol=leg.tw_leg_symbol,
+                    tw_leg_expiry=leg.tw_leg_expiry,
                     contract_policy_state=leg.contract_policy_state,
                 ),
             )
@@ -578,7 +578,7 @@ class BinanceTsmExecutionAdapter:
             fills=fills,
             recommended_state=recommended_state,
             payload={
-                "adapter": "binance_tsm_execution",
+                "adapter": "binance_us_leg_execution",
                 "symbol": self.symbol,
                 "leverage": self.leverage,
                 "margin_mode": self.margin_mode,
@@ -614,7 +614,7 @@ class BinanceTsmExecutionAdapter:
             status=ExecutionOutcomeStatus.REJECTED,
             message=message,
             recommended_state=StrategyState.PAUSED,
-            payload={"adapter": "binance_tsm_execution", "reason": message},
+            payload={"adapter": "binance_us_leg_execution", "reason": message},
         )
 
     def _failed_from_exception(
@@ -632,7 +632,7 @@ class BinanceTsmExecutionAdapter:
             message=f"Binance {stage} failed: {type(exc).__name__}: {exc}",
             recommended_state=StrategyState.PAUSED,
             payload={
-                "adapter": "binance_tsm_execution",
+                "adapter": "binance_us_leg_execution",
                 "stage": stage,
                 "symbol": self.symbol,
                 "side": leg.side.value,
@@ -659,7 +659,7 @@ class BinanceTsmExecutionAdapter:
     ) -> ExecutionOutcome:
         order_id = order_id_from_order(created_order or {}) or "UNKNOWN"
         payload = {
-            "adapter": "binance_tsm_execution",
+            "adapter": "binance_us_leg_execution",
             "symbol": self.symbol,
             "side": leg.side.value,
             "quantity": leg.quantity,

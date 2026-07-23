@@ -29,7 +29,7 @@ def make_reporter() -> tuple[DashboardReporter, io.StringIO]:
     stream = io.StringIO()
     reporter = DashboardReporter(
         mode="live-dry-run",
-        qff_symbol="auto",
+        tw_leg_symbol="auto",
         binance_symbol="TSM/USDT:USDT",
         bitopro_symbol="USDT/TWD",
         gate_text="allow_live_order=false",
@@ -42,12 +42,12 @@ def make_reporter() -> tuple[DashboardReporter, io.StringIO]:
 def open_state() -> StrategyRuntimeState:
     return StrategyRuntimeState(
         state=StrategyState.OPEN,
-        position_direction=Direction.SHORT_TSM_LONG_QFF,
-        tsm_units=-100.0,
-        qff_contracts=2,
+        position_direction=Direction.SHORT_US_LONG_TW,
+        us_leg_units=-100.0,
+        tw_leg_contracts=2,
         entry_zscore=2.14,
-        trading_qff_symbol="QFFG6",
-        trading_qff_expiry="2026-07-15",
+        trading_tw_leg_symbol="QFFG6",
+        trading_tw_leg_expiry="2026-07-15",
     )
 
 
@@ -70,12 +70,12 @@ def test_dashboard_absorbs_live_quote_bar_and_position() -> None:
     state = reporter.state
     assert state.session == "trading"
     assert state.state_text == "SHORT"
-    assert state.position_direction == "short_tsm_long_qff"
-    assert state.tsm_units == -100.0
-    assert state.qff_contracts == 2
+    assert state.position_direction == "short_us_long_tw"
+    assert state.us_leg_units == -100.0
+    assert state.tw_leg_contracts == 2
     # Trading symbol comes from strategy state, replacing the 'auto' placeholder.
-    assert state.qff_symbol == "QFFG6"
-    assert state.qff_expiry == "2026-07-15"
+    assert state.tw_leg_symbol == "QFFG6"
+    assert state.tw_leg_expiry == "2026-07-15"
     assert state.quote_time == "09:12:04"
     assert state.bar_time == "09:13"
     assert state.decision_text == "entry_fill"
@@ -98,7 +98,7 @@ def test_dashboard_tracks_session_reconciliation_and_events() -> None:
             "post_trade_reconciliation_matched",
             "run_id=3",
         )
-        reporter.warn(ts("2026-06-20T02:31:06+08:00"), "stale_tsm", "skipped_minute")
+        reporter.warn(ts("2026-06-20T02:31:06+08:00"), "stale_us_leg", "skipped_minute")
         reporter.error(ts("2026-06-20T02:31:07+08:00"), "boom")
     finally:
         reporter.finish()
@@ -212,7 +212,7 @@ def test_dashboard_renders_all_acceptance_fields_to_output() -> None:
         "State",
         "SHORT",
         "Position",
-        "short_tsm_long_qff",
+        "short_us_long_tw",
         "Decision",
         "Activity",
     ):

@@ -46,9 +46,9 @@ def bar(spread: float) -> MarketBar:
     return MarketBar(
         row_index=0,
         timestamp=ts("2026-06-18T09:00:00+08:00"),
-        qff_close=100.0,
-        qff_close_filled=100.0,
-        tsm_twd_fair=100.0,
+        tw_leg_close=100.0,
+        tw_leg_close_filled=100.0,
+        us_leg_twd_fair=100.0,
         spread=spread,
     )
 
@@ -203,11 +203,11 @@ def test_live_terminal_reporter_reflows_when_terminal_width_changes() -> None:
 @pytest.mark.parametrize(
     ("direction", "label"),
     [
-        (Direction.LONG_TSM_SHORT_QFF, "LONG"),
-        (Direction.SHORT_TSM_LONG_QFF, "SHORT"),
+        (Direction.LONG_US_SHORT_TW, "LONG"),
+        (Direction.SHORT_US_LONG_TW, "SHORT"),
     ],
 )
-def test_live_terminal_reporter_labels_open_state_by_tsm_direction(
+def test_live_terminal_reporter_labels_open_state_by_us_leg_direction(
     direction: Direction,
     label: str,
 ) -> None:
@@ -276,7 +276,7 @@ def test_live_terminal_reporter_clears_live_before_permanent_lines() -> None:
         0.0,
         1_000_000.0,
     )
-    reporter.warn(ts("2026-06-18T09:13:23+08:00"), "stale_tsm", "skipped_minute")
+    reporter.warn(ts("2026-06-18T09:13:23+08:00"), "stale_us_leg", "skipped_minute")
     reporter.event(ts("2026-06-18T09:14:00+08:00"), "entry_signal", "zscore_crossed")
     reporter.error(ts("2026-06-18T09:31:08+08:00"), "RuntimeError: Fubon quote fetch failed")
 
@@ -287,7 +287,7 @@ def test_live_terminal_reporter_clears_live_before_permanent_lines() -> None:
         "shortSpread(spread=1.62,z=1.51) "
         "longSpread(spread=2.06,z=1.93) FLAT none pnl=NA margin(bina=NA,fubon=NA)\n"
     ) in output
-    assert "09:13:23 WARN stale_tsm skipped_minute\n" in output
+    assert "09:13:23 WARN stale_us_leg skipped_minute\n" in output
     assert "09:14:00 EVENT entry_signal zscore_crossed\n" in output
     assert "09:31:08 ERR RuntimeError: Fubon quote fetch failed\n" in output
     assert "\x1b[" not in output
@@ -457,8 +457,8 @@ def test_tradable_spread_uses_bid_ask_and_does_not_mutate_indicator() -> None:
         indicator.update(bar(spread))
     before = indicator.to_jsonable()
     quote_set = LiveQuoteSet(
-        qff=quote("qff", "2026-06-18T09:00:10+08:00", 100.0, bid=99.0, ask=101.0),
-        tsm=quote("tsm", "2026-06-18T09:00:10+08:00", 20.0, bid=19.5, ask=20.5),
+        tw_leg=quote("tw_leg", "2026-06-18T09:00:10+08:00", 100.0, bid=99.0, ask=101.0),
+        us_leg=quote("us_leg", "2026-06-18T09:00:10+08:00", 20.0, bid=19.5, ask=20.5),
         usdttwd=quote("usd", "2026-06-18T09:00:10+08:00", 30.0, bid=29.9, ask=30.1),
     )
 
@@ -467,8 +467,8 @@ def test_tradable_spread_uses_bid_ask_and_does_not_mutate_indicator() -> None:
         ts("2026-06-18T09:00:10+08:00"),
         indicator,
         stale_seconds=10.0,
-        qff_book_stale_seconds=55.0,
-        last_qff_close=100.0,
+        tw_leg_book_stale_seconds=55.0,
+        last_tw_leg_close=100.0,
     )
 
     short_spread = ((19.5 * 29.9 / 5.0) - 101.0) / ((19.5 * 29.9 / 5.0) + 101.0) * 200.0
@@ -480,7 +480,7 @@ def test_tradable_spread_uses_bid_ask_and_does_not_mutate_indicator() -> None:
     assert indicator.to_jsonable() == before
 
 
-def test_tradable_spread_uses_qff_specific_stale_threshold() -> None:
+def test_tradable_spread_uses_tw_leg_specific_stale_threshold() -> None:
     indicator = IndicatorEngine(window=3)
     for spread in (1.0, 2.0, 3.0):
         indicator.update(bar(spread))
@@ -488,79 +488,79 @@ def test_tradable_spread_uses_qff_specific_stale_threshold() -> None:
 
     fresh_enough = estimate_tradable_spreads(
         LiveQuoteSet(
-            qff=quote("qff", "2026-06-18T08:59:06+08:00", 100.0, bid=99.0, ask=101.0),
-            tsm=quote("tsm", "2026-06-18T08:59:59+08:00", 20.0, bid=19.5, ask=20.5),
+            tw_leg=quote("tw_leg", "2026-06-18T08:59:06+08:00", 100.0, bid=99.0, ask=101.0),
+            us_leg=quote("us_leg", "2026-06-18T08:59:59+08:00", 20.0, bid=19.5, ask=20.5),
             usdttwd=quote("usd", "2026-06-18T08:59:59+08:00", 30.0, bid=29.9, ask=30.1),
         ),
         observed_at,
         indicator,
         stale_seconds=10.0,
-        qff_book_stale_seconds=55.0,
-        last_qff_close=100.0,
+        tw_leg_book_stale_seconds=55.0,
+        last_tw_leg_close=100.0,
     )
-    stale_qff = estimate_tradable_spreads(
+    stale_tw_leg = estimate_tradable_spreads(
         LiveQuoteSet(
-            qff=quote("qff", "2026-06-18T08:59:04+08:00", 100.0, bid=99.0, ask=101.0),
-            tsm=quote("tsm", "2026-06-18T08:59:59+08:00", 20.0, bid=19.5, ask=20.5),
+            tw_leg=quote("tw_leg", "2026-06-18T08:59:04+08:00", 100.0, bid=99.0, ask=101.0),
+            us_leg=quote("us_leg", "2026-06-18T08:59:59+08:00", 20.0, bid=19.5, ask=20.5),
             usdttwd=quote("usd", "2026-06-18T08:59:59+08:00", 30.0, bid=29.9, ask=30.1),
         ),
         observed_at,
         indicator,
         stale_seconds=10.0,
-        qff_book_stale_seconds=55.0,
-        last_qff_close=100.0,
+        tw_leg_book_stale_seconds=55.0,
+        last_tw_leg_close=100.0,
     )
 
     assert fresh_enough.short_spread is not None
     assert fresh_enough.long_spread is not None
-    assert stale_qff.short_spread is None
-    assert stale_qff.long_spread is None
-    assert stale_qff.missing_reason == "stale_qff"
+    assert stale_tw_leg.short_spread is None
+    assert stale_tw_leg.long_spread is None
+    assert stale_tw_leg.missing_reason == "stale_tw_leg"
 
 
-def test_tradable_spread_keeps_tsm_and_usdttwd_at_global_stale_threshold() -> None:
+def test_tradable_spread_keeps_us_leg_and_usdttwd_at_global_stale_threshold() -> None:
     indicator = IndicatorEngine(window=3)
     for spread in (1.0, 2.0, 3.0):
         indicator.update(bar(spread))
     observed_at = ts("2026-06-18T09:00:00+08:00")
 
-    stale_tsm = estimate_tradable_spreads(
+    stale_us_leg = estimate_tradable_spreads(
         LiveQuoteSet(
-            qff=quote("qff", "2026-06-18T08:59:30+08:00", 100.0, bid=99.0, ask=101.0),
-            tsm=quote("tsm", "2026-06-18T08:59:49+08:00", 20.0, bid=19.5, ask=20.5),
+            tw_leg=quote("tw_leg", "2026-06-18T08:59:30+08:00", 100.0, bid=99.0, ask=101.0),
+            us_leg=quote("us_leg", "2026-06-18T08:59:49+08:00", 20.0, bid=19.5, ask=20.5),
             usdttwd=quote("usd", "2026-06-18T08:59:59+08:00", 30.0, bid=29.9, ask=30.1),
         ),
         observed_at,
         indicator,
         stale_seconds=10.0,
-        qff_book_stale_seconds=55.0,
-        last_qff_close=100.0,
+        tw_leg_book_stale_seconds=55.0,
+        last_tw_leg_close=100.0,
     )
     stale_usd = estimate_tradable_spreads(
         LiveQuoteSet(
-            qff=quote("qff", "2026-06-18T08:59:30+08:00", 100.0, bid=99.0, ask=101.0),
-            tsm=quote("tsm", "2026-06-18T08:59:59+08:00", 20.0, bid=19.5, ask=20.5),
+            tw_leg=quote("tw_leg", "2026-06-18T08:59:30+08:00", 100.0, bid=99.0, ask=101.0),
+            us_leg=quote("us_leg", "2026-06-18T08:59:59+08:00", 20.0, bid=19.5, ask=20.5),
             usdttwd=quote("usd", "2026-06-18T08:59:49+08:00", 30.0, bid=29.9, ask=30.1),
         ),
         observed_at,
         indicator,
         stale_seconds=10.0,
-        qff_book_stale_seconds=55.0,
-        last_qff_close=100.0,
+        tw_leg_book_stale_seconds=55.0,
+        last_tw_leg_close=100.0,
     )
 
-    assert stale_tsm.missing_reason == "stale_tsm"
+    assert stale_us_leg.missing_reason == "stale_us_leg"
     assert stale_usd.missing_reason == "stale_usdttwd"
 
 
-def test_tradable_spread_requires_bid_ask_but_mid_can_forward_fill_qff() -> None:
+def test_tradable_spread_requires_bid_ask_but_mid_can_forward_fill_tw_leg() -> None:
     indicator = IndicatorEngine(window=3)
     for spread in (1.0, 2.0, 3.0):
         indicator.update(bar(spread))
     observed_at = ts("2026-06-18T09:00:10+08:00")
     quote_set = LiveQuoteSet(
-        qff=quote("qff", "2026-06-18T08:59:00+08:00", 105.0, bid=104.0, ask=106.0),
-        tsm=quote("tsm", "2026-06-18T09:00:10+08:00", 20.0, bid=19.5, ask=20.5),
+        tw_leg=quote("tw_leg", "2026-06-18T08:59:00+08:00", 105.0, bid=104.0, ask=106.0),
+        us_leg=quote("us_leg", "2026-06-18T09:00:10+08:00", 20.0, bid=19.5, ask=20.5),
         usdttwd=quote("usd", "2026-06-18T09:00:10+08:00", 30.0, bid=29.9, ask=30.1),
     )
 
@@ -569,8 +569,8 @@ def test_tradable_spread_requires_bid_ask_but_mid_can_forward_fill_qff() -> None
         observed_at,
         indicator,
         stale_seconds=10.0,
-        qff_book_stale_seconds=55.0,
-        last_qff_close=100.0,
+        tw_leg_book_stale_seconds=55.0,
+        last_tw_leg_close=100.0,
     )
 
     assert snapshot.mid_spread == pytest.approx((120.0 - 100.0) / (120.0 + 100.0) * 200.0)
@@ -578,8 +578,8 @@ def test_tradable_spread_requires_bid_ask_but_mid_can_forward_fill_qff() -> None
     assert snapshot.long_spread is None
 
     missing_book = LiveQuoteSet(
-        qff=quote("qff", "2026-06-18T09:00:10+08:00", 100.0, ask=101.0),
-        tsm=quote("tsm", "2026-06-18T09:00:10+08:00", 20.0, bid=19.5, ask=20.5),
+        tw_leg=quote("tw_leg", "2026-06-18T09:00:10+08:00", 100.0, ask=101.0),
+        us_leg=quote("us_leg", "2026-06-18T09:00:10+08:00", 20.0, bid=19.5, ask=20.5),
         usdttwd=quote("usd", "2026-06-18T09:00:10+08:00", 30.0, bid=29.9, ask=30.1),
     )
     missing_snapshot = estimate_tradable_spreads(
@@ -587,21 +587,21 @@ def test_tradable_spread_requires_bid_ask_but_mid_can_forward_fill_qff() -> None
         observed_at,
         indicator,
         stale_seconds=10.0,
-        qff_book_stale_seconds=55.0,
-        last_qff_close=100.0,
+        tw_leg_book_stale_seconds=55.0,
+        last_tw_leg_close=100.0,
     )
     assert missing_snapshot.short_spread is not None
     assert missing_snapshot.long_spread is None
     assert missing_snapshot.missing_reason == "missing_book"
 
 
-def test_tradable_spread_treats_qff_diagnostic_quote_as_stale_qff() -> None:
+def test_tradable_spread_treats_tw_leg_diagnostic_quote_as_stale_tw_leg() -> None:
     indicator = IndicatorEngine(window=3)
     for spread in (1.0, 2.0, 3.0):
         indicator.update(bar(spread))
     observed_at = ts("2026-06-18T09:00:10+08:00")
-    qff_diagnostic_quote = LiveQuote(
-        source="fubon_qff",
+    tw_leg_diagnostic_quote = LiveQuote(
+        source="fubon_tw_leg",
         symbol="QFF",
         timestamp=observed_at,
         price=100.0,
@@ -610,20 +610,20 @@ def test_tradable_spread_treats_qff_diagnostic_quote_as_stale_qff() -> None:
 
     snapshot = estimate_tradable_spreads(
         LiveQuoteSet(
-            qff=qff_diagnostic_quote,
-            tsm=quote("tsm", "2026-06-18T09:00:10+08:00", 20.0, bid=19.5, ask=20.5),
+            tw_leg=tw_leg_diagnostic_quote,
+            us_leg=quote("us_leg", "2026-06-18T09:00:10+08:00", 20.0, bid=19.5, ask=20.5),
             usdttwd=quote("usd", "2026-06-18T09:00:10+08:00", 30.0, bid=29.9, ask=30.1),
         ),
         observed_at,
         indicator,
         stale_seconds=10.0,
-        qff_book_stale_seconds=55.0,
-        last_qff_close=100.0,
+        tw_leg_book_stale_seconds=55.0,
+        last_tw_leg_close=100.0,
     )
 
     assert snapshot.short_spread is None
     assert snapshot.long_spread is None
-    assert snapshot.missing_reason == "stale_qff"
+    assert snapshot.missing_reason == "stale_tw_leg"
 
 
 def test_live_dry_run_cli_flags_default_on_and_can_disable_ui_or_color() -> None:

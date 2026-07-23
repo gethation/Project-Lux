@@ -23,7 +23,7 @@ class LiveMinuteBarBuilder:
         self.closed_dates = tuple(closed_dates)
         self.current_minute: datetime | None = None
         self.current_quotes: dict[str, LiveQuote] = {}
-        self.last_qff_close: float | None = None
+        self.last_tw_leg_close: float | None = None
 
     def reset_current_minute(self) -> None:
         self.current_minute = None
@@ -52,31 +52,31 @@ class LiveMinuteBarBuilder:
         return result
 
     def _update_current_quotes(self, quote_set: LiveQuoteSet) -> None:
-        self.current_quotes["qff"] = quote_set.qff
-        self.current_quotes["tsm"] = quote_set.tsm
+        self.current_quotes["tw_leg"] = quote_set.tw_leg
+        self.current_quotes["us_leg"] = quote_set.us_leg
         self.current_quotes["usdttwd"] = quote_set.usdttwd
 
     def _finalize_current_minute(self) -> MinuteBuildResult:
         if self.current_minute is None:
             return MinuteBuildResult(None, "no_current_minute")
 
-        tsm = self.current_quotes.get("tsm")
+        us_leg = self.current_quotes.get("us_leg")
         usdttwd = self.current_quotes.get("usdttwd")
-        qff = self.current_quotes.get("qff")
-        if tsm is None or usdttwd is None:
+        tw_leg = self.current_quotes.get("tw_leg")
+        if us_leg is None or usdttwd is None:
             return MinuteBuildResult(
                 None,
                 "missing_required_quote",
                 {"minute": self.current_minute.isoformat()},
             )
         quote_set = (
-            LiveQuoteSet(qff=qff, tsm=tsm, usdttwd=usdttwd)
-            if qff is not None
+            LiveQuoteSet(tw_leg=tw_leg, us_leg=us_leg, usdttwd=usdttwd)
+            if tw_leg is not None
             else None
         )
 
         close_time = self.current_minute + timedelta(minutes=1)
-        for name, quote in (("tsm", tsm), ("usdttwd", usdttwd)):
+        for name, quote in (("us_leg", us_leg), ("usdttwd", usdttwd)):
             age = abs((close_time - ensure_taipei(quote.timestamp)).total_seconds())
             if age > self.stale_seconds:
                 return MinuteBuildResult(
@@ -86,16 +86,16 @@ class LiveMinuteBarBuilder:
                     quote_set,
                 )
 
-        qff_is_fresh = False
-        if qff is not None:
-            qff_age = abs(
-                (close_time - ensure_taipei(qff.timestamp)).total_seconds()
+        tw_leg_is_fresh = False
+        if tw_leg is not None:
+            tw_leg_age = abs(
+                (close_time - ensure_taipei(tw_leg.timestamp)).total_seconds()
             )
-            qff_is_fresh = qff_age <= self.stale_seconds
+            tw_leg_is_fresh = tw_leg_age <= self.stale_seconds
 
-        skew_quotes = [tsm, usdttwd]
-        if qff is not None and qff_is_fresh:
-            skew_quotes.append(qff)
+        skew_quotes = [us_leg, usdttwd]
+        if tw_leg is not None and tw_leg_is_fresh:
+            skew_quotes.append(tw_leg)
         timestamps = [ensure_taipei(quote.timestamp) for quote in skew_quotes]
         skew = (max(timestamps) - min(timestamps)).total_seconds()
         if skew > self.max_leg_timestamp_skew_seconds:
@@ -106,20 +106,20 @@ class LiveMinuteBarBuilder:
                 quote_set,
             )
 
-        qff_close = qff.price if qff is not None and qff_is_fresh else None
-        if qff_close is not None:
-            self.last_qff_close = qff_close
-        if self.last_qff_close is None:
+        tw_leg_close = tw_leg.price if tw_leg is not None and tw_leg_is_fresh else None
+        if tw_leg_close is not None:
+            self.last_tw_leg_close = tw_leg_close
+        if self.last_tw_leg_close is None:
             return MinuteBuildResult(
                 None,
-                "missing_qff_forward_fill",
+                "missing_tw_leg_forward_fill",
                 quote_set=quote_set,
             )
 
-        tsm_twd_fair = tsm.price * usdttwd.price / 5.0
+        us_leg_twd_fair = us_leg.price * usdttwd.price / 5.0
         spread = (
-            (tsm_twd_fair - self.last_qff_close)
-            / (tsm_twd_fair + self.last_qff_close)
+            (us_leg_twd_fair - self.last_tw_leg_close)
+            / (us_leg_twd_fair + self.last_tw_leg_close)
             * 200.0
         )
         return MinuteBuildResult(
@@ -127,9 +127,9 @@ class LiveMinuteBarBuilder:
                 MarketBar(
                     row_index=-1,
                     timestamp=self.current_minute,
-                    qff_close=qff_close,
-                    qff_close_filled=self.last_qff_close,
-                    tsm_twd_fair=tsm_twd_fair,
+                    tw_leg_close=tw_leg_close,
+                    tw_leg_close_filled=self.last_tw_leg_close,
+                    us_leg_twd_fair=us_leg_twd_fair,
                     spread=spread,
                 ),
                 self.closed_dates,

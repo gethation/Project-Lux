@@ -57,10 +57,10 @@ class BrokerAccountSnapshot:
 @dataclass(frozen=True)
 class ExpectedBrokerState:
     timestamp: datetime
-    tsm_symbol: str
-    qff_symbol: str
-    expected_tsm_units: float
-    expected_qff_contracts: int
+    us_leg_symbol: str
+    tw_leg_symbol: str
+    expected_us_leg_units: float
+    expected_tw_leg_contracts: int
 
 
 @dataclass(frozen=True)
@@ -96,10 +96,10 @@ class ReconciliationReport:
             status=ReconciliationStatus(payload["status"]),
             expected=ExpectedBrokerState(
                 timestamp=datetime.fromisoformat(str(expected_payload["timestamp"])),
-                tsm_symbol=str(expected_payload["tsm_symbol"]),
-                qff_symbol=str(expected_payload["qff_symbol"]),
-                expected_tsm_units=float(expected_payload["expected_tsm_units"]),
-                expected_qff_contracts=int(expected_payload["expected_qff_contracts"]),
+                us_leg_symbol=str(expected_payload["us_leg_symbol"]),
+                tw_leg_symbol=str(expected_payload["tw_leg_symbol"]),
+                expected_us_leg_units=float(expected_payload["expected_us_leg_units"]),
+                expected_tw_leg_contracts=int(expected_payload["expected_tw_leg_contracts"]),
             ),
             snapshots=tuple(snapshot_from_jsonable(item) for item in snapshots_payload),
             issues=tuple(issue_from_jsonable(item) for item in issues_payload),

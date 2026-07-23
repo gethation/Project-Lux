@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 
-FUBON = "FUBON_QFF"
+FUBON = "FUBON"
 
 
 def parse_args() -> argparse.Namespace:
@@ -113,8 +113,8 @@ def normalized_order(order: dict[str, Any], *, order_id: str) -> tuple[Any, ...]
         request["quantity"],
         request["price"],
         order["status"],
-        request.get("qff_symbol"),
-        request.get("qff_expiry"),
+        request.get("tw_leg_symbol"),
+        request.get("tw_leg_expiry"),
         request.get("contract_policy_state"),
         json.dumps(payload),
     )
@@ -139,8 +139,8 @@ def normalized_fill(
         fill["quantity"],
         actual_price,
         fill["fee_twd"],
-        fill.get("qff_symbol"),
-        fill.get("qff_expiry"),
+        fill.get("tw_leg_symbol"),
+        fill.get("tw_leg_expiry"),
         fill.get("contract_policy_state"),
         json.dumps({"fill_id": fill_id, "actual_fill_price": actual_price}),
     )
@@ -200,9 +200,9 @@ def main() -> int:
         symbol = str(current_order["request"]["symbol"])
         actual_price = current_fubon_position_price(connection, symbol=symbol)
         before = recorded_exposure(connection, symbol)
-        expected = float(state.get("qff_contracts") or 0.0)
+        expected = float(state.get("tw_leg_contracts") or 0.0)
         print(f"store={store_path}")
-        print(f"state=paused expected_qff={expected:g} recorded_qff={before:g}")
+        print(f"state=paused expected_tw_leg={expected:g} recorded_tw_leg={before:g}")
         print(
             "repair="
             f"restore {prior_id} row={prior_fill['row_index']}; "
@@ -237,7 +237,7 @@ def main() -> int:
             """
             INSERT OR REPLACE INTO orders (
                 order_id, row_index, timestamp, broker, symbol, side,
-                quantity, price, status, qff_symbol, qff_expiry,
+                quantity, price, status, tw_leg_symbol, tw_leg_expiry,
                 contract_policy_state, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -247,7 +247,7 @@ def main() -> int:
             """
             INSERT OR REPLACE INTO fills (
                 fill_id, order_id, row_index, timestamp, broker, symbol,
-                side, quantity, price, fee_twd, qff_symbol, qff_expiry,
+                side, quantity, price, fee_twd, tw_leg_symbol, tw_leg_expiry,
                 contract_policy_state, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -257,7 +257,7 @@ def main() -> int:
             """
             INSERT OR REPLACE INTO orders (
                 order_id, row_index, timestamp, broker, symbol, side,
-                quantity, price, status, qff_symbol, qff_expiry,
+                quantity, price, status, tw_leg_symbol, tw_leg_expiry,
                 contract_policy_state, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -267,7 +267,7 @@ def main() -> int:
             """
             INSERT OR REPLACE INTO fills (
                 fill_id, order_id, row_index, timestamp, broker, symbol,
-                side, quantity, price, fee_twd, qff_symbol, qff_expiry,
+                side, quantity, price, fee_twd, tw_leg_symbol, tw_leg_expiry,
                 contract_policy_state, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -294,8 +294,8 @@ def main() -> int:
                         "current_plan_id": args.current_plan_id,
                         "prior_order_id": prior_id,
                         "current_order_id": current_id,
-                        "recorded_qff_before": before,
-                        "recorded_qff_after": after,
+                        "recorded_tw_leg_before": before,
+                        "recorded_tw_leg_after": after,
                         "backup_path": str(backup_path),
                     }
                 ),
@@ -303,7 +303,7 @@ def main() -> int:
         )
         connection.commit()
         print(f"backup={backup_path}")
-        print(f"applied=passed recorded_qff={after:g}")
+        print(f"applied=passed recorded_tw_leg={after:g}")
         return 0
     except Exception:
         connection.rollback()

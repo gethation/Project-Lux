@@ -10,7 +10,7 @@ import pytest
 
 from lux_trader.integrations.fubon.market_data_process import (
     FubonMarketDataWorkerTimeout,
-    FubonQffMarketDataProcess,
+    FubonTwLegMarketDataProcess,
 )
 
 
@@ -87,7 +87,7 @@ def _always_hangs_worker(
 
 def test_initial_realtime_timeout_terminates_and_rebuilds_worker(tmp_path) -> None:
     marker = tmp_path / "first-worker.txt"
-    provider = FubonQffMarketDataProcess(
+    provider = FubonTwLegMarketDataProcess(
         marker,
         init_timeout_seconds=2.0,
         terminate_timeout_seconds=0.5,
@@ -106,7 +106,7 @@ def test_initial_realtime_timeout_terminates_and_rebuilds_worker(tmp_path) -> No
 
 def test_reconnect_timeout_terminates_and_rebuilds_worker(tmp_path) -> None:
     marker = tmp_path / "first-worker.txt"
-    provider = FubonQffMarketDataProcess(
+    provider = FubonTwLegMarketDataProcess(
         marker,
         init_timeout_seconds=2.0,
         terminate_timeout_seconds=0.5,
@@ -126,7 +126,7 @@ def test_reconnect_timeout_terminates_and_rebuilds_worker(tmp_path) -> None:
 
 
 def test_replacement_worker_timeout_is_bounded_and_leaves_no_worker(tmp_path) -> None:
-    provider = FubonQffMarketDataProcess(
+    provider = FubonTwLegMarketDataProcess(
         tmp_path / "unused.txt",
         init_timeout_seconds=1.0,
         terminate_timeout_seconds=0.5,

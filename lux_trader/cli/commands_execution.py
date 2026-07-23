@@ -33,7 +33,7 @@ from lux_trader.execution.intent import (
 from lux_trader.integrations.binance.execution import (
     BINANCE_EXECUTION_SMOKE_ENV_GATES,
     BINANCE_MANUAL_CLOSE_ENV_GATES,
-    BinanceTsmExecutionAdapter,
+    BinanceUsLegExecutionAdapter,
     binance_manual_close_env_gates_open,
     binance_smoke_env_gates_open,
 )
@@ -80,7 +80,7 @@ def run_order_doctor_checks(config: object) -> tuple[bool, list[str]]:
 
     lines = [
         f"store_path={config.store_path}",
-        "execution=real_two_leg_coordinator (qff_first)",
+        "execution=real_two_leg_coordinator (tw_leg_first)",
     ]
     for check in report.checks:
         status = "PASS" if check.passed else "FAIL"
@@ -107,13 +107,13 @@ def command_live_execute(args: argparse.Namespace) -> int:
                 store.reset()
             store.initialize()
             resume_state = store.load_resume_state()
-            qff_symbol = helpers.reconciliation_qff_symbol(
+            tw_leg_symbol = helpers.reconciliation_tw_leg_symbol(
                 config,
                 resume_state.strategy if resume_state is not None else None,
             )
             shared_fubon, shared_brokers = build_live_execution_brokers(
                 config,
-                qff_symbol,
+                tw_leg_symbol,
             )
             if config.live_execution.require_readonly_reconciliation:
                 run_id, reconciliation_report = reconcile_brokers_to_store(
@@ -167,15 +167,15 @@ def command_live_execute(args: argparse.Namespace) -> int:
 
 def build_live_execution_brokers(
     config: object,
-    qff_symbol: str,
+    tw_leg_symbol: str,
 ) -> tuple[
     FubonFutureExecutionProcess | None,
     tuple[ReadOnlyBroker, ...] | None,
 ]:
-    if qff_symbol.strip().lower() == "auto":
+    if tw_leg_symbol.strip().lower() == "auto":
         return None, None
     fubon = FubonFutureExecutionProcess(
-        qff_symbol,
+        tw_leg_symbol,
         config.live.fubon_env_path,
     )
     return fubon, (
@@ -211,7 +211,7 @@ def binance_exec_smoke(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     require_binance_exec_smoke_ready(config, args)
 
-    adapter = BinanceTsmExecutionAdapter(
+    adapter = BinanceUsLegExecutionAdapter(
         config.live.binance_symbol,
         config.live.fubon_env_path,
         leverage=config.binance_execution.leverage,
@@ -431,7 +431,7 @@ def binance_manual_close(args: argparse.Namespace) -> int:
     symbol = str(args.symbol).strip()
     quantity = float(args.quantity)
     side = OrderSide.BUY if str(args.side).lower() == "buy" else OrderSide.SELL
-    adapter = BinanceTsmExecutionAdapter(
+    adapter = BinanceUsLegExecutionAdapter(
         symbol,
         config.live.fubon_env_path,
         leverage=config.binance_execution.leverage,
@@ -581,8 +581,8 @@ def command_broker_status(args: argparse.Namespace) -> int:
         f"store_path={config.store_path}",
         f"reconciliation_enabled={config.broker_reconciliation.enabled}",
         f"fail_on_mismatch={config.broker_reconciliation.fail_on_mismatch}",
-        f"tsm_units_tolerance={config.broker_reconciliation.tsm_units_tolerance}",
-        f"qff_contract_tolerance={config.broker_reconciliation.qff_contract_tolerance}",
+        f"us_leg_units_tolerance={config.broker_reconciliation.us_leg_units_tolerance}",
+        f"tw_leg_contract_tolerance={config.broker_reconciliation.tw_leg_contract_tolerance}",
         "private_api=disabled",
     ]
     brokers: tuple[ReadOnlyBroker, ...] = ()
@@ -813,12 +813,12 @@ def build_binance_smoke_plan(
     return PairExecutionPlan(
         plan_id=f"BINANCE-SMOKE-{timestamp.strftime('%Y%m%d%H%M%S')}-{plan_type.value}",
         plan_type=plan_type,
-        direction=Direction.LONG_TSM_SHORT_QFF,
+        direction=Direction.LONG_US_SHORT_TW,
         timestamp=timestamp,
         row_index=-1,
         legs=(
             ExecutionLeg(
-                broker=BrokerName.BINANCE_TSM,
+                broker=BrokerName.BINANCE,
                 symbol=symbol,
                 side=side,
                 quantity=quantity,
@@ -843,24 +843,24 @@ def build_fubon_smoke_plan(
     return PairExecutionPlan(
         plan_id=f"FUBON-SMOKE-{timestamp.strftime('%Y%m%d%H%M%S')}-{plan_type.value}",
         plan_type=plan_type,
-        direction=Direction.SHORT_TSM_LONG_QFF,
+        direction=Direction.SHORT_US_LONG_TW,
         timestamp=timestamp,
         row_index=-1,
         legs=(
             ExecutionLeg(
-                broker=BrokerName.FUBON_QFF,
+                broker=BrokerName.FUBON,
                 symbol=symbol,
                 side=side,
                 quantity=float(lot),
                 price=1.0,
                 timestamp=timestamp,
                 row_index=-1,
-                qff_symbol=symbol,
+                tw_leg_symbol=symbol,
             ),
         ),
         reason="fubon_execution_smoke",
         decision_spread_type="manual_smoke",
-        qff_symbol=symbol,
+        tw_leg_symbol=symbol,
     )
 
 

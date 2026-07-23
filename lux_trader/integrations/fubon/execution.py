@@ -93,7 +93,7 @@ class FubonFillWaitResult:
 
 
 class FubonFutureExecutionAdapter:
-    broker = BrokerName.FUBON_QFF
+    broker = BrokerName.FUBON
 
     def __init__(
         self,
@@ -436,7 +436,7 @@ class FubonFutureExecutionAdapter:
         self,
         plan: PairExecutionPlan,
     ) -> tuple[ExecutionLeg | None, str | None]:
-        matches = [leg for leg in plan.legs if leg.broker == BrokerName.FUBON_QFF]
+        matches = [leg for leg in plan.legs if leg.broker == BrokerName.FUBON]
         if len(matches) != 1:
             return None, "plan must contain exactly one Fubon futures leg"
         leg = matches[0]
@@ -764,8 +764,8 @@ class FubonFutureExecutionAdapter:
                     fee_twd=leg.fee_twd,
                     timestamp=self.clock(),
                     row_index=leg.row_index,
-                    qff_symbol=leg.qff_symbol,
-                    qff_expiry=leg.qff_expiry,
+                    tw_leg_symbol=leg.tw_leg_symbol,
+                    tw_leg_expiry=leg.tw_leg_expiry,
                     contract_policy_state=leg.contract_policy_state,
                 ),
             )

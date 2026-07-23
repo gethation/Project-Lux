@@ -23,14 +23,14 @@ def make_bar(index: int, timestamp: str, entry_allowed: bool = True, close_allow
     return MarketBar(
         row_index=index,
         timestamp=datetime.fromisoformat(timestamp),
-        qff_close=250.0,
-        qff_close_filled=250.0,
-        tsm_twd_fair=100.0 + index,
+        tw_leg_close=250.0,
+        tw_leg_close_filled=250.0,
+        us_leg_twd_fair=100.0 + index,
         spread=0.0,
         entry_allowed=entry_allowed,
         close_allowed=close_allowed,
-        qff_symbol="QFFG6",
-        qff_expiry="2026-02-18",
+        tw_leg_symbol="QFFG6",
+        tw_leg_expiry="2026-02-18",
         contract_policy_state="active",
     )
 
@@ -67,8 +67,8 @@ def test_strategy_entry_open_exit_cycle(strategy_config, fee_config) -> None:
     assert result2.action == StrategyAction.EXIT_SIGNAL
     assert result3.action == StrategyAction.EXIT_FILL
     assert result3.trade is not None
-    assert result3.trade["tsm_units"] == pytest.approx(-1_000_000.0 / (101.0 * 5.0))
-    assert result3.trade["tsm_pnl"] == pytest.approx(
+    assert result3.trade["us_leg_units"] == pytest.approx(-1_000_000.0 / (101.0 * 5.0))
+    assert result3.trade["us_leg_pnl"] == pytest.approx(
         (-1_000_000.0 / (101.0 * 5.0)) * ((103.0 - 101.0) * 5.0)
     )
     assert strategy.state.state == StrategyState.FLAT
@@ -95,35 +95,35 @@ def test_strategy_builds_entry_order_requests_without_submitting(
         strategy_config,
         fee_config,
         PaperBroker(),
-        tsm_symbol="CUSTOM/USDT:USDT",
+        us_leg_symbol="CUSTOM/USDT:USDT",
     )
     bar = make_bar(10, "2026-06-08T08:55:00+08:00")
 
     requests = strategy.build_entry_order_requests(
         bar=bar,
-        tsm_units=-125.5,
-        qff_contracts=3,
+        us_leg_units=-125.5,
+        tw_leg_contracts=3,
         costs={
-            "tsm_fee_twd": 12.3,
-            "qff_fee_twd": 15.0,
-            "qff_tax_twd": 1.5,
+            "us_leg_fee_twd": 12.3,
+            "tw_leg_fee_twd": 15.0,
+            "tw_leg_tax_twd": 1.5,
         },
     )
 
     assert len(requests) == 2
-    tsm_request, qff_request = requests
-    assert tsm_request.broker == BrokerName.BINANCE_TSM
-    assert tsm_request.symbol == "CUSTOM/USDT:USDT"
-    assert tsm_request.side == OrderSide.SELL
-    assert tsm_request.quantity == 125.5
-    assert tsm_request.fee_twd == 12.3
-    assert qff_request.broker == BrokerName.FUBON_QFF
-    assert qff_request.symbol == "QFFG6"
-    assert qff_request.side == OrderSide.BUY
-    assert qff_request.quantity == 3
-    assert qff_request.fee_twd == 16.5
-    assert qff_request.qff_expiry == "2026-02-18"
-    assert qff_request.contract_policy_state == "active"
+    us_leg_request, tw_leg_request = requests
+    assert us_leg_request.broker == BrokerName.BINANCE
+    assert us_leg_request.symbol == "CUSTOM/USDT:USDT"
+    assert us_leg_request.side == OrderSide.SELL
+    assert us_leg_request.quantity == 125.5
+    assert us_leg_request.fee_twd == 12.3
+    assert tw_leg_request.broker == BrokerName.FUBON
+    assert tw_leg_request.symbol == "QFFG6"
+    assert tw_leg_request.side == OrderSide.BUY
+    assert tw_leg_request.quantity == 3
+    assert tw_leg_request.fee_twd == 16.5
+    assert tw_leg_request.tw_leg_expiry == "2026-02-18"
+    assert tw_leg_request.contract_policy_state == "active"
 
 
 def test_strategy_builds_exit_order_requests_from_open_state(
@@ -132,9 +132,9 @@ def test_strategy_builds_exit_order_requests_from_open_state(
 ) -> None:
     state = StrategyRuntimeState(
         state=StrategyState.OPEN,
-        position_direction=Direction.SHORT_TSM_LONG_QFF,
-        tsm_units=-125.5,
-        qff_contracts=3,
+        position_direction=Direction.SHORT_US_LONG_TW,
+        us_leg_units=-125.5,
+        tw_leg_contracts=3,
     )
     strategy = PairStrategy(strategy_config, fee_config, PaperBroker(), state=state)
     bar = make_bar(11, "2026-06-08T08:56:00+08:00")
@@ -142,17 +142,17 @@ def test_strategy_builds_exit_order_requests_from_open_state(
     requests = strategy.build_exit_order_requests(
         bar=bar,
         costs={
-            "tsm_fee_twd": 12.3,
-            "qff_fee_twd": 15.0,
-            "qff_tax_twd": 1.5,
+            "us_leg_fee_twd": 12.3,
+            "tw_leg_fee_twd": 15.0,
+            "tw_leg_tax_twd": 1.5,
         },
     )
 
-    tsm_request, qff_request = requests
-    assert tsm_request.side == OrderSide.BUY
-    assert tsm_request.quantity == 125.5
-    assert qff_request.side == OrderSide.SELL
-    assert qff_request.quantity == 3
+    us_leg_request, tw_leg_request = requests
+    assert us_leg_request.side == OrderSide.BUY
+    assert us_leg_request.quantity == 125.5
+    assert tw_leg_request.side == OrderSide.SELL
+    assert tw_leg_request.quantity == 3
 
 
 def test_sqlite_state_roundtrip(tmp_path) -> None:

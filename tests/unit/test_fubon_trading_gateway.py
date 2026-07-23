@@ -39,7 +39,7 @@ def _snapshot_worker(
             operation = request["operation"]
             if operation == "fetch_snapshot":
                 result = BrokerAccountSnapshot(
-                    broker=BrokerName.FUBON_QFF,
+                    broker=BrokerName.FUBON,
                     account_id="test-fubon",
                     fetched_at=datetime(2026, 7, 22),
                     positions=(),
@@ -94,7 +94,7 @@ def test_account_snapshot_and_health_share_one_worker() -> None:
         first_pid = gateway.worker_pid
         health = gateway.session_health()
 
-        assert snapshot.broker == BrokerName.FUBON_QFF
+        assert snapshot.broker == BrokerName.FUBON
         assert first_pid is not None
         assert health["worker_pid"] == first_pid
         assert health["generation"] == 1

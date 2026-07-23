@@ -449,8 +449,8 @@ def compact_warning_code(kind: str | None, payload: dict[str, Any] | None) -> st
         return "skew"
     if kind == "missing_required_quote":
         return "missing_quote"
-    if kind == "missing_qff_forward_fill":
-        return "missing_qff"
+    if kind == "missing_tw_leg_forward_fill":
+        return "missing_tw_leg"
     return str(kind or "warning")
 
 
@@ -574,9 +574,9 @@ def state_value(value: Any) -> str:
 
     direction = getattr(runtime_state, "position_direction", None)
     direction_text = str(getattr(direction, "value", direction) or "").lower()
-    if direction_text == "long_tsm_short_qff":
+    if direction_text == "long_us_short_tw":
         return "LONG"
-    if direction_text == "short_tsm_long_qff":
+    if direction_text == "short_us_long_tw":
         return "SHORT"
     return text
 

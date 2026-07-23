@@ -7,9 +7,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
+from lux_trader.integrations.binance.execution import BinanceUsLegExecutionAdapter
 from lux_trader.config import AppConfig
-from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, QffContractSelection
+from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, TwLegContractSelection
 from lux_trader.core.calendar import live_session_status
 from lux_trader.execution.intent import (
     ExecutionPlanType,
@@ -27,10 +27,10 @@ from lux_trader.execution.price_policy import apply_live_touch_market_price_poli
 from lux_trader.integrations.binance.market_data import BinanceMarketData
 from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
-from lux_trader.integrations.fubon.market_data import FubonQffMarketData
+from lux_trader.integrations.fubon.market_data import FubonTwLegMarketData
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
-from lux_trader.integrations.taifex.downloader import TaifexQffTradeDownloader
+from lux_trader.integrations.taifex.downloader import TaifexTwLegTradeDownloader
 from lux_trader.core.fees import fill_costs
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.execution.gate import (
@@ -40,21 +40,21 @@ from lux_trader.execution.gate import (
 from lux_trader.margin.display import AccountDisplay, AccountDisplayProvider
 from lux_trader.margin.monitor import MarginMonitor, READONLY_BROKER_ENV
 from lux_trader.market_data import (
-    CsvQffWarmupProvider,
+    CsvTwLegWarmupProvider,
     LiveMinuteBarBuilder,
     LiveQuoteSet,
     OhlcvProvider,
     QFF_FORWARD_FILL_LOOKBACK,
-    QffWarmupSourceReport,
-    QffWarmupProvider,
+    TwLegWarmupSourceReport,
+    TwLegWarmupProvider,
     QuoteProvider,
     WarmupBuilder,
-    build_qff_session_index,
-    build_qff_session_warmup_index,
-    build_qff_warmup_source_report,
+    build_tw_leg_session_index,
+    build_tw_leg_session_warmup_index,
+    build_tw_leg_warmup_source_report,
     floor_minute,
     parse_timestamp,
-    prioritized_qff_close_frame,
+    prioritized_tw_leg_close_frame,
 )
 from lux_trader.store import SQLiteStore
 from lux_trader.core.models import Direction, IndicatorSnapshot, MarketBar, StrategyAction, StrategyState
@@ -80,20 +80,20 @@ from lux_trader.runtime.live.bootstrap import (
 from lux_trader.runtime.live.contracts import (
     QFF_RECONNECT_GRACE_SECONDS,
     QFF_WATCHDOG_SECONDS,
-    QffContractResolution,
+    TwLegContractResolution,
     cancel_entry_pending_for_contract_switch,
     mark_pending_contract_switch_if_needed,
-    qff_book_age_seconds,
-    qff_book_is_fresh_for_signal,
-    resolve_qff_contract,
-    reconnect_qff_provider_if_supported,
+    tw_leg_book_age_seconds,
+    tw_leg_book_is_fresh_for_signal,
+    resolve_tw_leg_contract,
+    reconnect_tw_leg_provider_if_supported,
     resolve_force_exit_reason,
-    restart_qff_books_if_supported,
+    restart_tw_leg_books_if_supported,
     should_switch_contract_before_processing,
-    subscribe_qff_books_if_supported,
+    subscribe_tw_leg_books_if_supported,
     switch_to_contract,
-    teardown_qff_books_if_supported,
-    unsubscribe_qff_books_if_supported,
+    teardown_tw_leg_books_if_supported,
+    unsubscribe_tw_leg_books_if_supported,
     update_eligible_contract_state,
 )
 from lux_trader.runtime.live.modes import (
@@ -111,7 +111,7 @@ class LiveDryRunResult:
     bars_processed: int
     skipped_minutes: int
     plans_recorded: int
-    qff_symbol: str
+    tw_leg_symbol: str
 
 
 @dataclass(frozen=True)
@@ -120,7 +120,7 @@ class LiveRuntimeResult:
     bars_processed: int
     skipped_minutes: int
     plans_recorded: int
-    qff_symbol: str
+    tw_leg_symbol: str
 
 
 class LiveRuntime:
@@ -129,8 +129,8 @@ class LiveRuntime:
         config: AppConfig,
         *,
         handler: LiveModeHandler,
-        qff_provider: QuoteProvider | FubonQffMarketData | None = None,
-        tsm_provider: QuoteProvider | None = None,
+        tw_leg_provider: QuoteProvider | FubonTwLegMarketData | None = None,
+        us_leg_provider: QuoteProvider | None = None,
         usdttwd_provider: QuoteProvider | None = None,
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], None] | None = None,
@@ -139,8 +139,8 @@ class LiveRuntime:
     ) -> None:
         self.config = config
         self.handler = handler
-        self.qff_provider = qff_provider
-        self.tsm_provider = tsm_provider
+        self.tw_leg_provider = tw_leg_provider
+        self.us_leg_provider = us_leg_provider
         self.usdttwd_provider = usdttwd_provider
         self._uses_default_clock = clock is None
         self.clock = clock or (lambda: datetime.now().astimezone())
@@ -171,8 +171,8 @@ class LiveRuntime:
         live_run_id: int | None = None
         margin_monitor: MarginMonitor | None = None
         account_display: AccountDisplayProvider | None = None
-        qff_provider_to_close: Any | None = None
-        qff_symbol = ""
+        tw_leg_provider_to_close: Any | None = None
+        tw_leg_symbol = ""
         stats = LiveRuntimeStats()
         try:
             if reset_store:
@@ -189,19 +189,19 @@ class LiveRuntime:
                 store=store,
                 resume=resume,
                 skip_warmup=skip_warmup,
-                qff_provider=self.qff_provider,
-                tsm_provider=self.tsm_provider,
+                tw_leg_provider=self.tw_leg_provider,
+                us_leg_provider=self.us_leg_provider,
                 usdttwd_provider=self.usdttwd_provider,
                 reporter=self.reporter,
                 started_at=started_at,
                 auto_warmup_context=self.handler.auto_warmup_context,
             )
-            qff_provider = runtime.qff_provider
-            tsm_provider = runtime.tsm_provider
+            tw_leg_provider = runtime.tw_leg_provider
+            us_leg_provider = runtime.us_leg_provider
             usdttwd_provider = runtime.usdttwd_provider
-            qff_provider_to_close = runtime.qff_provider_to_close
-            qff_symbol = runtime.qff_symbol
-            qff_expiry = runtime.qff_expiry
+            tw_leg_provider_to_close = runtime.tw_leg_provider_to_close
+            tw_leg_symbol = runtime.tw_leg_symbol
+            tw_leg_expiry = runtime.tw_leg_expiry
             strategy = runtime.strategy
             indicator = runtime.indicator
             seed_bars = runtime.seed_bars
@@ -209,8 +209,8 @@ class LiveRuntime:
             next_row_index = runtime.next_row_index
             self.handler.on_runtime_ready(
                 store,
-                qff_symbol=qff_symbol,
-                qff_expiry=qff_expiry,
+                tw_leg_symbol=tw_leg_symbol,
+                tw_leg_expiry=tw_leg_expiry,
             )
             if resume:
                 # After a restart, verify any restored open position against the
@@ -220,8 +220,8 @@ class LiveRuntime:
                     strategy=strategy,
                     indicator=indicator,
                     row_index=max(next_row_index - 1, 0),
-                    qff_symbol=qff_symbol,
-                    qff_expiry=qff_expiry,
+                    tw_leg_symbol=tw_leg_symbol,
+                    tw_leg_expiry=tw_leg_expiry,
                     reporter=self.reporter,
                     timestamp=runtime.started_at,
                 )
@@ -229,7 +229,7 @@ class LiveRuntime:
             live_run_id = store.start_live_run(
                 started_at=runtime.started_at,
                 mode=self.handler.mode,
-                qff_symbol=qff_symbol,
+                tw_leg_symbol=tw_leg_symbol,
                 payload={"resume": resume, "skip_warmup": skip_warmup},
             )
             store.commit()
@@ -269,10 +269,10 @@ class LiveRuntime:
                 clock=self.clock,
             )
             last_non_trading_event_minute: datetime | None = None
-            qff_books_torn_down_for_non_trading = False
-            qff_reconnecting_until: datetime | None = None
-            last_qff_books_restart_at: datetime | None = None
-            last_qff_reconnect_warning_minute: datetime | None = None
+            tw_leg_books_torn_down_for_non_trading = False
+            tw_leg_reconnecting_until: datetime | None = None
+            last_tw_leg_books_restart_at: datetime | None = None
+            last_tw_leg_reconnect_warning_minute: datetime | None = None
             last_quotes: dict[str, Any] = {}
             last_fetch_warning_minute: dict[str, datetime] = {}
 
@@ -283,11 +283,11 @@ class LiveRuntime:
                     self.config.trading_calendar.closed_dates,
                 )
                 if not session_status.is_trading:
-                    if not qff_books_torn_down_for_non_trading:
-                        teardown_qff_books_if_supported(qff_provider)
-                        qff_books_torn_down_for_non_trading = True
-                        qff_reconnecting_until = None
-                        last_qff_books_restart_at = None
+                    if not tw_leg_books_torn_down_for_non_trading:
+                        teardown_tw_leg_books_if_supported(tw_leg_provider)
+                        tw_leg_books_torn_down_for_non_trading = True
+                        tw_leg_reconnecting_until = None
+                        last_tw_leg_books_restart_at = None
                     builder.reset_current_minute()
                     self.reporter.live_non_trading(
                         observed_at,
@@ -318,7 +318,7 @@ class LiveRuntime:
                 # Broker accounting endpoints can be unavailable during the
                 # post-session settlement window. Defer due checks until the
                 # first trading iteration instead of querying while closed.
-                if qff_books_torn_down_for_non_trading:
+                if tw_leg_books_torn_down_for_non_trading:
                     notify_trading_session = getattr(
                         self.reporter,
                         "trading_session",
@@ -333,39 +333,39 @@ class LiveRuntime:
                     reporter=self.reporter,
                 )
 
-                if qff_books_torn_down_for_non_trading:
+                if tw_leg_books_torn_down_for_non_trading:
                     # Re-login first so the session starts on a fresh marketdata
                     # token, then restart the books on the new session.
-                    reconnect_qff_provider_if_supported(
-                        qff_provider,
+                    reconnect_tw_leg_provider_if_supported(
+                        tw_leg_provider,
                         self.reporter,
                         observed_at,
                     )
-                    last_qff_books_restart_at = restart_qff_books_if_supported(
-                        qff_provider,
-                        qff_symbol,
+                    last_tw_leg_books_restart_at = restart_tw_leg_books_if_supported(
+                        tw_leg_provider,
+                        tw_leg_symbol,
                         self.reporter,
                         observed_at,
-                        last_restart_at=last_qff_books_restart_at,
+                        last_restart_at=last_tw_leg_books_restart_at,
                     )
-                    qff_reconnecting_until = observed_at + timedelta(
+                    tw_leg_reconnecting_until = observed_at + timedelta(
                         seconds=QFF_RECONNECT_GRACE_SECONDS
                     )
-                    qff_books_torn_down_for_non_trading = False
+                    tw_leg_books_torn_down_for_non_trading = False
 
-                qff_quote = fetch_quote_or_cached(
-                    qff_provider,
-                    qff_symbol,
-                    "qff",
+                tw_leg_quote = fetch_quote_or_cached(
+                    tw_leg_provider,
+                    tw_leg_symbol,
+                    "tw_leg",
                     last_quotes,
                     self.reporter,
                     observed_at,
                     last_fetch_warning_minute,
                 )
-                tsm_quote = fetch_quote_or_cached(
-                    tsm_provider,
+                us_leg_quote = fetch_quote_or_cached(
+                    us_leg_provider,
                     self.config.live.binance_symbol,
-                    "tsm",
+                    "us_leg",
                     last_quotes,
                     self.reporter,
                     observed_at,
@@ -380,7 +380,7 @@ class LiveRuntime:
                     observed_at,
                     last_fetch_warning_minute,
                 )
-                if qff_quote is None or tsm_quote is None or usdttwd_quote is None:
+                if tw_leg_quote is None or us_leg_quote is None or usdttwd_quote is None:
                     fetch_key = "quote_set"
                     warning_minute = floor_minute(observed_at)
                     if last_fetch_warning_minute.get(fetch_key) != warning_minute:
@@ -394,66 +394,66 @@ class LiveRuntime:
                     self._sleep_if_needed(stats.iterations, max_iterations)
                     continue
                 quote_set = LiveQuoteSet(
-                    qff=qff_quote,
-                    tsm=tsm_quote,
+                    tw_leg=tw_leg_quote,
+                    us_leg=us_leg_quote,
                     usdttwd=usdttwd_quote,
                 )
-                qff_reconnecting = (
-                    qff_reconnecting_until is not None
-                    and observed_at <= qff_reconnecting_until
-                    and not qff_book_is_fresh_for_signal(
-                        quote_set.qff,
+                tw_leg_reconnecting = (
+                    tw_leg_reconnecting_until is not None
+                    and observed_at <= tw_leg_reconnecting_until
+                    and not tw_leg_book_is_fresh_for_signal(
+                        quote_set.tw_leg,
                         observed_at,
                         self.config,
                     )
                 )
-                if qff_book_is_fresh_for_signal(quote_set.qff, observed_at, self.config):
-                    qff_reconnecting_until = None
-                    qff_reconnecting = False
-                elif qff_book_age_seconds(quote_set.qff, observed_at) > QFF_WATCHDOG_SECONDS:
-                    restarted_at = restart_qff_books_if_supported(
-                        qff_provider,
-                        qff_symbol,
+                if tw_leg_book_is_fresh_for_signal(quote_set.tw_leg, observed_at, self.config):
+                    tw_leg_reconnecting_until = None
+                    tw_leg_reconnecting = False
+                elif tw_leg_book_age_seconds(quote_set.tw_leg, observed_at) > QFF_WATCHDOG_SECONDS:
+                    restarted_at = restart_tw_leg_books_if_supported(
+                        tw_leg_provider,
+                        tw_leg_symbol,
                         self.reporter,
                         observed_at,
-                        last_restart_at=last_qff_books_restart_at,
+                        last_restart_at=last_tw_leg_books_restart_at,
                     )
-                    if restarted_at != last_qff_books_restart_at:
-                        qff_reconnecting_until = observed_at + timedelta(
+                    if restarted_at != last_tw_leg_books_restart_at:
+                        tw_leg_reconnecting_until = observed_at + timedelta(
                             seconds=QFF_RECONNECT_GRACE_SECONDS
                         )
-                        qff_reconnecting = True
-                    last_qff_books_restart_at = restarted_at
+                        tw_leg_reconnecting = True
+                    last_tw_leg_books_restart_at = restarted_at
                 live_spread_snapshot = estimate_tradable_spreads(
                     quote_set,
                     observed_at,
                     indicator,
                     stale_seconds=self.config.live.stale_seconds,
-                    qff_book_stale_seconds=self.config.live.qff_book_stale_seconds,
-                    last_qff_close=builder.last_qff_close,
+                    tw_leg_book_stale_seconds=self.config.live.tw_leg_book_stale_seconds,
+                    last_tw_leg_close=builder.last_tw_leg_close,
                 )
-                if qff_reconnecting and (
+                if tw_leg_reconnecting and (
                     live_spread_snapshot.short_spread is None
                     or live_spread_snapshot.long_spread is None
                 ):
                     live_spread_snapshot = replace(
                         live_spread_snapshot,
-                        missing_reason="qff_reconnecting",
+                        missing_reason="tw_leg_reconnecting",
                     )
                     warning_minute = floor_minute(observed_at)
-                    if last_qff_reconnect_warning_minute != warning_minute:
+                    if last_tw_leg_reconnect_warning_minute != warning_minute:
                         self.reporter.warn(
                             observed_at,
-                            "qff_reconnecting",
+                            "tw_leg_reconnecting",
                             "skip_signal",
                         )
-                        last_qff_reconnect_warning_minute = warning_minute
+                        last_tw_leg_reconnect_warning_minute = warning_minute
                 self.reporter.live(
                     observed_at,
                     live_spread_snapshot,
                     strategy.state,
                 )
-                for quote in (quote_set.qff, quote_set.tsm, quote_set.usdttwd):
+                for quote in (quote_set.tw_leg, quote_set.us_leg, quote_set.usdttwd):
                     store.record_market_tick(quote, observed_at)
 
                 build_result = None
@@ -486,11 +486,11 @@ class LiveRuntime:
                         switch_result = self._process_finalized_bar(
                             store=store,
                             build_result=build_result,
-                            qff_provider=qff_provider,
-                            tsm_provider=tsm_provider,
+                            tw_leg_provider=tw_leg_provider,
+                            us_leg_provider=us_leg_provider,
                             usdttwd_provider=usdttwd_provider,
-                            qff_symbol=qff_symbol,
-                            qff_expiry=qff_expiry,
+                            tw_leg_symbol=tw_leg_symbol,
+                            tw_leg_expiry=tw_leg_expiry,
                             strategy=strategy,
                             indicator=indicator,
                             seed_bars=seed_bars,
@@ -499,12 +499,12 @@ class LiveRuntime:
                             stats=stats,
                             max_iterations=max_iterations,
                             account_display=account_display,
-                            signal_block_override="qff_reconnecting"
-                            if qff_reconnecting
+                            signal_block_override="tw_leg_reconnecting"
+                            if tw_leg_reconnecting
                             else None,
                         )
-                        qff_symbol = switch_result["qff_symbol"]
-                        qff_expiry = switch_result["qff_expiry"]
+                        tw_leg_symbol = switch_result["tw_leg_symbol"]
+                        tw_leg_expiry = switch_result["tw_leg_expiry"]
                         indicator = switch_result["indicator"]
                         seed_bars = switch_result["seed_bars"]
                         builder = switch_result["builder"]
@@ -534,7 +534,7 @@ class LiveRuntime:
                 bars_processed=stats.bars_processed,
                 skipped_minutes=stats.skipped_minutes,
                 plans_recorded=stats.plans_recorded,
-                qff_symbol=qff_symbol,
+                tw_leg_symbol=tw_leg_symbol,
             )
         finally:
             if live_run_id is not None:
@@ -553,18 +553,18 @@ class LiveRuntime:
                 margin_monitor.close()
             store.close()
             self.handler.close()
-            close_provider_quietly(qff_provider_to_close)
+            close_provider_quietly(tw_leg_provider_to_close)
 
     def _process_finalized_bar(
         self,
         *,
         store: SQLiteStore,
         build_result: Any,
-        qff_provider: QuoteProvider | FubonQffMarketData,
-        tsm_provider: QuoteProvider,
+        tw_leg_provider: QuoteProvider | FubonTwLegMarketData,
+        us_leg_provider: QuoteProvider,
         usdttwd_provider: QuoteProvider,
-        qff_symbol: str,
-        qff_expiry: str | None,
+        tw_leg_symbol: str,
+        tw_leg_expiry: str | None,
         strategy: PairStrategy,
         indicator: IndicatorEngine,
         seed_bars: list[MarketBar],
@@ -578,8 +578,8 @@ class LiveRuntime:
         bar = replace(
             build_result.bar,
             row_index=next_row_index,
-            qff_symbol=qff_symbol,
-            qff_expiry=qff_expiry,
+            tw_leg_symbol=tw_leg_symbol,
+            tw_leg_expiry=tw_leg_expiry,
             contract_policy_state=strategy.state.contract_policy_state or "active",
         )
         if store.bar_exists_for_timestamp(bar.timestamp):
@@ -595,8 +595,8 @@ class LiveRuntime:
                 "live minute already processed",
             )
             return {
-                "qff_symbol": qff_symbol,
-                "qff_expiry": qff_expiry,
+                "tw_leg_symbol": tw_leg_symbol,
+                "tw_leg_expiry": tw_leg_expiry,
                 "indicator": indicator,
                 "seed_bars": seed_bars,
                 "builder": builder,
@@ -605,9 +605,9 @@ class LiveRuntime:
             }
 
         try:
-            eligible_contract = resolve_qff_contract(
+            eligible_contract = resolve_tw_leg_contract(
                 self.config,
-                qff_provider,
+                tw_leg_provider,
                 now=bar.timestamp,
             )
         except Exception as exc:
@@ -617,7 +617,7 @@ class LiveRuntime:
             eligible_contract = None
             self.reporter.warn(
                 bar.timestamp,
-                "qff_contract",
+                "tw_leg_contract",
                 f"resolve_failed:{type(exc).__name__}",
             )
         if eligible_contract is not None:
@@ -625,14 +625,14 @@ class LiveRuntime:
             if should_switch_contract_before_processing(
                 strategy.state, eligible_contract
             ):
-                qff_symbol, qff_expiry, indicator, seed_bars, builder = (
+                tw_leg_symbol, tw_leg_expiry, indicator, seed_bars, builder = (
                     self._switch_contract_before_processing(
                         store=store,
                         bar=bar,
-                        qff_provider=qff_provider,
-                        tsm_provider=tsm_provider,
+                        tw_leg_provider=tw_leg_provider,
+                        us_leg_provider=us_leg_provider,
                         usdttwd_provider=usdttwd_provider,
-                        qff_symbol=qff_symbol,
+                        tw_leg_symbol=tw_leg_symbol,
                         strategy=strategy,
                         eligible_contract=eligible_contract,
                     )
@@ -642,8 +642,8 @@ class LiveRuntime:
                 stats.iterations += 1
                 self._sleep_if_needed(stats.iterations, max_iterations)
                 return {
-                    "qff_symbol": qff_symbol,
-                    "qff_expiry": qff_expiry,
+                    "tw_leg_symbol": tw_leg_symbol,
+                    "tw_leg_expiry": tw_leg_expiry,
                     "indicator": indicator,
                     "seed_bars": seed_bars,
                     "builder": builder,
@@ -701,8 +701,8 @@ class LiveRuntime:
                 strategy.state,
                 bar.timestamp,
             ),
-            qff_symbol=qff_symbol,
-            qff_expiry=qff_expiry,
+            tw_leg_symbol=tw_leg_symbol,
+            tw_leg_expiry=tw_leg_expiry,
         )
         stats.plans_recorded += mode_result.plans_recorded
         result = mode_result.result
@@ -742,15 +742,15 @@ class LiveRuntime:
             )
         store.save_state(bar.row_index, bar.timestamp, strategy.state, indicator)
         if self.handler.complete_contract_switch_after_flat:
-            qff_symbol, qff_expiry, indicator, seed_bars, builder = (
+            tw_leg_symbol, tw_leg_expiry, indicator, seed_bars, builder = (
                 self._complete_contract_switch_after_flat(
                     store=store,
                     bar=bar,
-                    qff_provider=qff_provider,
-                    tsm_provider=tsm_provider,
+                    tw_leg_provider=tw_leg_provider,
+                    us_leg_provider=us_leg_provider,
                     usdttwd_provider=usdttwd_provider,
-                    qff_symbol=qff_symbol,
-                    qff_expiry=qff_expiry,
+                    tw_leg_symbol=tw_leg_symbol,
+                    tw_leg_expiry=tw_leg_expiry,
                     indicator=indicator,
                     seed_bars=seed_bars,
                     builder=builder,
@@ -759,8 +759,8 @@ class LiveRuntime:
             )
         stats.bars_processed += 1
         return {
-            "qff_symbol": qff_symbol,
-            "qff_expiry": qff_expiry,
+            "tw_leg_symbol": tw_leg_symbol,
+            "tw_leg_expiry": tw_leg_expiry,
             "indicator": indicator,
             "seed_bars": seed_bars,
             "builder": builder,
@@ -773,12 +773,12 @@ class LiveRuntime:
         *,
         store: SQLiteStore,
         bar: MarketBar,
-        qff_provider: QuoteProvider | FubonQffMarketData,
-        tsm_provider: QuoteProvider,
+        tw_leg_provider: QuoteProvider | FubonTwLegMarketData,
+        us_leg_provider: QuoteProvider,
         usdttwd_provider: QuoteProvider,
-        qff_symbol: str,
+        tw_leg_symbol: str,
         strategy: PairStrategy,
-        eligible_contract: QffContractResolution,
+        eligible_contract: TwLegContractResolution,
     ) -> tuple[
         str,
         str | None,
@@ -795,14 +795,14 @@ class LiveRuntime:
                 "entry_cancel_contract_switch",
                 "pending entry canceled before QFF contract switch",
                 {
-                    "old_qff_symbol": qff_symbol,
-                    "new_qff_symbol": eligible_contract.symbol,
+                    "old_tw_leg_symbol": tw_leg_symbol,
+                    "new_tw_leg_symbol": eligible_contract.symbol,
                 },
             )
         self.reporter.event(
             bar.timestamp,
             "contract_switch",
-            f"{qff_symbol}->{eligible_contract.symbol}",
+            f"{tw_leg_symbol}->{eligible_contract.symbol}",
         )
         store.record_event(
             bar.row_index,
@@ -810,30 +810,30 @@ class LiveRuntime:
             "contract_switch_detected",
             "flat strategy switching to eligible QFF contract",
             {
-                "old_qff_symbol": qff_symbol,
-                "new_qff_symbol": eligible_contract.symbol,
+                "old_tw_leg_symbol": tw_leg_symbol,
+                "new_tw_leg_symbol": eligible_contract.symbol,
             },
         )
-        unsubscribe_qff_books_if_supported(qff_provider, qff_symbol)
-        qff_symbol, qff_expiry, indicator, seed_bars = switch_to_contract(
+        unsubscribe_tw_leg_books_if_supported(tw_leg_provider, tw_leg_symbol)
+        tw_leg_symbol, tw_leg_expiry, indicator, seed_bars = switch_to_contract(
             store,
             self.config,
             strategy.state,
             eligible_contract,
-            qff_provider=qff_provider,
-            tsm_provider=tsm_provider,
+            tw_leg_provider=tw_leg_provider,
+            us_leg_provider=us_leg_provider,
             usdttwd_provider=usdttwd_provider,
             end=bar.timestamp,
         )
-        subscribe_qff_books_if_supported(
-            qff_provider,
-            qff_symbol,
+        subscribe_tw_leg_books_if_supported(
+            tw_leg_provider,
+            tw_leg_symbol,
             self.reporter,
             bar.timestamp,
         )
         return (
-            qff_symbol,
-            qff_expiry,
+            tw_leg_symbol,
+            tw_leg_expiry,
             indicator,
             seed_bars,
             build_live_minute_builder(self.config, seed_bars),
@@ -844,11 +844,11 @@ class LiveRuntime:
         *,
         store: SQLiteStore,
         bar: MarketBar,
-        qff_provider: QuoteProvider | FubonQffMarketData,
-        tsm_provider: QuoteProvider,
+        tw_leg_provider: QuoteProvider | FubonTwLegMarketData,
+        us_leg_provider: QuoteProvider,
         usdttwd_provider: QuoteProvider,
-        qff_symbol: str,
-        qff_expiry: str | None,
+        tw_leg_symbol: str,
+        tw_leg_expiry: str | None,
         indicator: IndicatorEngine,
         seed_bars: list[MarketBar],
         builder: LiveMinuteBarBuilder,
@@ -863,29 +863,29 @@ class LiveRuntime:
         if not (
             strategy.state.state == StrategyState.FLAT
             and strategy.state.pending_symbol_switch
-            and strategy.state.eligible_active_qff_symbol
+            and strategy.state.eligible_active_tw_leg_symbol
         ):
-            return qff_symbol, qff_expiry, indicator, seed_bars, builder
+            return tw_leg_symbol, tw_leg_expiry, indicator, seed_bars, builder
 
-        completed_contract = QffContractResolution(
-            symbol=strategy.state.eligible_active_qff_symbol,
-            expiry=strategy.state.eligible_active_qff_expiry,
+        completed_contract = TwLegContractResolution(
+            symbol=strategy.state.eligible_active_tw_leg_symbol,
+            expiry=strategy.state.eligible_active_tw_leg_expiry,
             policy_state="active",
         )
-        unsubscribe_qff_books_if_supported(qff_provider, qff_symbol)
-        qff_symbol, qff_expiry, indicator, seed_bars = switch_to_contract(
+        unsubscribe_tw_leg_books_if_supported(tw_leg_provider, tw_leg_symbol)
+        tw_leg_symbol, tw_leg_expiry, indicator, seed_bars = switch_to_contract(
             store,
             self.config,
             strategy.state,
             completed_contract,
-            qff_provider=qff_provider,
-            tsm_provider=tsm_provider,
+            tw_leg_provider=tw_leg_provider,
+            us_leg_provider=us_leg_provider,
             usdttwd_provider=usdttwd_provider,
             end=bar.timestamp,
         )
-        subscribe_qff_books_if_supported(
-            qff_provider,
-            qff_symbol,
+        subscribe_tw_leg_books_if_supported(
+            tw_leg_provider,
+            tw_leg_symbol,
             self.reporter,
             bar.timestamp,
         )
@@ -894,13 +894,13 @@ class LiveRuntime:
             bar.timestamp,
             "contract_switch_completed",
             "QFF contract switched after flat state",
-            {"qff_symbol": qff_symbol},
+            {"tw_leg_symbol": tw_leg_symbol},
         )
-        self.reporter.event(bar.timestamp, "contract_switch_done", qff_symbol)
+        self.reporter.event(bar.timestamp, "contract_switch_done", tw_leg_symbol)
         store.save_state(bar.row_index, bar.timestamp, strategy.state, indicator)
         return (
-            qff_symbol,
-            qff_expiry,
+            tw_leg_symbol,
+            tw_leg_expiry,
             indicator,
             seed_bars,
             build_live_minute_builder(self.config, seed_bars),
@@ -920,16 +920,16 @@ class LiveRuntime:
             if self.config.margin_management.leg_notional_twd > 0
             else self.config.strategy.leg_notional_twd
         )
-        qff_price = getattr(bar, "qff_close_filled", None)
-        tsm_price = getattr(bar, "tsm_twd_fair", None)
-        contracts = int(getattr(state, "qff_contracts", 0) or 0)
-        if contracts != 0 and qff_price:
-            return abs(contracts) * self.config.fees.qff_contract_multiplier * qff_price
-        if tsm_price and qff_price:
+        tw_leg_price = getattr(bar, "tw_leg_close_filled", None)
+        us_leg_price = getattr(bar, "us_leg_twd_fair", None)
+        contracts = int(getattr(state, "tw_leg_contracts", 0) or 0)
+        if contracts != 0 and tw_leg_price:
+            return abs(contracts) * self.config.fees.tw_leg_contract_multiplier * tw_leg_price
+        if us_leg_price and tw_leg_price:
             sizing = size_position_for_direction(
-                Direction.LONG_TSM_SHORT_QFF,
-                tsm_price,
-                qff_price,
+                Direction.LONG_US_SHORT_TW,
+                us_leg_price,
+                tw_leg_price,
                 self.config.strategy,
                 self.config.fees,
             )
@@ -951,8 +951,8 @@ class LiveDryRunRunner:
         self,
         config: AppConfig,
         *,
-        qff_provider: QuoteProvider | FubonQffMarketData | None = None,
-        tsm_provider: QuoteProvider | None = None,
+        tw_leg_provider: QuoteProvider | FubonTwLegMarketData | None = None,
+        us_leg_provider: QuoteProvider | None = None,
         usdttwd_provider: QuoteProvider | None = None,
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], None] | None = None,
@@ -961,8 +961,8 @@ class LiveDryRunRunner:
         self.runtime = LiveRuntime(
             config,
             handler=DryRunLiveModeHandler(config),
-            qff_provider=qff_provider,
-            tsm_provider=tsm_provider,
+            tw_leg_provider=tw_leg_provider,
+            us_leg_provider=us_leg_provider,
             usdttwd_provider=usdttwd_provider,
             clock=clock,
             sleeper=sleeper,
@@ -988,7 +988,7 @@ class LiveDryRunRunner:
             bars_processed=result.bars_processed,
             skipped_minutes=result.skipped_minutes,
             plans_recorded=result.plans_recorded,
-            qff_symbol=result.qff_symbol,
+            tw_leg_symbol=result.tw_leg_symbol,
         )
 
 
@@ -997,8 +997,8 @@ class LiveExecuteRunner:
         self,
         config: AppConfig,
         *,
-        qff_provider: QuoteProvider | FubonQffMarketData | None = None,
-        tsm_provider: QuoteProvider | None = None,
+        tw_leg_provider: QuoteProvider | FubonTwLegMarketData | None = None,
+        us_leg_provider: QuoteProvider | None = None,
         usdttwd_provider: QuoteProvider | None = None,
         binance_adapter: Any | None = None,
         fubon_adapter: Any | None = None,
@@ -1017,8 +1017,8 @@ class LiveExecuteRunner:
                 readonly_brokers=readonly_brokers,
                 post_trade_reconciler=post_trade_reconciler,
             ),
-            qff_provider=qff_provider,
-            tsm_provider=tsm_provider,
+            tw_leg_provider=tw_leg_provider,
+            us_leg_provider=us_leg_provider,
             usdttwd_provider=usdttwd_provider,
             clock=clock,
             sleeper=sleeper,
@@ -1063,8 +1063,8 @@ def build_tradable_snapshot_for_bar(
         bar.timestamp + timedelta(minutes=1),
         indicator,
         stale_seconds=config.live.stale_seconds,
-        qff_book_stale_seconds=config.live.qff_book_stale_seconds,
-        last_qff_close=bar.qff_close_filled,
+        tw_leg_book_stale_seconds=config.live.tw_leg_book_stale_seconds,
+        last_tw_leg_close=bar.tw_leg_close_filled,
     )
     return replace(
         tradable_snapshot,
@@ -1126,7 +1126,7 @@ def build_live_decision_snapshot(
         )
 
     if state.state == StrategyState.OPEN and state.position_direction is not None:
-        if state.position_direction == Direction.SHORT_TSM_LONG_QFF:
+        if state.position_direction == Direction.SHORT_US_LONG_TW:
             decision_type = "longSpread"
             decision_spread = tradable_snapshot.long_spread
             decision_zscore = tradable_snapshot.long_zscore

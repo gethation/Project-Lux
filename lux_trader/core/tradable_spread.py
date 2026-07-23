@@ -18,8 +18,8 @@ class QuoteLike(Protocol):
 
 
 class QuoteSetLike(Protocol):
-    qff: QuoteLike
-    tsm: QuoteLike
+    tw_leg: QuoteLike
+    us_leg: QuoteLike
     usdttwd: QuoteLike
 
 
@@ -40,32 +40,32 @@ def estimate_tradable_spreads(
     indicator: IndicatorEngine,
     *,
     stale_seconds: float,
-    qff_book_stale_seconds: float,
-    last_qff_close: float | None,
+    tw_leg_book_stale_seconds: float,
+    last_tw_leg_close: float | None,
 ) -> TradableSpreadSnapshot:
     mid_spread = estimate_mid_spread(
         quote_set,
         observed_at,
         stale_seconds=stale_seconds,
-        last_qff_close=last_qff_close,
+        last_tw_leg_close=last_tw_leg_close,
     )
     short_spread, short_missing = estimate_directional_spread(
         quote_set,
         observed_at,
         stale_seconds=stale_seconds,
-        qff_book_stale_seconds=qff_book_stale_seconds,
-        tsm_side="bid",
+        tw_leg_book_stale_seconds=tw_leg_book_stale_seconds,
+        us_leg_side="bid",
         usdttwd_side="bid",
-        qff_side="ask",
+        tw_leg_side="ask",
     )
     long_spread, long_missing = estimate_directional_spread(
         quote_set,
         observed_at,
         stale_seconds=stale_seconds,
-        qff_book_stale_seconds=qff_book_stale_seconds,
-        tsm_side="ask",
+        tw_leg_book_stale_seconds=tw_leg_book_stale_seconds,
+        us_leg_side="ask",
         usdttwd_side="ask",
-        qff_side="bid",
+        tw_leg_side="bid",
     )
     missing_reason = short_missing or long_missing
     return TradableSpreadSnapshot(
@@ -84,22 +84,22 @@ def estimate_mid_spread(
     observed_at: Any,
     *,
     stale_seconds: float,
-    last_qff_close: float | None,
+    last_tw_leg_close: float | None,
 ) -> float | None:
     observed = ensure_taipei(observed_at)
-    if not quote_is_fresh(quote_set.tsm, observed, stale_seconds):
+    if not quote_is_fresh(quote_set.us_leg, observed, stale_seconds):
         return None
     if not quote_is_fresh(quote_set.usdttwd, observed, stale_seconds):
         return None
 
-    qff_price = last_qff_close
-    if quote_is_fresh(quote_set.qff, observed, stale_seconds):
-        qff_price = quote_set.qff.price
-    if qff_price is None:
+    tw_leg_price = last_tw_leg_close
+    if quote_is_fresh(quote_set.tw_leg, observed, stale_seconds):
+        tw_leg_price = quote_set.tw_leg.price
+    if tw_leg_price is None:
         return None
 
-    tsm_twd_fair = quote_set.tsm.price * quote_set.usdttwd.price / 5.0
-    return spread_from_prices(tsm_twd_fair, qff_price)
+    us_leg_twd_fair = quote_set.us_leg.price * quote_set.usdttwd.price / 5.0
+    return spread_from_prices(us_leg_twd_fair, tw_leg_price)
 
 
 def estimate_directional_spread(
@@ -107,31 +107,31 @@ def estimate_directional_spread(
     observed_at: Any,
     *,
     stale_seconds: float,
-    qff_book_stale_seconds: float,
-    tsm_side: str,
+    tw_leg_book_stale_seconds: float,
+    us_leg_side: str,
     usdttwd_side: str,
-    qff_side: str,
+    tw_leg_side: str,
 ) -> tuple[float | None, str | None]:
     observed = ensure_taipei(observed_at)
     for name, quote in (
-        ("tsm", quote_set.tsm),
+        ("us_leg", quote_set.us_leg),
         ("usdttwd", quote_set.usdttwd),
     ):
         if not quote_is_fresh(quote, observed, stale_seconds):
             return None, f"stale_{name}"
-    if qff_book_quote_missing(quote_set.qff):
-        return None, "stale_qff"
-    if not quote_is_fresh(quote_set.qff, observed, qff_book_stale_seconds):
-        return None, "stale_qff"
+    if tw_leg_book_quote_missing(quote_set.tw_leg):
+        return None, "stale_tw_leg"
+    if not quote_is_fresh(quote_set.tw_leg, observed, tw_leg_book_stale_seconds):
+        return None, "stale_tw_leg"
 
-    tsm_price = book_price(quote_set.tsm, tsm_side)
+    us_leg_price = book_price(quote_set.us_leg, us_leg_side)
     usdttwd_price = book_price(quote_set.usdttwd, usdttwd_side)
-    qff_price = book_price(quote_set.qff, qff_side)
-    if tsm_price is None or usdttwd_price is None or qff_price is None:
+    tw_leg_price = book_price(quote_set.tw_leg, tw_leg_side)
+    if us_leg_price is None or usdttwd_price is None or tw_leg_price is None:
         return None, "missing_book"
 
-    tsm_twd_fair = tsm_price * usdttwd_price / 5.0
-    return spread_from_prices(tsm_twd_fair, qff_price), None
+    us_leg_twd_fair = us_leg_price * usdttwd_price / 5.0
+    return spread_from_prices(us_leg_twd_fair, tw_leg_price), None
 
 
 def estimate_zscore(indicator: IndicatorEngine, spread: float | None) -> float | None:
@@ -152,7 +152,7 @@ def quote_is_fresh(quote: QuoteLike, observed_at: Any, stale_seconds: float) -> 
     return age <= stale_seconds
 
 
-def qff_book_quote_missing(quote: QuoteLike) -> bool:
+def tw_leg_book_quote_missing(quote: QuoteLike) -> bool:
     return isinstance(quote.raw, dict) and quote.raw.get("book_missing") is True
 
 
@@ -164,5 +164,5 @@ def book_price(quote: QuoteLike, side: str) -> float | None:
     raise ValueError(f"Unsupported book side: {side}")
 
 
-def spread_from_prices(tsm_twd_fair: float, qff_price: float) -> float:
-    return (tsm_twd_fair - qff_price) / (tsm_twd_fair + qff_price) * 200.0
+def spread_from_prices(us_leg_twd_fair: float, tw_leg_price: float) -> float:
+    return (us_leg_twd_fair - tw_leg_price) / (us_leg_twd_fair + tw_leg_price) * 200.0

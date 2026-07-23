@@ -11,7 +11,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from ...market_data.types import LiveQuote
-from .market_data import FubonQffMarketData
+from .market_data import FubonTwLegMarketData
 
 
 DEFAULT_INIT_TIMEOUT_SECONDS = 30.0
@@ -32,7 +32,7 @@ def _fubon_market_data_worker(
     env_path: Path | None,
     book_wait_timeout_seconds: float,
 ) -> None:
-    provider = FubonQffMarketData(
+    provider = FubonTwLegMarketData(
         env_path,
         book_wait_timeout_seconds=book_wait_timeout_seconds,
     )
@@ -78,7 +78,7 @@ def _fubon_market_data_worker(
         connection.close()
 
 
-class FubonQffMarketDataProcess:
+class FubonTwLegMarketDataProcess:
     """Process-isolated facade for Fubon QFF market data.
 
     The Fubon SDK and all of its native threads and sockets live exclusively in
@@ -347,7 +347,7 @@ class FubonQffMarketDataProcess:
         if self._closed:
             raise RuntimeError("Fubon market-data process is closed")
 
-    def __enter__(self) -> "FubonQffMarketDataProcess":
+    def __enter__(self) -> "FubonTwLegMarketDataProcess":
         return self
 
     def __exit__(self, *_: Any) -> None:
@@ -364,5 +364,5 @@ __all__ = [
     "DEFAULT_INIT_TIMEOUT_SECONDS",
     "FubonMarketDataWorkerError",
     "FubonMarketDataWorkerTimeout",
-    "FubonQffMarketDataProcess",
+    "FubonTwLegMarketDataProcess",
 ]

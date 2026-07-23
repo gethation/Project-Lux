@@ -9,7 +9,7 @@ from fakes import write_execution_test_config as write_config
 
 import lux_trader.cli.commands_execution as cli_module
 from lux_trader.integrations.binance.execution import (
-    BinanceTsmExecutionAdapter,
+    BinanceUsLegExecutionAdapter,
     normalize_binance_order_quantity,
 )
 from lux_trader.cli.parser import build_parser
@@ -181,7 +181,7 @@ def binance_leg(
     quantity: float = 0.01,
 ) -> ExecutionLeg:
     return ExecutionLeg(
-        broker=BrokerName.BINANCE_TSM,
+        broker=BrokerName.BINANCE,
         symbol=symbol,
         side=side,
         quantity=quantity,
@@ -202,7 +202,7 @@ def execution_plan(
     return PairExecutionPlan(
         plan_id=f"PLAN-{plan_type.value}",
         plan_type=plan_type,
-        direction=Direction.LONG_TSM_SHORT_QFF,
+        direction=Direction.LONG_US_SHORT_TW,
         timestamp=ts(),
         row_index=1,
         legs=(
@@ -233,7 +233,7 @@ def test_adapter_loads_env_and_places_entry_market_without_reduce_only(
         captured_options.update(options)
         return fake_exchange
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         env_path,
         exchange_factory=factory,
@@ -260,7 +260,7 @@ def test_adapter_loads_env_and_places_entry_market_without_reduce_only(
 
 def test_adapter_exit_order_uses_reduce_only() -> None:
     fake_exchange = FakeExchange()
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
@@ -275,7 +275,7 @@ def test_adapter_exit_order_uses_reduce_only() -> None:
 def test_adapter_normalizes_quantity_before_order_and_records_actual_request() -> None:
     fake_exchange = FakeExchange(precision_quantity="0.012", minimum_amount=0.001)
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
@@ -309,7 +309,7 @@ def test_adapter_rejects_invalid_normalized_quantity_without_order(
         minimum_amount=minimum_amount,
     )
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
@@ -338,7 +338,7 @@ def test_normalize_binance_quantity_uses_market_metadata_fallback() -> None:
 def test_adapter_skips_margin_and_leverage_set_when_current_values_match() -> None:
     fake_exchange = FakeExchange(current_margin_mode="cross", current_leverage=1)
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         leverage=1,
@@ -356,7 +356,7 @@ def test_adapter_skips_margin_and_leverage_set_when_current_values_match() -> No
 def test_adapter_sets_margin_and_leverage_when_current_values_differ() -> None:
     fake_exchange = FakeExchange(current_margin_mode="isolated", current_leverage=3)
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         leverage=1,
@@ -382,7 +382,7 @@ def test_adapter_maps_partial_fill_to_paused() -> None:
         }
     )
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
@@ -406,7 +406,7 @@ def test_adapter_maps_canceled_order_to_failed() -> None:
         }
     )
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
@@ -427,7 +427,7 @@ def test_adapter_create_order_exception_is_failed_when_lookup_confirms_absence()
         client_lookup_error=OrderNotFound("Order does not exist"),
     )
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
@@ -463,7 +463,7 @@ def test_adapter_create_exception_recovers_filled_order_by_client_order_id() -> 
         },
     )
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
@@ -491,7 +491,7 @@ def test_adapter_create_exception_with_failed_lookup_uses_position_delta() -> No
         ],
     )
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
@@ -511,7 +511,7 @@ def test_adapter_create_exception_without_any_evidence_is_unknown() -> None:
         client_lookup_error=RuntimeError("lookup also down"),
     )
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
@@ -528,7 +528,7 @@ def test_adapter_create_exception_without_any_evidence_is_unknown() -> None:
 def test_adapter_fetch_order_exception_is_unknown() -> None:
     fake_exchange = FakeExchange(fetch_error=RuntimeError("network timeout"))
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
@@ -558,7 +558,7 @@ def test_adapter_polling_confirms_fill_on_second_fetch_attempt() -> None:
         ]
     )
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
@@ -588,7 +588,7 @@ def test_adapter_rejects_invalid_plan_without_calling_exchange(
 ) -> None:
     fake_exchange = FakeExchange()
 
-    outcome = BinanceTsmExecutionAdapter(
+    outcome = BinanceUsLegExecutionAdapter(
         SYMBOL,
         exchange=fake_exchange,
         clock=ts,
@@ -732,7 +732,7 @@ def test_binance_exec_smoke_rejects_existing_position(
     fake_adapter = FakeSmokeAdapter(position_quantity=1.0)
     monkeypatch.setattr(
         cli_module,
-        "BinanceTsmExecutionAdapter",
+        "BinanceUsLegExecutionAdapter",
         lambda *args, **kwargs: fake_adapter,
     )
     parser = build_parser()
@@ -763,7 +763,7 @@ def test_binance_exec_smoke_rejects_existing_open_orders(
     fake_adapter = FakeSmokeAdapter(open_orders=({"id": "existing"},))
     monkeypatch.setattr(
         cli_module,
-        "BinanceTsmExecutionAdapter",
+        "BinanceUsLegExecutionAdapter",
         lambda *args, **kwargs: fake_adapter,
     )
     parser = build_parser()
@@ -795,7 +795,7 @@ def test_binance_exec_smoke_opens_then_reduce_only_closes(
     fake_adapter = FakeSmokeAdapter()
     monkeypatch.setattr(
         cli_module,
-        "BinanceTsmExecutionAdapter",
+        "BinanceUsLegExecutionAdapter",
         lambda *args, **kwargs: fake_adapter,
     )
     parser = build_parser()

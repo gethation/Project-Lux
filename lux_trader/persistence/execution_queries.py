@@ -39,8 +39,8 @@ class ExecutionStore:
             """
             INSERT OR REPLACE INTO execution_plans (
                 plan_id, row_index, timestamp, plan_type, direction, status,
-                reason, decision_zscore, decision_spread_type, qff_symbol,
-                qff_expiry, contract_policy_state, payload_json
+                reason, decision_zscore, decision_spread_type, tw_leg_symbol,
+                tw_leg_expiry, contract_policy_state, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -53,8 +53,8 @@ class ExecutionStore:
                 plan.reason,
                 plan.decision_zscore,
                 plan.decision_spread_type,
-                plan.qff_symbol,
-                plan.qff_expiry,
+                plan.tw_leg_symbol,
+                plan.tw_leg_expiry,
                 plan.contract_policy_state,
                 json.dumps(payload, default=json_default),
             ),
@@ -63,7 +63,7 @@ class ExecutionStore:
             """
             INSERT INTO execution_legs (
                 plan_id, row_index, timestamp, broker, symbol, side, quantity,
-                price, fee_twd, qff_symbol, qff_expiry,
+                price, fee_twd, tw_leg_symbol, tw_leg_expiry,
                 contract_policy_state, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -78,8 +78,8 @@ class ExecutionStore:
                     leg.quantity,
                     leg.price,
                     leg.fee_twd,
-                    leg.qff_symbol,
-                    leg.qff_expiry,
+                    leg.tw_leg_symbol,
+                    leg.tw_leg_expiry,
                     leg.contract_policy_state,
                     json.dumps(leg_payload, default=json_default),
                 )
@@ -218,7 +218,7 @@ class ExecutionStore:
         latest = self.connection.execute(
             """
             SELECT plan_id, timestamp, row_index, plan_type, direction, status,
-                   reason, qff_symbol
+                   reason, tw_leg_symbol
             FROM execution_plans
             ORDER BY timestamp DESC, row_index DESC, plan_id DESC
             LIMIT 1

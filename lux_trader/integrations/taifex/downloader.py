@@ -14,7 +14,7 @@ from zipfile import ZipFile
 import pandas as pd
 
 from ...core.time import TAIPEI_TZ, ensure_taipei
-from ...market_data.session import qff_symbol_to_taifex_contract_month
+from ...market_data.session import tw_leg_symbol_to_taifex_contract_month
 
 TAIFEX_PREVIOUS_30_URL = (
     "https://www.taifex.com.tw/cht/3/dlFutPrevious30DaysSalesData"
@@ -31,7 +31,7 @@ class TaifexDownloadEntry:
     trading_date: date
     csv_url: str
 
-class TaifexQffTradeDownloader:
+class TaifexTwLegTradeDownloader:
     def __init__(
         self,
         cache_dir: Path,
@@ -48,7 +48,7 @@ class TaifexQffTradeDownloader:
     def fetch_1m(self, symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
         start = ensure_taipei(start)
         end = ensure_taipei(end)
-        contract_month = qff_symbol_to_taifex_contract_month(
+        contract_month = tw_leg_symbol_to_taifex_contract_month(
             symbol,
             reference_date=end.date(),
         )
@@ -58,7 +58,7 @@ class TaifexQffTradeDownloader:
             entry = entries.get(trading_date)
             if entry is None:
                 continue
-            frames.append(self._read_qff_1m(entry, contract_month))
+            frames.append(self._read_tw_leg_1m(entry, contract_month))
 
         if not frames:
             return pd.DataFrame(columns=["timestamp", "close"])
@@ -79,7 +79,7 @@ class TaifexQffTradeDownloader:
         entries = parse_taifex_download_entries(html, base_url=self.page_url)
         return {entry.trading_date: entry for entry in entries}
 
-    def _read_qff_1m(
+    def _read_tw_leg_1m(
         self,
         entry: TaifexDownloadEntry,
         contract_month: str,
@@ -94,7 +94,7 @@ class TaifexQffTradeDownloader:
                 raise RuntimeError(f"TAIFEX ZIP has no CSV: {entry.csv_url}")
             for csv_name in csv_names:
                 with zip_file.open(csv_name) as csv_file:
-                    rows.extend(parse_taifex_qff_tick_csv(csv_file, contract_month))
+                    rows.extend(parse_taifex_tw_leg_tick_csv(csv_file, contract_month))
 
         if not rows:
             return pd.DataFrame(columns=["timestamp", "close"])
@@ -151,7 +151,7 @@ def parse_taifex_download_entries(
     return sorted(entries.values(), key=lambda item: item.trading_date)
 
 
-def parse_taifex_qff_tick_csv(
+def parse_taifex_tw_leg_tick_csv(
     csv_file: Any,
     contract_month: str,
 ) -> list[pd.DataFrame]:

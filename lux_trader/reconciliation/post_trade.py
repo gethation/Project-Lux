@@ -22,14 +22,14 @@ class PostTradeReconciler:
     def __init__(
         self,
         *,
-        tsm_units_tolerance: float = 1e-6,
-        qff_contract_tolerance: int = 0,
+        us_leg_units_tolerance: float = 1e-6,
+        tw_leg_contract_tolerance: int = 0,
     ) -> None:
-        self.tsm_units_tolerance = float(tsm_units_tolerance)
-        self.qff_contract_tolerance = int(qff_contract_tolerance)
+        self.us_leg_units_tolerance = float(us_leg_units_tolerance)
+        self.tw_leg_contract_tolerance = int(tw_leg_contract_tolerance)
         self.broker_reconciler = BrokerReconciler(
-            tsm_units_tolerance=tsm_units_tolerance,
-            qff_contract_tolerance=qff_contract_tolerance,
+            us_leg_units_tolerance=us_leg_units_tolerance,
+            tw_leg_contract_tolerance=tw_leg_contract_tolerance,
         )
 
     def reconcile(
@@ -38,15 +38,15 @@ class PostTradeReconciler:
         store: Any,
         strategy_state: StrategyRuntimeState,
         brokers: tuple[ReadOnlyBroker, ...],
-        tsm_symbol: str,
-        qff_symbol: str,
+        us_leg_symbol: str,
+        tw_leg_symbol: str,
         timestamp: datetime,
     ) -> ReconciliationReport:
         report = self.broker_reconciler.reconcile(
             strategy_state=strategy_state,
             brokers=brokers,
-            tsm_symbol=tsm_symbol,
-            qff_symbol=qff_symbol,
+            us_leg_symbol=us_leg_symbol,
+            tw_leg_symbol=tw_leg_symbol,
             timestamp=timestamp,
         )
         issues = list(report.issues)
@@ -70,21 +70,21 @@ class PostTradeReconciler:
         expected: ExpectedBrokerState,
     ) -> list[ReconciliationIssue]:
         exposure = store.load_recorded_fill_exposure(
-            tsm_symbol=expected.tsm_symbol,
-            qff_symbol=expected.qff_symbol,
+            us_leg_symbol=expected.us_leg_symbol,
+            tw_leg_symbol=expected.tw_leg_symbol,
         )
         checks = (
             (
-                BrokerName.BINANCE_TSM,
-                expected.tsm_symbol,
-                expected.expected_tsm_units,
-                self.tsm_units_tolerance,
+                BrokerName.BINANCE,
+                expected.us_leg_symbol,
+                expected.expected_us_leg_units,
+                self.us_leg_units_tolerance,
             ),
             (
-                BrokerName.FUBON_QFF,
-                expected.qff_symbol,
-                float(expected.expected_qff_contracts),
-                float(self.qff_contract_tolerance),
+                BrokerName.FUBON,
+                expected.tw_leg_symbol,
+                float(expected.expected_tw_leg_contracts),
+                float(self.tw_leg_contract_tolerance),
             ),
         )
         issues: list[ReconciliationIssue] = []

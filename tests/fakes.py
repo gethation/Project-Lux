@@ -23,9 +23,9 @@ from lux_trader.reconciliation import (
 )
 
 
-def reconciliation_qff_symbol(config: object, strategy_state: object) -> str:
-    trading_symbol = getattr(strategy_state, "trading_qff_symbol", None)
-    return str(trading_symbol or config.live.qff_symbol)
+def reconciliation_tw_leg_symbol(config: object, strategy_state: object) -> str:
+    trading_symbol = getattr(strategy_state, "trading_tw_leg_symbol", None)
+    return str(trading_symbol or config.live.tw_leg_symbol)
 
 
 def build_fake_reconciliation_brokers(
@@ -36,62 +36,62 @@ def build_fake_reconciliation_brokers(
     timestamp: datetime,
 ) -> tuple[FakeReadOnlyBroker, FakeReadOnlyBroker]:
     reconciler = BrokerReconciler(
-        tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
-        qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
+        us_leg_units_tolerance=config.broker_reconciliation.us_leg_units_tolerance,
+        tw_leg_contract_tolerance=config.broker_reconciliation.tw_leg_contract_tolerance,
     )
     expected = reconciler.expected_from_strategy(
         strategy_state,
-        tsm_symbol=config.live.binance_symbol,
-        qff_symbol=reconciliation_qff_symbol(config, strategy_state),
+        us_leg_symbol=config.live.binance_symbol,
+        tw_leg_symbol=reconciliation_tw_leg_symbol(config, strategy_state),
         timestamp=timestamp,
     )
     if fake_case == "error":
         return (
             FakeReadOnlyBroker(
-                BrokerName.BINANCE_TSM,
+                BrokerName.BINANCE,
                 fetch_error=RuntimeError("fake broker fetch failed"),
             ),
-            FakeReadOnlyBroker(BrokerName.FUBON_QFF, fetched_at=timestamp),
+            FakeReadOnlyBroker(BrokerName.FUBON, fetched_at=timestamp),
         )
 
-    tsm_quantity = expected.expected_tsm_units
-    qff_quantity = float(expected.expected_qff_contracts)
+    us_leg_quantity = expected.expected_us_leg_units
+    tw_leg_quantity = float(expected.expected_tw_leg_contracts)
     if fake_case == "mismatch":
-        qff_quantity = qff_quantity + 1.0 if qff_quantity != 0 else 1.0
+        tw_leg_quantity = tw_leg_quantity + 1.0 if tw_leg_quantity != 0 else 1.0
 
-    tsm_positions = (
+    us_leg_positions = (
         (
             BrokerPositionSnapshot(
-                broker=BrokerName.BINANCE_TSM,
+                broker=BrokerName.BINANCE,
                 symbol=config.live.binance_symbol,
-                quantity=tsm_quantity,
+                quantity=us_leg_quantity,
             ),
         )
-        if tsm_quantity != 0
+        if us_leg_quantity != 0
         else ()
     )
-    qff_positions = (
+    tw_leg_positions = (
         (
             BrokerPositionSnapshot(
-                broker=BrokerName.FUBON_QFF,
-                symbol=expected.qff_symbol,
-                quantity=qff_quantity,
+                broker=BrokerName.FUBON,
+                symbol=expected.tw_leg_symbol,
+                quantity=tw_leg_quantity,
             ),
         )
-        if qff_quantity != 0
+        if tw_leg_quantity != 0
         else ()
     )
     return (
         FakeReadOnlyBroker(
-            BrokerName.BINANCE_TSM,
+            BrokerName.BINANCE,
             account_id="FAKE-BINANCE",
-            positions=tsm_positions,
+            positions=us_leg_positions,
             fetched_at=timestamp,
         ),
         FakeReadOnlyBroker(
-            BrokerName.FUBON_QFF,
+            BrokerName.FUBON,
             account_id="FAKE-FUBON",
-            positions=qff_positions,
+            positions=tw_leg_positions,
             fetched_at=timestamp,
         ),
     )
@@ -104,15 +104,15 @@ def build_fake_execution_plan(
     timestamp: datetime,
     row_index: int,
 ):
-    qff_symbol = str(config.live.qff_symbol)
-    if qff_symbol.lower() == "auto":
-        qff_symbol = "QFFG6"
+    tw_leg_symbol = str(config.live.tw_leg_symbol)
+    if tw_leg_symbol.lower() == "auto":
+        tw_leg_symbol = "QFFG6"
     binance_side = OrderSide.SELL
     if fake_case == "rejected":
         binance_side = OrderSide.BUY
     requests = (
         OrderRequest(
-            broker=BrokerName.BINANCE_TSM,
+            broker=BrokerName.BINANCE,
             symbol=config.live.binance_symbol,
             side=binance_side,
             quantity=125.5,
@@ -120,27 +120,27 @@ def build_fake_execution_plan(
             timestamp=timestamp,
             row_index=row_index,
             fee_twd=12.3,
-            qff_symbol=qff_symbol,
-            qff_expiry="2026-02-18",
+            tw_leg_symbol=tw_leg_symbol,
+            tw_leg_expiry="2026-02-18",
             contract_policy_state="fake",
         ),
         OrderRequest(
-            broker=BrokerName.FUBON_QFF,
-            symbol=qff_symbol,
+            broker=BrokerName.FUBON,
+            symbol=tw_leg_symbol,
             side=OrderSide.BUY,
             quantity=3,
             price=1180.0,
             timestamp=timestamp,
             row_index=row_index,
             fee_twd=45.6,
-            qff_symbol=qff_symbol,
-            qff_expiry="2026-02-18",
+            tw_leg_symbol=tw_leg_symbol,
+            tw_leg_expiry="2026-02-18",
             contract_policy_state="fake",
         ),
     )
     return pair_execution_plan_from_order_requests(
         plan_type=ExecutionPlanType.ENTRY,
-        direction=Direction.SHORT_TSM_LONG_QFF,
+        direction=Direction.SHORT_US_LONG_TW,
         requests=requests,
         reason=f"fake_{fake_case}",
         decision_zscore=2.14,
@@ -166,8 +166,8 @@ def write_test_config(
     tmp_path: Path,
     *,
     allow_live_order: bool | None = None,
-    qff_lots: int | None = None,
-    qff_symbol: str = "QFFG6",
+    tw_leg_lots: int | None = None,
+    tw_leg_symbol: str = "QFFG6",
     include_broker_reconciliation: bool = False,
     margin_enabled: bool | None = None,
     margin_leg_notional_twd: float | None = None,
@@ -190,13 +190,13 @@ def write_test_config(
                 f"allow_live_order = {str(allow_live_order).lower()}",
             ]
         )
-    if qff_lots is not None:
-        lines.extend(["", "[strategy]", f"qff_lots = {qff_lots}"])
+    if tw_leg_lots is not None:
+        lines.extend(["", "[strategy]", f"tw_leg_lots = {tw_leg_lots}"])
     lines.extend(
         [
             "",
             "[live_market_data]",
-            f"qff_symbol = '{qff_symbol}'",
+            f"tw_leg_symbol = '{tw_leg_symbol}'",
             "binance_symbol = 'TSM/USDT:USDT'",
             f"taifex_cache_dir = '{cache_dir}'",
         ]
@@ -208,8 +208,8 @@ def write_test_config(
                 "[broker_reconciliation]",
                 "enabled = false",
                 "fail_on_mismatch = false",
-                "tsm_units_tolerance = 0.000001",
-                "qff_contract_tolerance = 0",
+                "us_leg_units_tolerance = 0.000001",
+                "tw_leg_contract_tolerance = 0",
             ]
         )
     if margin_enabled is not None:
@@ -251,7 +251,7 @@ def write_execution_test_config(
         f"allow_live_order = {str(allow_live_order).lower()}",
         "",
         "[live_market_data]",
-        "qff_symbol = 'QFFG6'",
+        "tw_leg_symbol = 'QFFG6'",
         "binance_symbol = 'TSM/USDT:USDT'",
         "bitopro_symbol = 'USDT/TWD'",
     ]
@@ -265,8 +265,8 @@ def write_execution_test_config(
                 "[broker_reconciliation]",
                 "enabled = true",
                 "fail_on_mismatch = true",
-                "tsm_units_tolerance = 0.000001",
-                "qff_contract_tolerance = 0",
+                "us_leg_units_tolerance = 0.000001",
+                "tw_leg_contract_tolerance = 0",
             ]
         )
     lines.extend(
@@ -276,7 +276,7 @@ def write_execution_test_config(
             f"enabled = {str(live_execution_enabled).lower()}",
             "require_readonly_reconciliation = true",
             "max_plan_age_seconds = 120",
-            "qff_first = true",
+            "tw_leg_first = true",
         ]
     )
     config_path.write_text("\n".join(lines), encoding="utf-8")

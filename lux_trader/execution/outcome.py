@@ -109,8 +109,8 @@ class SimulatedExecutionAdapter:
                 fee_twd=leg.fee_twd,
                 timestamp=leg.timestamp,
                 row_index=leg.row_index,
-                qff_symbol=leg.qff_symbol,
-                qff_expiry=leg.qff_expiry,
+                tw_leg_symbol=leg.tw_leg_symbol,
+                tw_leg_expiry=leg.tw_leg_expiry,
                 contract_policy_state=leg.contract_policy_state,
             )
             orders.append(order)
@@ -181,8 +181,8 @@ def order_request_from_execution_leg(leg: ExecutionLeg) -> OrderRequest:
         timestamp=leg.timestamp,
         row_index=leg.row_index,
         fee_twd=leg.fee_twd,
-        qff_symbol=leg.qff_symbol,
-        qff_expiry=leg.qff_expiry,
+        tw_leg_symbol=leg.tw_leg_symbol,
+        tw_leg_expiry=leg.tw_leg_expiry,
         contract_policy_state=leg.contract_policy_state,
         order_type=leg.order_type,
         expected_price=leg.expected_price,

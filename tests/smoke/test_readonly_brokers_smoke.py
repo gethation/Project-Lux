@@ -33,7 +33,7 @@ def test_fubon_readonly_smoke() -> None:
     finally:
         broker.close()
 
-    assert snapshot.broker.value == "FUBON_QFF"
+    assert snapshot.broker.value == "FUBON"
     assert snapshot.account_id
     assert not snapshot.account_id.isdigit()
     assert len(snapshot.margins) >= 0
@@ -52,7 +52,7 @@ def test_binance_readonly_smoke() -> None:
     finally:
         broker.close()
 
-    assert snapshot.broker.value == "BINANCE_TSM"
+    assert snapshot.broker.value == "BINANCE"
     assert snapshot.account_id == "BINANCE_USDM"
     assert len(snapshot.margins) >= 0
     assert len(snapshot.positions) >= 0

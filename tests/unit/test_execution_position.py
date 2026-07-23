@@ -46,12 +46,12 @@ def fill(
     )
 
 
-def test_position_sizing_uses_actual_signed_fill_quantities_and_qff_vwap() -> None:
+def test_position_sizing_uses_actual_signed_fill_quantities_and_tw_leg_vwap() -> None:
     sizing = position_sizing_from_fills(
-        Direction.SHORT_TSM_LONG_QFF,
+        Direction.SHORT_US_LONG_TW,
         (
             fill(
-                BrokerName.BINANCE_TSM,
+                BrokerName.BINANCE,
                 TSM_SYMBOL,
                 OrderSide.SELL,
                 909.0,
@@ -59,7 +59,7 @@ def test_position_sizing_uses_actual_signed_fill_quantities_and_qff_vwap() -> No
                 1,
             ),
             fill(
-                BrokerName.FUBON_QFF,
+                BrokerName.FUBON,
                 QFF_SYMBOL,
                 OrderSide.BUY,
                 4.0,
@@ -67,7 +67,7 @@ def test_position_sizing_uses_actual_signed_fill_quantities_and_qff_vwap() -> No
                 2,
             ),
             fill(
-                BrokerName.FUBON_QFF,
+                BrokerName.FUBON,
                 QFF_SYMBOL,
                 OrderSide.BUY,
                 6.0,
@@ -75,28 +75,28 @@ def test_position_sizing_uses_actual_signed_fill_quantities_and_qff_vwap() -> No
                 3,
             ),
         ),
-        tsm_symbol=TSM_SYMBOL,
-        qff_symbol=QFF_SYMBOL,
-        qff_contract_multiplier=100.0,
+        us_leg_symbol=TSM_SYMBOL,
+        tw_leg_symbol=QFF_SYMBOL,
+        tw_leg_contract_multiplier=100.0,
     )
 
-    assert sizing.tsm_units == -909.0
-    assert sizing.qff_contracts == 10
-    assert sizing.qff_units == 1000.0
-    assert sizing.raw_qff_contracts == 10.0
+    assert sizing.us_leg_units == -909.0
+    assert sizing.tw_leg_contracts == 10
+    assert sizing.tw_leg_units == 1000.0
+    assert sizing.raw_tw_leg_contracts == 10.0
     assert sizing.actual_leg_notional_twd == pytest.approx(1_000_200.0)
 
 
 @pytest.mark.parametrize(
-    ("direction", "tsm_side", "qff_side"),
+    ("direction", "us_leg_side", "tw_leg_side"),
     [
         (
-            Direction.SHORT_TSM_LONG_QFF,
+            Direction.SHORT_US_LONG_TW,
             OrderSide.BUY,
             OrderSide.BUY,
         ),
         (
-            Direction.LONG_TSM_SHORT_QFF,
+            Direction.LONG_US_SHORT_TW,
             OrderSide.BUY,
             OrderSide.BUY,
         ),
@@ -104,39 +104,39 @@ def test_position_sizing_uses_actual_signed_fill_quantities_and_qff_vwap() -> No
 )
 def test_position_sizing_rejects_fill_sides_that_do_not_match_direction(
     direction: Direction,
-    tsm_side: OrderSide,
-    qff_side: OrderSide,
+    us_leg_side: OrderSide,
+    tw_leg_side: OrderSide,
 ) -> None:
     with pytest.raises(ExecutedPositionError, match="strategy direction"):
         position_sizing_from_fills(
             direction,
             (
                 fill(
-                    BrokerName.BINANCE_TSM,
+                    BrokerName.BINANCE,
                     TSM_SYMBOL,
-                    tsm_side,
+                    us_leg_side,
                     10.0,
                     100.0,
                     1,
                 ),
                 fill(
-                    BrokerName.FUBON_QFF,
+                    BrokerName.FUBON,
                     QFF_SYMBOL,
-                    qff_side,
+                    tw_leg_side,
                     1.0,
                     1000.0,
                     2,
                 ),
             ),
-            tsm_symbol=TSM_SYMBOL,
-            qff_symbol=QFF_SYMBOL,
-            qff_contract_multiplier=100.0,
+            us_leg_symbol=TSM_SYMBOL,
+            tw_leg_symbol=QFF_SYMBOL,
+            tw_leg_contract_multiplier=100.0,
         )
 
 
-def test_position_sizing_rejects_missing_leg_and_fractional_qff_lot() -> None:
-    tsm_fill = fill(
-        BrokerName.BINANCE_TSM,
+def test_position_sizing_rejects_missing_leg_and_fractional_tw_leg_lot() -> None:
+    us_leg_fill = fill(
+        BrokerName.BINANCE,
         TSM_SYMBOL,
         OrderSide.SELL,
         10.0,
@@ -145,20 +145,20 @@ def test_position_sizing_rejects_missing_leg_and_fractional_qff_lot() -> None:
     )
     with pytest.raises(ExecutedPositionError, match="missing Fubon"):
         position_sizing_from_fills(
-            Direction.SHORT_TSM_LONG_QFF,
-            (tsm_fill,),
-            tsm_symbol=TSM_SYMBOL,
-            qff_symbol=QFF_SYMBOL,
-            qff_contract_multiplier=100.0,
+            Direction.SHORT_US_LONG_TW,
+            (us_leg_fill,),
+            us_leg_symbol=TSM_SYMBOL,
+            tw_leg_symbol=QFF_SYMBOL,
+            tw_leg_contract_multiplier=100.0,
         )
 
     with pytest.raises(ExecutedPositionError, match="integer lots"):
         position_sizing_from_fills(
-            Direction.SHORT_TSM_LONG_QFF,
+            Direction.SHORT_US_LONG_TW,
             (
-                tsm_fill,
+                us_leg_fill,
                 fill(
-                    BrokerName.FUBON_QFF,
+                    BrokerName.FUBON,
                     QFF_SYMBOL,
                     OrderSide.BUY,
                     1.5,
@@ -166,7 +166,7 @@ def test_position_sizing_rejects_missing_leg_and_fractional_qff_lot() -> None:
                     2,
                 ),
             ),
-            tsm_symbol=TSM_SYMBOL,
-            qff_symbol=QFF_SYMBOL,
-            qff_contract_multiplier=100.0,
+            us_leg_symbol=TSM_SYMBOL,
+            tw_leg_symbol=QFF_SYMBOL,
+            tw_leg_contract_multiplier=100.0,
         )

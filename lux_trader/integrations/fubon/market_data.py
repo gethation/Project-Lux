@@ -19,7 +19,7 @@ from ...market_data.parsing import (
     midpoint_or_single_side,
     parse_timestamp,
 )
-from ...market_data.session import select_qff_front_month
+from ...market_data.session import select_tw_leg_front_month
 from ...market_data.types import LiveQuote
 from .auth import login_fubon_sdk
 
@@ -81,7 +81,7 @@ def summarize_candidate_row(row: Any) -> str:
     return text
 
 
-class FubonQffMarketData:
+class FubonTwLegMarketData:
     def __init__(
         self,
         env_path: Path | None = None,
@@ -205,7 +205,7 @@ class FubonQffMarketData:
         )
 
     def select_front_month_symbol(self, product: str) -> str:
-        return select_qff_front_month(self.fetch_candidates(product), product=product).symbol
+        return select_tw_leg_front_month(self.fetch_candidates(product), product=product).symbol
 
     def fetch_quote(self, symbol: str) -> LiveQuote:
         try:
@@ -335,7 +335,7 @@ class FubonQffMarketData:
             raise RuntimeError(f"Fubon quote has no usable price: {payload}")
         last_trade = row_to_dict(row_get(payload, "lastTrade") or {})
         return LiveQuote(
-            source="fubon_qff",
+            source="fubon_tw_leg",
             symbol=symbol,
             timestamp=parse_timestamp(
                 row_get(payload, "dateTime", "time", "timestamp", "lastUpdated")
@@ -435,7 +435,7 @@ def parse_fubon_books_quote(message: dict[str, Any]) -> LiveQuote | None:
         or row_get(message, "time", "dateTime", "timestamp")
     )
     return LiveQuote(
-        source="fubon_qff",
+        source="fubon_tw_leg",
         symbol=symbol,
         timestamp=timestamp,
         price=price,

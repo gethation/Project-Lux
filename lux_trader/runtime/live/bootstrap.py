@@ -8,10 +8,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
+from lux_trader.integrations.binance.execution import BinanceUsLegExecutionAdapter
 from lux_trader.brokers import PaperBroker
 from lux_trader.config import AppConfig
-from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, QffContractSelection
+from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, TwLegContractSelection
 from lux_trader.core.calendar import live_session_status
 from lux_trader.execution.intent import (
     ExecutionPlanType,
@@ -29,11 +29,11 @@ from lux_trader.execution.price_policy import apply_live_touch_market_price_poli
 from lux_trader.integrations.binance.market_data import BinanceMarketData
 from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
-from lux_trader.integrations.fubon.market_data import FubonQffMarketData
-from lux_trader.integrations.fubon.market_data_process import FubonQffMarketDataProcess
+from lux_trader.integrations.fubon.market_data import FubonTwLegMarketData
+from lux_trader.integrations.fubon.market_data_process import FubonTwLegMarketDataProcess
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
-from lux_trader.integrations.taifex.downloader import TaifexQffTradeDownloader
+from lux_trader.integrations.taifex.downloader import TaifexTwLegTradeDownloader
 from lux_trader.core.fees import fill_costs
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.execution.gate import (
@@ -41,21 +41,21 @@ from lux_trader.execution.gate import (
     evaluate_live_execution_gate,
 )
 from lux_trader.market_data import (
-    CsvQffWarmupProvider,
+    CsvTwLegWarmupProvider,
     LiveMinuteBarBuilder,
     LiveQuoteSet,
     OhlcvProvider,
     QFF_FORWARD_FILL_LOOKBACK,
-    QffWarmupSourceReport,
-    QffWarmupProvider,
+    TwLegWarmupSourceReport,
+    TwLegWarmupProvider,
     QuoteProvider,
     WarmupBuilder,
-    build_qff_session_index,
-    build_qff_session_warmup_index,
-    build_qff_warmup_source_report,
+    build_tw_leg_session_index,
+    build_tw_leg_session_warmup_index,
+    build_tw_leg_warmup_source_report,
     floor_minute,
     parse_timestamp,
-    prioritized_qff_close_frame,
+    prioritized_tw_leg_close_frame,
 )
 from lux_trader.store import SQLiteStore
 from lux_trader.core.models import Direction, IndicatorSnapshot, MarketBar, StrategyAction, StrategyState
@@ -74,8 +74,8 @@ from lux_trader.core.time import ensure_taipei
 
 from lux_trader.runtime.live.contracts import (
     initialize_contract_state,
-    resolve_qff_contract,
-    subscribe_qff_books_if_supported,
+    resolve_tw_leg_contract,
+    subscribe_tw_leg_books_if_supported,
 )
 from lux_trader.runtime.live.warmup import load_or_build_live_indicator
 
@@ -88,21 +88,21 @@ class WindowsTimeSyncResult:
 
 @dataclass(frozen=True)
 class LiveProviderSet:
-    qff: QuoteProvider | FubonQffMarketData
-    tsm: QuoteProvider
+    tw_leg: QuoteProvider | FubonTwLegMarketData
+    us_leg: QuoteProvider
     usdttwd: QuoteProvider
-    close_qff_on_exit: bool
+    close_tw_leg_on_exit: bool
 
 
 @dataclass(frozen=True)
 class LiveRuntimeContext:
     started_at: datetime
-    qff_provider: QuoteProvider | FubonQffMarketData
-    tsm_provider: QuoteProvider
+    tw_leg_provider: QuoteProvider | FubonTwLegMarketData
+    us_leg_provider: QuoteProvider
     usdttwd_provider: QuoteProvider
-    qff_provider_to_close: Any | None
-    qff_symbol: str
-    qff_expiry: str | None
+    tw_leg_provider_to_close: Any | None
+    tw_leg_symbol: str
+    tw_leg_expiry: str | None
     strategy: PairStrategy
     indicator: IndicatorEngine
     seed_bars: list[MarketBar]
@@ -113,23 +113,23 @@ class LiveRuntimeContext:
 def open_live_quote_providers(
     config: AppConfig,
     *,
-    qff_provider: QuoteProvider | FubonQffMarketData | None,
-    tsm_provider: QuoteProvider | None,
+    tw_leg_provider: QuoteProvider | FubonTwLegMarketData | None,
+    us_leg_provider: QuoteProvider | None,
     usdttwd_provider: QuoteProvider | None,
     reporter: Any,
     started_at: datetime,
 ) -> LiveProviderSet:
     reporter.event(started_at, "startup", "init_fubon")
-    qff = qff_provider or FubonQffMarketDataProcess(config.live.fubon_env_path)
+    tw_leg = tw_leg_provider or FubonTwLegMarketDataProcess(config.live.fubon_env_path)
     reporter.event(started_at, "startup", "init_binance")
-    tsm = tsm_provider or BinanceMarketData()
+    us_leg = us_leg_provider or BinanceMarketData()
     reporter.event(started_at, "startup", "init_bitopro")
     usdttwd = usdttwd_provider or BitoProMarketData()
     return LiveProviderSet(
-        qff=qff,
-        tsm=tsm,
+        tw_leg=tw_leg,
+        us_leg=us_leg,
         usdttwd=usdttwd,
-        close_qff_on_exit=qff_provider is None,
+        close_tw_leg_on_exit=tw_leg_provider is None,
     )
 
 
@@ -156,7 +156,7 @@ def build_live_strategy(
         config.fees,
         PaperBroker(),
         state=strategy_state,
-        tsm_symbol=config.live.binance_symbol,
+        us_leg_symbol=config.live.binance_symbol,
     )
 
 
@@ -171,7 +171,7 @@ def build_live_minute_builder(
         ),
         closed_dates=config.trading_calendar.closed_dates,
     )
-    builder.last_qff_close = seed_bars[-1].qff_close_filled
+    builder.last_tw_leg_close = seed_bars[-1].tw_leg_close_filled
     return builder
 
 
@@ -311,7 +311,7 @@ def warn_market_fetch_failure_once_per_minute(
 
 
 def fetch_quote_or_cached(
-    provider: QuoteProvider | FubonQffMarketData,
+    provider: QuoteProvider | FubonTwLegMarketData,
     symbol: str,
     source: str,
     cache: dict[str, Any],
@@ -340,8 +340,8 @@ def prepare_live_runtime(
     store: SQLiteStore,
     resume: bool,
     skip_warmup: bool,
-    qff_provider: QuoteProvider | FubonQffMarketData | None,
-    tsm_provider: QuoteProvider | None,
+    tw_leg_provider: QuoteProvider | FubonTwLegMarketData | None,
+    us_leg_provider: QuoteProvider | None,
     usdttwd_provider: QuoteProvider | None,
     reporter: Any,
     started_at: datetime,
@@ -350,25 +350,25 @@ def prepare_live_runtime(
     reporter.event(started_at, "startup", "store_ready")
     providers = open_live_quote_providers(
         config,
-        qff_provider=qff_provider,
-        tsm_provider=tsm_provider,
+        tw_leg_provider=tw_leg_provider,
+        us_leg_provider=us_leg_provider,
         usdttwd_provider=usdttwd_provider,
         reporter=reporter,
         started_at=started_at,
     )
-    qff_provider = providers.qff
-    tsm_provider = providers.tsm
+    tw_leg_provider = providers.tw_leg
+    us_leg_provider = providers.us_leg
     usdttwd_provider = providers.usdttwd
-    qff_provider_to_close = (
-        qff_provider if providers.close_qff_on_exit else None
+    tw_leg_provider_to_close = (
+        tw_leg_provider if providers.close_tw_leg_on_exit else None
     )
-    reporter.event(started_at, "startup", "resolve_qff")
-    initial_contract = resolve_qff_contract(
+    reporter.event(started_at, "startup", "resolve_tw_leg")
+    initial_contract = resolve_tw_leg_contract(
         config,
-        qff_provider,
+        tw_leg_provider,
         now=started_at,
     )
-    reporter.event(started_at, "startup", f"qff={initial_contract.symbol}")
+    reporter.event(started_at, "startup", f"tw_leg={initial_contract.symbol}")
 
     strategy_state = load_or_create_strategy_state(
         store,
@@ -376,11 +376,11 @@ def prepare_live_runtime(
         config=config,
     )
     initialize_contract_state(strategy_state, initial_contract)
-    qff_symbol = strategy_state.trading_qff_symbol or initial_contract.symbol
-    qff_expiry = strategy_state.trading_qff_expiry or initial_contract.expiry
-    subscribe_qff_books_if_supported(
-        qff_provider,
-        qff_symbol,
+    tw_leg_symbol = strategy_state.trading_tw_leg_symbol or initial_contract.symbol
+    tw_leg_expiry = strategy_state.trading_tw_leg_expiry or initial_contract.expiry
+    subscribe_tw_leg_books_if_supported(
+        tw_leg_provider,
+        tw_leg_symbol,
         reporter,
         started_at,
     )
@@ -388,11 +388,11 @@ def prepare_live_runtime(
     indicator, seed_bars = load_or_build_live_indicator(
         store,
         config,
-        qff_symbol=qff_symbol,
-        qff_expiry=qff_expiry,
+        tw_leg_symbol=tw_leg_symbol,
+        tw_leg_expiry=tw_leg_expiry,
         policy_state=strategy_state.contract_policy_state or "active",
-        qff_provider=qff_provider,
-        tsm_provider=tsm_provider,
+        tw_leg_provider=tw_leg_provider,
+        us_leg_provider=us_leg_provider,
         usdttwd_provider=usdttwd_provider,
         end=started_at,
         # A resumed strategy keeps its persisted position/open-trade/PnL state,
@@ -410,12 +410,12 @@ def prepare_live_runtime(
     reporter.event(started_at, "startup", f"seed_ready_{len(seed_bars)}")
     return LiveRuntimeContext(
         started_at=started_at,
-        qff_provider=qff_provider,
-        tsm_provider=tsm_provider,
+        tw_leg_provider=tw_leg_provider,
+        us_leg_provider=us_leg_provider,
         usdttwd_provider=usdttwd_provider,
-        qff_provider_to_close=qff_provider_to_close,
-        qff_symbol=qff_symbol,
-        qff_expiry=qff_expiry,
+        tw_leg_provider_to_close=tw_leg_provider_to_close,
+        tw_leg_symbol=tw_leg_symbol,
+        tw_leg_expiry=tw_leg_expiry,
         strategy=build_live_strategy(config, strategy_state),
         indicator=indicator,
         seed_bars=seed_bars,

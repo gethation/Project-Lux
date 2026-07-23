@@ -20,7 +20,7 @@ from lux_trader.config import (
 
 # Frozen snapshot of the PoC reference replay inputs, committed under
 # tests/fixtures/replay/. The replay acceptance test must be deterministic and
-# self-contained: the live PoC working directory rebuilds qff1_1m.csv from
+# self-contained: the live PoC working directory rebuilds tw_leg1_1m.csv from
 # TAIFEX tick history, which only retains ~30 trading days, so the original
 # reference dataset (and its 265,481 net PnL) ages out and cannot be rebuilt.
 # These fixtures decouple the test from that mutable upstream. The OHLCV files
@@ -47,11 +47,11 @@ def strategy_config() -> StrategyConfig:
 @pytest.fixture
 def fee_config() -> FeeConfig:
     return FeeConfig(
-        tsm_fee_bps=5.0,
-        qff_fee_per_contract_twd=5.0,
-        qff_tax_rate=0.00002,
-        qff_contract_multiplier=100.0,
-        tsm_contract_multiplier=5.0,
+        us_leg_fee_bps=5.0,
+        tw_leg_fee_per_contract_twd=5.0,
+        tw_leg_tax_rate=0.00002,
+        tw_leg_contract_multiplier=100.0,
+        us_leg_contract_multiplier=5.0,
     )
 
 
@@ -59,8 +59,8 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
     return AppConfig(
         input_csv=POC_CSV,
         store_path=tmp_path / "project_lux.sqlite3",
-        qff_ohlcv_csv=POC_QFF_OHLCV,
-        tsm_ohlcv_csv=POC_TSM_OHLCV,
+        tw_leg_ohlcv_csv=POC_QFF_OHLCV,
+        us_leg_ohlcv_csv=POC_TSM_OHLCV,
         usdttwd_ohlcv_csv=POC_USDTTWD_OHLCV,
         strategy=StrategyConfig(
             entry_z=2.0,
@@ -71,11 +71,11 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             zscore_window=500,
         ),
         fees=FeeConfig(
-            tsm_fee_bps=5.0,
-            qff_fee_per_contract_twd=5.0,
-            qff_tax_rate=0.00002,
-            qff_contract_multiplier=100.0,
-            tsm_contract_multiplier=5.0,
+            us_leg_fee_bps=5.0,
+            tw_leg_fee_per_contract_twd=5.0,
+            tw_leg_tax_rate=0.00002,
+            tw_leg_contract_multiplier=100.0,
+            us_leg_contract_multiplier=5.0,
         ),
         safety=SafetyConfig(
             allow_live_order=False,
@@ -94,39 +94,39 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             polling_seconds=1.0,
             minute_finalize_delay_seconds=1.0,
             stale_seconds=10.0,
-            qff_book_stale_seconds=55.0,
+            tw_leg_book_stale_seconds=55.0,
             sync_windows_time_on_startup=True,
             clock_skew_fail_seconds=60.0,
             windows_time_sync_timeout_seconds=15.0,
             max_leg_timestamp_skew_seconds=10.0,
             warmup_minutes=500,
-            qff_product="QFF",
-            qff_symbol="auto",
+            tw_leg_product="QFF",
+            tw_leg_symbol="auto",
             binance_symbol="TSM/USDT:USDT",
             bitopro_symbol="USDT/TWD",
             fubon_env_path=None,
-            taifex_qff_1m_csv=None,
+            taifex_tw_leg_1m_csv=None,
             taifex_use_network=False,
             taifex_cache_dir=tmp_path / "taifex_cache",
         ),
         broker_reconciliation=BrokerReconciliationConfig(
             enabled=False,
             fail_on_mismatch=False,
-            tsm_units_tolerance=1e-6,
-            qff_contract_tolerance=0,
+            us_leg_units_tolerance=1e-6,
+            tw_leg_contract_tolerance=0,
         ),
         live_execution=LiveExecutionConfig(
             enabled=False,
             require_readonly_reconciliation=True,
             max_plan_age_seconds=120,
-            qff_first=True,
+            tw_leg_first=True,
         ),
         live_execution_smoke=LiveExecutionSmokeConfig(
             enabled=False,
             fubon_symbol="TMFG6",
             fubon_lots=1,
             binance_symbol="TSM/USDT:USDT",
-            tsm_units=0.1,
-            qff_expiry="202607",
+            us_leg_units=0.1,
+            tw_leg_expiry="202607",
         ),
     )

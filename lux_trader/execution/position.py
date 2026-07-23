@@ -20,47 +20,47 @@ def position_sizing_from_fills(
     direction: Direction,
     fills: Iterable[Fill],
     *,
-    tsm_symbol: str,
-    qff_symbol: str,
-    qff_contract_multiplier: float,
+    us_leg_symbol: str,
+    tw_leg_symbol: str,
+    tw_leg_contract_multiplier: float,
 ) -> PositionSizing:
     fill_rows = tuple(fills)
-    tsm_fills = _matching_fills(
+    us_leg_fills = _matching_fills(
         fill_rows,
-        broker=BrokerName.BINANCE_TSM,
-        symbol=tsm_symbol,
+        broker=BrokerName.BINANCE,
+        symbol=us_leg_symbol,
     )
-    qff_fills = _matching_fills(
+    tw_leg_fills = _matching_fills(
         fill_rows,
-        broker=BrokerName.FUBON_QFF,
-        symbol=qff_symbol,
+        broker=BrokerName.FUBON,
+        symbol=tw_leg_symbol,
     )
-    if not tsm_fills:
+    if not us_leg_fills:
         raise ExecutedPositionError("missing Binance TSM fill")
-    if not qff_fills:
+    if not tw_leg_fills:
         raise ExecutedPositionError("missing Fubon QFF fill")
 
-    tsm_units = _signed_quantity(tsm_fills)
-    raw_qff_contracts = _signed_quantity(qff_fills)
-    rounded_qff_contracts = round(raw_qff_contracts)
-    if not isclose(raw_qff_contracts, rounded_qff_contracts, abs_tol=1e-9):
+    us_leg_units = _signed_quantity(us_leg_fills)
+    raw_tw_leg_contracts = _signed_quantity(tw_leg_fills)
+    rounded_tw_leg_contracts = round(raw_tw_leg_contracts)
+    if not isclose(raw_tw_leg_contracts, rounded_tw_leg_contracts, abs_tol=1e-9):
         raise ExecutedPositionError(
-            f"Fubon QFF fill quantity must be integer lots: {raw_qff_contracts}"
+            f"Fubon QFF fill quantity must be integer lots: {raw_tw_leg_contracts}"
         )
-    qff_contracts = int(rounded_qff_contracts)
+    tw_leg_contracts = int(rounded_tw_leg_contracts)
 
-    _validate_direction(direction, tsm_units, qff_contracts)
-    multiplier = float(qff_contract_multiplier)
+    _validate_direction(direction, us_leg_units, tw_leg_contracts)
+    multiplier = float(tw_leg_contract_multiplier)
     if not isfinite(multiplier) or multiplier <= 0:
         raise ExecutedPositionError("QFF contract multiplier must be positive")
 
-    qff_vwap = _volume_weighted_price(qff_fills)
+    tw_leg_vwap = _volume_weighted_price(tw_leg_fills)
     return PositionSizing(
-        tsm_units=tsm_units,
-        qff_units=qff_contracts * multiplier,
-        qff_contracts=qff_contracts,
-        raw_qff_contracts=abs(raw_qff_contracts),
-        actual_leg_notional_twd=abs(qff_contracts) * multiplier * qff_vwap,
+        us_leg_units=us_leg_units,
+        tw_leg_units=tw_leg_contracts * multiplier,
+        tw_leg_contracts=tw_leg_contracts,
+        raw_tw_leg_contracts=abs(raw_tw_leg_contracts),
+        actual_leg_notional_twd=abs(tw_leg_contracts) * multiplier * tw_leg_vwap,
     )
 
 
@@ -104,13 +104,13 @@ def _volume_weighted_price(fills: Iterable[Fill]) -> float:
 
 def _validate_direction(
     direction: Direction,
-    tsm_units: float,
-    qff_contracts: int,
+    us_leg_units: float,
+    tw_leg_contracts: int,
 ) -> None:
-    if direction == Direction.SHORT_TSM_LONG_QFF:
-        valid = tsm_units < 0 and qff_contracts > 0
+    if direction == Direction.SHORT_US_LONG_TW:
+        valid = us_leg_units < 0 and tw_leg_contracts > 0
     else:
-        valid = tsm_units > 0 and qff_contracts < 0
+        valid = us_leg_units > 0 and tw_leg_contracts < 0
     if not valid:
         raise ExecutedPositionError(
             "executed fill sides do not match the strategy direction"

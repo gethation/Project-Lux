@@ -43,7 +43,7 @@ def latest_reconciliation(store_path: Path):
 def inject_fake_shared_brokers(monkeypatch, fake_case: str) -> None:
     builder = make_fake_broker_builder(fake_case)
 
-    def shared(config, _qff_symbol):
+    def shared(config, _tw_leg_symbol):
         brokers = builder(config, None, readonly=True)
         return brokers[0], brokers
 

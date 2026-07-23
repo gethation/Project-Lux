@@ -29,14 +29,14 @@ class CsvReplayMarketData:
         csv_path: Path,
         calendar: TradingCalendar | None = None,
         *,
-        qff_ohlcv_path: Path | None = None,
-        tsm_ohlcv_path: Path | None = None,
+        tw_leg_ohlcv_path: Path | None = None,
+        us_leg_ohlcv_path: Path | None = None,
         usdttwd_ohlcv_path: Path | None = None,
     ) -> None:
         self.csv_path = csv_path
         self.calendar = calendar or TradingCalendar()
-        self.qff_ohlcv_path = qff_ohlcv_path
-        self.tsm_ohlcv_path = tsm_ohlcv_path
+        self.tw_leg_ohlcv_path = tw_leg_ohlcv_path
+        self.us_leg_ohlcv_path = us_leg_ohlcv_path
         self.usdttwd_ohlcv_path = usdttwd_ohlcv_path
 
     def load(self) -> list[MarketBar]:
@@ -46,9 +46,9 @@ class CsvReplayMarketData:
         frame = pd.read_csv(self.csv_path)
         required = {
             "timestamp",
-            "qff_close",
-            "qff_close_filled",
-            "tsm_twd_fair",
+            "tw_leg_close",
+            "tw_leg_close_filled",
+            "us_leg_twd_fair",
             "spread",
             "spread_zscore",
             "zscore_valid",
@@ -70,60 +70,60 @@ class CsvReplayMarketData:
             raise RuntimeError("Input timestamps must be unique and sorted")
         _ = expected  # Session-only PoC inputs are intentionally not continuous.
 
-        qff_entry_open = None
-        qff_entry_open_was_filled = None
-        tsm_twd_fair_open = None
+        tw_leg_entry_open = None
+        tw_leg_entry_open_was_filled = None
+        us_leg_twd_fair_open = None
         if (
-            self.qff_ohlcv_path is not None
-            and self.tsm_ohlcv_path is not None
+            self.tw_leg_ohlcv_path is not None
+            and self.us_leg_ohlcv_path is not None
             and self.usdttwd_ohlcv_path is not None
         ):
-            qff_open = read_open_series(self.qff_ohlcv_path, "qff").reindex(index)
-            tsm_open = read_open_series(self.tsm_ohlcv_path, "tsm").reindex(index)
+            tw_leg_open = read_open_series(self.tw_leg_ohlcv_path, "tw_leg").reindex(index)
+            us_leg_open = read_open_series(self.us_leg_ohlcv_path, "us_leg").reindex(index)
             usd_open = read_open_series(self.usdttwd_ohlcv_path, "usdttwd").reindex(index)
-            if tsm_open.isna().any() or usd_open.isna().any():
-                first_missing = tsm_open[tsm_open.isna()].index.union(
+            if us_leg_open.isna().any() or usd_open.isna().any():
+                first_missing = us_leg_open[us_leg_open.isna()].index.union(
                     usd_open[usd_open.isna()].index
                 )[0]
                 raise RuntimeError(f"Replay entry open series missing at {first_missing}")
-            qff_filled = pd.Series(
-                pd.to_numeric(frame["qff_close_filled"], errors="coerce").to_numpy(),
+            tw_leg_filled = pd.Series(
+                pd.to_numeric(frame["tw_leg_close_filled"], errors="coerce").to_numpy(),
                 index=index,
             )
-            qff_entry_open = qff_open.fillna(qff_filled)
-            qff_entry_open_was_filled = qff_open.isna()
-            tsm_twd_fair_open = tsm_open * usd_open / 5.0
+            tw_leg_entry_open = tw_leg_open.fillna(tw_leg_filled)
+            tw_leg_entry_open_was_filled = tw_leg_open.isna()
+            us_leg_twd_fair_open = us_leg_open * usd_open / 5.0
 
         bars: list[MarketBar] = []
         for row_index, row in frame.iterrows():
-            qff_close = optional_float(row["qff_close"])
-            qff_close_filled = optional_float(row["qff_close_filled"])
-            tsm_twd_fair = optional_float(row["tsm_twd_fair"])
+            tw_leg_close = optional_float(row["tw_leg_close"])
+            tw_leg_close_filled = optional_float(row["tw_leg_close_filled"])
+            us_leg_twd_fair = optional_float(row["us_leg_twd_fair"])
             spread = optional_float(row["spread"])
-            if qff_close_filled is None or tsm_twd_fair is None or spread is None:
+            if tw_leg_close_filled is None or us_leg_twd_fair is None or spread is None:
                 raise RuntimeError(f"Invalid market data at row {row_index}")
             bars.append(
                 MarketBar(
                     row_index=int(row_index),
                     timestamp=timestamps.iloc[row_index].to_pydatetime(),
-                    qff_close=qff_close,
-                    qff_close_filled=qff_close_filled,
-                    tsm_twd_fair=tsm_twd_fair,
+                    tw_leg_close=tw_leg_close,
+                    tw_leg_close_filled=tw_leg_close_filled,
+                    us_leg_twd_fair=us_leg_twd_fair,
                     spread=spread,
-                    qff_entry_price=(
-                        float(qff_entry_open.iloc[row_index])
-                        if qff_entry_open is not None
+                    tw_leg_entry_price=(
+                        float(tw_leg_entry_open.iloc[row_index])
+                        if tw_leg_entry_open is not None
                         else None
                     ),
-                    tsm_entry_twd_fair=(
-                        float(tsm_twd_fair_open.iloc[row_index])
-                        if tsm_twd_fair_open is not None
+                    us_leg_entry_twd_fair=(
+                        float(us_leg_twd_fair_open.iloc[row_index])
+                        if us_leg_twd_fair_open is not None
                         else None
                     ),
-                    qff_was_filled=qff_close is None,
-                    qff_entry_open_was_filled=(
-                        bool(qff_entry_open_was_filled.iloc[row_index])
-                        if qff_entry_open_was_filled is not None
+                    tw_leg_was_filled=tw_leg_close is None,
+                    tw_leg_entry_open_was_filled=(
+                        bool(tw_leg_entry_open_was_filled.iloc[row_index])
+                        if tw_leg_entry_open_was_filled is not None
                         else False
                     ),
                     expected_zscore=optional_float(row["spread_zscore"]),

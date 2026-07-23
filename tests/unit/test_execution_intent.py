@@ -35,8 +35,8 @@ def leg(
         price=price,
         timestamp=ts(),
         row_index=88,
-        qff_symbol="QFFG6",
-        qff_expiry="2026-02-18",
+        tw_leg_symbol="QFFG6",
+        tw_leg_expiry="2026-02-18",
         contract_policy_state="active",
     )
 
@@ -45,19 +45,19 @@ def short_entry_plan(*, legs: tuple[ExecutionLeg, ...] | None = None) -> PairExe
     return PairExecutionPlan(
         plan_id="EXEC-TEST",
         plan_type=ExecutionPlanType.ENTRY,
-        direction=Direction.SHORT_TSM_LONG_QFF,
+        direction=Direction.SHORT_US_LONG_TW,
         timestamp=ts(),
         row_index=88,
         legs=legs
         or (
-            leg(BrokerName.BINANCE_TSM, "TSM/USDT:USDT", OrderSide.SELL, 125.5, 720.0),
-            leg(BrokerName.FUBON_QFF, "QFFG6", OrderSide.BUY, 3, 1180.0),
+            leg(BrokerName.BINANCE, "TSM/USDT:USDT", OrderSide.SELL, 125.5, 720.0),
+            leg(BrokerName.FUBON, "QFFG6", OrderSide.BUY, 3, 1180.0),
         ),
         reason="entry_zscore_crossed",
         decision_zscore=2.14,
         decision_spread_type="shortSpread",
-        qff_symbol="QFFG6",
-        qff_expiry="2026-02-18",
+        tw_leg_symbol="QFFG6",
+        tw_leg_expiry="2026-02-18",
         contract_policy_state="active",
     )
 
@@ -79,34 +79,34 @@ def test_valid_short_entry_plan_passes_validation() -> None:
     [
         (
             ExecutionPlanType.ENTRY,
-            Direction.SHORT_TSM_LONG_QFF,
+            Direction.SHORT_US_LONG_TW,
             {
-                BrokerName.BINANCE_TSM: OrderSide.SELL,
-                BrokerName.FUBON_QFF: OrderSide.BUY,
+                BrokerName.BINANCE: OrderSide.SELL,
+                BrokerName.FUBON: OrderSide.BUY,
             },
         ),
         (
             ExecutionPlanType.ENTRY,
-            Direction.LONG_TSM_SHORT_QFF,
+            Direction.LONG_US_SHORT_TW,
             {
-                BrokerName.BINANCE_TSM: OrderSide.BUY,
-                BrokerName.FUBON_QFF: OrderSide.SELL,
+                BrokerName.BINANCE: OrderSide.BUY,
+                BrokerName.FUBON: OrderSide.SELL,
             },
         ),
         (
             ExecutionPlanType.EXIT,
-            Direction.SHORT_TSM_LONG_QFF,
+            Direction.SHORT_US_LONG_TW,
             {
-                BrokerName.BINANCE_TSM: OrderSide.BUY,
-                BrokerName.FUBON_QFF: OrderSide.SELL,
+                BrokerName.BINANCE: OrderSide.BUY,
+                BrokerName.FUBON: OrderSide.SELL,
             },
         ),
         (
             ExecutionPlanType.EXIT,
-            Direction.LONG_TSM_SHORT_QFF,
+            Direction.LONG_US_SHORT_TW,
             {
-                BrokerName.BINANCE_TSM: OrderSide.SELL,
-                BrokerName.FUBON_QFF: OrderSide.BUY,
+                BrokerName.BINANCE: OrderSide.SELL,
+                BrokerName.FUBON: OrderSide.BUY,
             },
         ),
     ],
@@ -123,7 +123,7 @@ def test_missing_leg_is_rejected() -> None:
     validated = validate_pair_execution_plan(
         short_entry_plan(
             legs=(
-                leg(BrokerName.BINANCE_TSM, "TSM/USDT:USDT", OrderSide.SELL, 125.5, 720.0),
+                leg(BrokerName.BINANCE, "TSM/USDT:USDT", OrderSide.SELL, 125.5, 720.0),
             )
         )
     )
@@ -136,8 +136,8 @@ def test_wrong_side_is_rejected() -> None:
     validated = validate_pair_execution_plan(
         short_entry_plan(
             legs=(
-                leg(BrokerName.BINANCE_TSM, "TSM/USDT:USDT", OrderSide.BUY, 125.5, 720.0),
-                leg(BrokerName.FUBON_QFF, "QFFG6", OrderSide.BUY, 3, 1180.0),
+                leg(BrokerName.BINANCE, "TSM/USDT:USDT", OrderSide.BUY, 125.5, 720.0),
+                leg(BrokerName.FUBON, "QFFG6", OrderSide.BUY, 3, 1180.0),
             )
         )
     )
@@ -146,33 +146,33 @@ def test_wrong_side_is_rejected() -> None:
     assert "side_matches_direction" in failed_check_types(validated)
 
 
-def test_bad_quantity_price_and_non_integer_qff_contracts_are_rejected() -> None:
+def test_bad_quantity_price_and_non_integer_tw_leg_contracts_are_rejected() -> None:
     validated = validate_pair_execution_plan(
         short_entry_plan(
             legs=(
-                leg(BrokerName.BINANCE_TSM, "TSM/USDT:USDT", OrderSide.SELL, 0, 720.0),
-                leg(BrokerName.FUBON_QFF, "QFFG6", OrderSide.BUY, 1.5, -1180.0),
+                leg(BrokerName.BINANCE, "TSM/USDT:USDT", OrderSide.SELL, 0, 720.0),
+                leg(BrokerName.FUBON, "QFFG6", OrderSide.BUY, 1.5, -1180.0),
             )
         )
     )
 
     failed = failed_check_types(validated)
     assert validated.status == ExecutionPlanStatus.REJECTED
-    assert {"quantity_positive", "price_positive", "qff_quantity_integer"} <= failed
+    assert {"quantity_positive", "price_positive", "tw_leg_quantity_integer"} <= failed
 
 
-def test_qff_symbol_mismatch_is_rejected() -> None:
+def test_tw_leg_symbol_mismatch_is_rejected() -> None:
     validated = validate_pair_execution_plan(
         short_entry_plan(
             legs=(
-                leg(BrokerName.BINANCE_TSM, "TSM/USDT:USDT", OrderSide.SELL, 125.5, 720.0),
-                leg(BrokerName.FUBON_QFF, "QFFH6", OrderSide.BUY, 3, 1180.0),
+                leg(BrokerName.BINANCE, "TSM/USDT:USDT", OrderSide.SELL, 125.5, 720.0),
+                leg(BrokerName.FUBON, "QFFH6", OrderSide.BUY, 3, 1180.0),
             )
         )
     )
 
     assert validated.status == ExecutionPlanStatus.REJECTED
-    assert "qff_symbol_matches" in failed_check_types(validated)
+    assert "tw_leg_symbol_matches" in failed_check_types(validated)
 
 
 def test_allow_live_order_rejects_dry_run_intent() -> None:
@@ -185,7 +185,7 @@ def test_allow_live_order_rejects_dry_run_intent() -> None:
 def test_build_plan_from_order_requests_preserves_metadata() -> None:
     requests = (
         OrderRequest(
-            broker=BrokerName.BINANCE_TSM,
+            broker=BrokerName.BINANCE,
             symbol="TSM/USDT:USDT",
             side=OrderSide.SELL,
             quantity=125.5,
@@ -193,12 +193,12 @@ def test_build_plan_from_order_requests_preserves_metadata() -> None:
             timestamp=ts(),
             row_index=88,
             fee_twd=12.3,
-            qff_symbol="QFFG6",
-            qff_expiry="2026-02-18",
+            tw_leg_symbol="QFFG6",
+            tw_leg_expiry="2026-02-18",
             contract_policy_state="active",
         ),
         OrderRequest(
-            broker=BrokerName.FUBON_QFF,
+            broker=BrokerName.FUBON,
             symbol="QFFG6",
             side=OrderSide.BUY,
             quantity=3,
@@ -206,15 +206,15 @@ def test_build_plan_from_order_requests_preserves_metadata() -> None:
             timestamp=ts(),
             row_index=88,
             fee_twd=45.6,
-            qff_symbol="QFFG6",
-            qff_expiry="2026-02-18",
+            tw_leg_symbol="QFFG6",
+            tw_leg_expiry="2026-02-18",
             contract_policy_state="active",
         ),
     )
 
     plan = pair_execution_plan_from_order_requests(
         plan_type=ExecutionPlanType.ENTRY,
-        direction=Direction.SHORT_TSM_LONG_QFF,
+        direction=Direction.SHORT_US_LONG_TW,
         requests=requests,
         reason="entry_zscore_crossed",
         decision_zscore=2.14,
@@ -223,8 +223,8 @@ def test_build_plan_from_order_requests_preserves_metadata() -> None:
     validated = validate_pair_execution_plan(plan)
 
     assert plan.row_index == 88
-    assert plan.qff_symbol == "QFFG6"
-    assert plan.qff_expiry == "2026-02-18"
+    assert plan.tw_leg_symbol == "QFFG6"
+    assert plan.tw_leg_expiry == "2026-02-18"
     assert plan.contract_policy_state == "active"
     assert plan.to_jsonable()["decision_spread_type"] == "shortSpread"
     assert validated.status == ExecutionPlanStatus.VALIDATED

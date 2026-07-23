@@ -143,7 +143,7 @@ def test_fubon_readonly_broker_fetches_margin_positions_and_orders() -> None:
     snapshot = broker.fetch_snapshot()
     broker.close()
 
-    assert snapshot.broker == BrokerName.FUBON_QFF
+    assert snapshot.broker == BrokerName.FUBON
     assert snapshot.account_id == "******789"
     assert snapshot.positions[0].symbol == "QFFG6"
     assert snapshot.positions[0].quantity == 2
@@ -242,7 +242,7 @@ def test_binance_readonly_broker_fetches_balance_positions_and_orders() -> None:
     snapshot = broker.fetch_snapshot()
     broker.close()
 
-    assert snapshot.broker == BrokerName.BINANCE_TSM
+    assert snapshot.broker == BrokerName.BINANCE
     assert snapshot.positions[0].symbol == "TSM/USDT:USDT"
     assert snapshot.positions[0].quantity == -12.5
     assert snapshot.open_orders[0].order_id == "BINANCE-1"

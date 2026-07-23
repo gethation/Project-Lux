@@ -41,8 +41,8 @@ class ExecutionLeg:
     timestamp: datetime
     row_index: int
     fee_twd: float = 0.0
-    qff_symbol: str | None = None
-    qff_expiry: str | None = None
+    tw_leg_symbol: str | None = None
+    tw_leg_expiry: str | None = None
     contract_policy_state: str | None = None
     order_type: str = ExecutionOrderType.MARKET.value
     expected_price: float | None = None
@@ -75,8 +75,8 @@ class PairExecutionPlan:
     reason: str = ""
     decision_zscore: float | None = None
     decision_spread_type: str | None = None
-    qff_symbol: str | None = None
-    qff_expiry: str | None = None
+    tw_leg_symbol: str | None = None
+    tw_leg_expiry: str | None = None
     contract_policy_state: str | None = None
     order_type: str = ExecutionOrderType.MARKET.value
     price_policy: str | None = None
@@ -147,7 +147,7 @@ class PairExecutionPlanValidator:
             broker_counts[leg.broker] = broker_counts.get(leg.broker, 0) + 1
         add(
             "required_brokers",
-            broker_counts == {BrokerName.BINANCE_TSM: 1, BrokerName.FUBON_QFF: 1},
+            broker_counts == {BrokerName.BINANCE: 1, BrokerName.FUBON: 1},
             "pair execution plan must contain one Binance TSM leg and one Fubon QFF leg",
             payload={broker.value: count for broker, count in broker_counts.items()},
         )
@@ -215,41 +215,41 @@ class PairExecutionPlanValidator:
                     },
                 )
 
-        tsm_leg = _single_leg(plan.legs, BrokerName.BINANCE_TSM)
-        qff_leg = _single_leg(plan.legs, BrokerName.FUBON_QFF)
+        us_leg_leg = _single_leg(plan.legs, BrokerName.BINANCE)
+        tw_leg_leg = _single_leg(plan.legs, BrokerName.FUBON)
 
-        if qff_leg is not None:
+        if tw_leg_leg is not None:
             add(
-                "qff_quantity_integer",
-                _is_integer_quantity(qff_leg.quantity),
+                "tw_leg_quantity_integer",
+                _is_integer_quantity(tw_leg_leg.quantity),
                 "Fubon QFF quantity must be an integer number of contracts",
-                broker=qff_leg.broker,
-                symbol=qff_leg.symbol,
-                payload={"quantity": qff_leg.quantity},
+                broker=tw_leg_leg.broker,
+                symbol=tw_leg_leg.symbol,
+                payload={"quantity": tw_leg_leg.quantity},
             )
             add(
-                "qff_symbol_present",
-                bool(plan.qff_symbol),
+                "tw_leg_symbol_present",
+                bool(plan.tw_leg_symbol),
                 "pair execution plan must include the active QFF symbol",
-                broker=qff_leg.broker,
-                symbol=qff_leg.symbol,
+                broker=tw_leg_leg.broker,
+                symbol=tw_leg_leg.symbol,
             )
-            if plan.qff_symbol:
+            if plan.tw_leg_symbol:
                 add(
-                    "qff_symbol_matches",
-                    qff_leg.symbol == plan.qff_symbol,
+                    "tw_leg_symbol_matches",
+                    tw_leg_leg.symbol == plan.tw_leg_symbol,
                     "Fubon QFF leg symbol must match the active QFF symbol",
-                    broker=qff_leg.broker,
-                    symbol=qff_leg.symbol,
+                    broker=tw_leg_leg.broker,
+                    symbol=tw_leg_leg.symbol,
                     payload={
-                        "expected_qff_symbol": plan.qff_symbol,
-                        "actual_symbol": qff_leg.symbol,
+                        "expected_tw_leg_symbol": plan.tw_leg_symbol,
+                        "actual_symbol": tw_leg_leg.symbol,
                     },
                 )
 
         expected_sides = expected_leg_sides(plan.plan_type, plan.direction)
         for broker, expected_side in expected_sides.items():
-            leg = tsm_leg if broker == BrokerName.BINANCE_TSM else qff_leg
+            leg = us_leg_leg if broker == BrokerName.BINANCE else tw_leg_leg
             if leg is None:
                 continue
             add(
@@ -279,13 +279,13 @@ def expected_leg_sides(
     direction: Direction,
 ) -> dict[BrokerName, OrderSide]:
     entry_sides = {
-        Direction.SHORT_TSM_LONG_QFF: {
-            BrokerName.BINANCE_TSM: OrderSide.SELL,
-            BrokerName.FUBON_QFF: OrderSide.BUY,
+        Direction.SHORT_US_LONG_TW: {
+            BrokerName.BINANCE: OrderSide.SELL,
+            BrokerName.FUBON: OrderSide.BUY,
         },
-        Direction.LONG_TSM_SHORT_QFF: {
-            BrokerName.BINANCE_TSM: OrderSide.BUY,
-            BrokerName.FUBON_QFF: OrderSide.SELL,
+        Direction.LONG_US_SHORT_TW: {
+            BrokerName.BINANCE: OrderSide.BUY,
+            BrokerName.FUBON: OrderSide.SELL,
         },
     }[direction]
     if plan_type == ExecutionPlanType.ENTRY:
@@ -325,8 +325,8 @@ def execution_leg_from_order_request(request: OrderRequest) -> ExecutionLeg:
         timestamp=request.timestamp,
         row_index=request.row_index,
         fee_twd=request.fee_twd,
-        qff_symbol=request.qff_symbol,
-        qff_expiry=request.qff_expiry,
+        tw_leg_symbol=request.tw_leg_symbol,
+        tw_leg_expiry=request.tw_leg_expiry,
         contract_policy_state=request.contract_policy_state,
         order_type=request.order_type,
         expected_price=request.expected_price,
@@ -348,8 +348,8 @@ def execution_leg_from_jsonable(payload: dict[str, Any]) -> ExecutionLeg:
         timestamp=datetime.fromisoformat(str(payload["timestamp"])),
         row_index=int(payload["row_index"]),
         fee_twd=float(payload.get("fee_twd", 0.0)),
-        qff_symbol=payload.get("qff_symbol"),
-        qff_expiry=payload.get("qff_expiry"),
+        tw_leg_symbol=payload.get("tw_leg_symbol"),
+        tw_leg_expiry=payload.get("tw_leg_expiry"),
         contract_policy_state=payload.get("contract_policy_state"),
         order_type=str(payload.get("order_type", ExecutionOrderType.MARKET.value)),
         expected_price=payload.get("expected_price"),
@@ -385,8 +385,8 @@ def pair_execution_plan_from_jsonable(payload: dict[str, Any]) -> PairExecutionP
         reason=str(payload.get("reason", "")),
         decision_zscore=payload.get("decision_zscore"),
         decision_spread_type=payload.get("decision_spread_type"),
-        qff_symbol=payload.get("qff_symbol"),
-        qff_expiry=payload.get("qff_expiry"),
+        tw_leg_symbol=payload.get("tw_leg_symbol"),
+        tw_leg_expiry=payload.get("tw_leg_expiry"),
         contract_policy_state=payload.get("contract_policy_state"),
         order_type=str(payload.get("order_type", ExecutionOrderType.MARKET.value)),
         price_policy=payload.get("price_policy"),
@@ -418,14 +418,14 @@ def pair_execution_plan_from_order_requests(
         raise ValueError("requests must contain at least one order request")
     timestamp = legs[0].timestamp
     row_index = legs[0].row_index
-    qff_leg = _single_leg(legs, BrokerName.FUBON_QFF)
-    qff_symbol = None
-    qff_expiry = None
+    tw_leg_leg = _single_leg(legs, BrokerName.FUBON)
+    tw_leg_symbol = None
+    tw_leg_expiry = None
     contract_policy_state = None
-    if qff_leg is not None:
-        qff_symbol = qff_leg.qff_symbol or qff_leg.symbol
-        qff_expiry = qff_leg.qff_expiry
-        contract_policy_state = qff_leg.contract_policy_state
+    if tw_leg_leg is not None:
+        tw_leg_symbol = tw_leg_leg.tw_leg_symbol or tw_leg_leg.symbol
+        tw_leg_expiry = tw_leg_leg.tw_leg_expiry
+        contract_policy_state = tw_leg_leg.contract_policy_state
     return PairExecutionPlan(
         plan_id=plan_id
         or make_execution_plan_id(
@@ -442,8 +442,8 @@ def pair_execution_plan_from_order_requests(
         reason=reason,
         decision_zscore=decision_zscore,
         decision_spread_type=decision_spread_type,
-        qff_symbol=qff_symbol,
-        qff_expiry=qff_expiry,
+        tw_leg_symbol=tw_leg_symbol,
+        tw_leg_expiry=tw_leg_expiry,
         contract_policy_state=contract_policy_state,
         order_type=order_type,
         price_policy=price_policy,

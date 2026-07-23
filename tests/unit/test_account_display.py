@@ -29,7 +29,7 @@ def binance_margin(*, upnl: float | None = 500.0, equity: float = 10_000.0) -> B
     if upnl is not None:
         raw["totalUnrealizedProfit"] = upnl
     return BrokerMarginSnapshot(
-        broker=BrokerName.BINANCE_TSM,
+        broker=BrokerName.BINANCE,
         currency="USDT",
         equity=equity,
         available=equity,
@@ -43,7 +43,7 @@ def fubon_margin(*, upnl: float | None = -20_000.0, equity: float = 900_000.0) -
     if upnl is not None:
         raw["unrealized_pnl"] = upnl
     return BrokerMarginSnapshot(
-        broker=BrokerName.FUBON_QFF,
+        broker=BrokerName.FUBON,
         currency="TWD",
         equity=equity,
         available=equity,
@@ -63,8 +63,8 @@ def provider(brokers, *, rate: float | None = RATE) -> AccountDisplayProvider:
 def fakes(binance: tuple = (), fubon: tuple = ()) -> tuple:
     # Provider expects (fubon, binance).
     return (
-        FakeReadOnlyBroker(BrokerName.FUBON_QFF, margins=fubon),
-        FakeReadOnlyBroker(BrokerName.BINANCE_TSM, margins=binance),
+        FakeReadOnlyBroker(BrokerName.FUBON, margins=fubon),
+        FakeReadOnlyBroker(BrokerName.BINANCE, margins=binance),
     )
 
 
@@ -151,8 +151,8 @@ def test_fetch_failure_keeps_last_known_and_marks_stale(
 
     # Force the next fetch to raise; the loop must not crash, values are retained.
     p._brokers = (
-        FakeReadOnlyBroker(BrokerName.FUBON_QFF, fetch_error=RuntimeError("boom")),
-        FakeReadOnlyBroker(BrokerName.BINANCE_TSM, fetch_error=RuntimeError("boom")),
+        FakeReadOnlyBroker(BrokerName.FUBON, fetch_error=RuntimeError("boom")),
+        FakeReadOnlyBroker(BrokerName.BINANCE, fetch_error=RuntimeError("boom")),
     )
     stale = p.refresh(notional_twd=NOTIONAL)
 
@@ -191,8 +191,8 @@ def test_provider_prefers_lightweight_fetch_margins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LUX_READONLY_BROKER", "1")
-    fubon = MarginsOnlyBroker(BrokerName.FUBON_QFF, (fubon_margin(),))
-    binance = MarginsOnlyBroker(BrokerName.BINANCE_TSM, (binance_margin(),))
+    fubon = MarginsOnlyBroker(BrokerName.FUBON, (fubon_margin(),))
+    binance = MarginsOnlyBroker(BrokerName.BINANCE, (binance_margin(),))
     p = provider((fubon, binance))
 
     display = p.refresh(notional_twd=NOTIONAL)
@@ -209,8 +209,8 @@ def test_first_fetch_failure_returns_na_without_raising(
     monkeypatch.setenv("LUX_READONLY_BROKER", "1")
     p = provider(
         (
-            FakeReadOnlyBroker(BrokerName.FUBON_QFF, fetch_error=RuntimeError("boom")),
-            FakeReadOnlyBroker(BrokerName.BINANCE_TSM, fetch_error=RuntimeError("boom")),
+            FakeReadOnlyBroker(BrokerName.FUBON, fetch_error=RuntimeError("boom")),
+            FakeReadOnlyBroker(BrokerName.BINANCE, fetch_error=RuntimeError("boom")),
         )
     )
 

@@ -25,7 +25,7 @@ def test_order_and_fill_ids_are_append_only(tmp_path) -> None:
     store.initialize()
     try:
         request = OrderRequest(
-            broker=BrokerName.FUBON_QFF,
+            broker=BrokerName.FUBON,
             symbol="QFFH6",
             side=OrderSide.BUY,
             quantity=1,
@@ -37,7 +37,7 @@ def test_order_and_fill_ids_are_append_only(tmp_path) -> None:
         fill = Fill(
             fill_id="FUBON-FILL-LUX-FUBON-attempt-1",
             order_id=order.order_id,
-            broker=BrokerName.FUBON_QFF,
+            broker=BrokerName.FUBON,
             symbol="QFFH6",
             side=OrderSide.BUY,
             quantity=1,

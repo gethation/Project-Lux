@@ -121,7 +121,7 @@ class DryRunExecutionSimulator:
 
     def _target_leg(self, plan: PairExecutionPlan) -> ExecutionLeg:
         for leg in plan.legs:
-            if leg.broker == BrokerName.BINANCE_TSM:
+            if leg.broker == BrokerName.BINANCE:
                 return leg
         if not plan.legs:
             raise RuntimeError("Cannot simulate execution without execution legs")

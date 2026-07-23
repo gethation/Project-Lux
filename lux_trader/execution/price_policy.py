@@ -20,7 +20,7 @@ def apply_live_touch_market_price_policy(
     *,
     max_plan_age_seconds: int | None = None,
     plan_age_seconds: float = 0.0,
-    tsm_contract_multiplier: float = 5.0,
+    us_leg_contract_multiplier: float = 5.0,
 ) -> PairExecutionPlan:
     return replace(
         plan,
@@ -28,7 +28,7 @@ def apply_live_touch_market_price_policy(
             _apply_leg_price_policy(
                 leg,
                 quote_set,
-                tsm_contract_multiplier=tsm_contract_multiplier,
+                us_leg_contract_multiplier=us_leg_contract_multiplier,
             )
             for leg in plan.legs
         ),
@@ -43,39 +43,39 @@ def _apply_leg_price_policy(
     leg: ExecutionLeg,
     quote_set: LiveQuoteSet,
     *,
-    tsm_contract_multiplier: float,
+    us_leg_contract_multiplier: float,
 ) -> ExecutionLeg:
-    if leg.broker == BrokerName.BINANCE_TSM:
-        return _apply_binance_tsm_price_policy(
+    if leg.broker == BrokerName.BINANCE:
+        return _apply_binance_us_leg_price_policy(
             leg,
             quote_set,
-            tsm_contract_multiplier=tsm_contract_multiplier,
+            us_leg_contract_multiplier=us_leg_contract_multiplier,
         )
-    if leg.broker == BrokerName.FUBON_QFF:
-        return _apply_qff_price_policy(leg, quote_set.qff)
+    if leg.broker == BrokerName.FUBON:
+        return _apply_tw_leg_price_policy(leg, quote_set.tw_leg)
     return leg
 
 
-def _apply_binance_tsm_price_policy(
+def _apply_binance_us_leg_price_policy(
     leg: ExecutionLeg,
     quote_set: LiveQuoteSet,
     *,
-    tsm_contract_multiplier: float,
+    us_leg_contract_multiplier: float,
 ) -> ExecutionLeg:
-    trigger_bid = _combined_tsm_contract_twd_price(
-        quote_set.tsm.bid,
+    trigger_bid = _combined_us_leg_contract_twd_price(
+        quote_set.us_leg.bid,
         quote_set.usdttwd.bid,
-        tsm_contract_multiplier,
+        us_leg_contract_multiplier,
     )
-    trigger_ask = _combined_tsm_contract_twd_price(
-        quote_set.tsm.ask,
+    trigger_ask = _combined_us_leg_contract_twd_price(
+        quote_set.us_leg.ask,
         quote_set.usdttwd.ask,
-        tsm_contract_multiplier,
+        us_leg_contract_multiplier,
     )
-    trigger_mid = _combined_tsm_contract_twd_price(
-        quote_set.tsm.price,
+    trigger_mid = _combined_us_leg_contract_twd_price(
+        quote_set.us_leg.price,
         quote_set.usdttwd.price,
-        tsm_contract_multiplier,
+        us_leg_contract_multiplier,
     )
     expected = _side_expected_price(
         leg.side,
@@ -85,15 +85,15 @@ def _apply_binance_tsm_price_policy(
     raw = {
         **(leg.raw or {}),
         "price_policy": LIVE_TOUCH_MARKET_PRICE_POLICY,
-        "tsm_bid": quote_set.tsm.bid,
-        "tsm_ask": quote_set.tsm.ask,
-        "tsm_price": quote_set.tsm.price,
-        "tsm_timestamp": quote_set.tsm.timestamp,
+        "us_leg_bid": quote_set.us_leg.bid,
+        "us_leg_ask": quote_set.us_leg.ask,
+        "us_leg_price": quote_set.us_leg.price,
+        "us_leg_timestamp": quote_set.us_leg.timestamp,
         "usdttwd_bid": quote_set.usdttwd.bid,
         "usdttwd_ask": quote_set.usdttwd.ask,
         "usdttwd_price": quote_set.usdttwd.price,
         "usdttwd_timestamp": quote_set.usdttwd.timestamp,
-        "tsm_contract_multiplier": tsm_contract_multiplier,
+        "us_leg_contract_multiplier": us_leg_contract_multiplier,
         "accounting_price": leg.price,
     }
     return replace(
@@ -104,12 +104,12 @@ def _apply_binance_tsm_price_policy(
         trigger_bid=trigger_bid,
         trigger_ask=trigger_ask,
         trigger_mid=trigger_mid,
-        price_source="tsm_usdttwd_top_of_book_twd_fair",
+        price_source="us_leg_usdttwd_top_of_book_twd_fair",
         raw=raw,
     )
 
 
-def _apply_qff_price_policy(leg: ExecutionLeg, quote: LiveQuote) -> ExecutionLeg:
+def _apply_tw_leg_price_policy(leg: ExecutionLeg, quote: LiveQuote) -> ExecutionLeg:
     expected = _side_expected_price(
         leg.side,
         bid=quote.bid,
@@ -118,10 +118,10 @@ def _apply_qff_price_policy(leg: ExecutionLeg, quote: LiveQuote) -> ExecutionLeg
     raw = {
         **(leg.raw or {}),
         "price_policy": LIVE_TOUCH_MARKET_PRICE_POLICY,
-        "qff_bid": quote.bid,
-        "qff_ask": quote.ask,
-        "qff_price": quote.price,
-        "qff_timestamp": quote.timestamp,
+        "tw_leg_bid": quote.bid,
+        "tw_leg_ask": quote.ask,
+        "tw_leg_price": quote.price,
+        "tw_leg_timestamp": quote.timestamp,
         "accounting_price": leg.price,
     }
     return replace(
@@ -132,7 +132,7 @@ def _apply_qff_price_policy(leg: ExecutionLeg, quote: LiveQuote) -> ExecutionLeg
         trigger_bid=quote.bid,
         trigger_ask=quote.ask,
         trigger_mid=quote.price,
-        price_source="qff_top_of_book",
+        price_source="tw_leg_top_of_book",
         raw=raw,
     )
 
@@ -150,21 +150,21 @@ def _side_expected_price(
     return None
 
 
-def _combined_tsm_twd_price(
-    tsm_price: float | None,
+def _combined_us_leg_twd_price(
+    us_leg_price: float | None,
     usdttwd_price: float | None,
 ) -> float | None:
-    if tsm_price is None or usdttwd_price is None:
+    if us_leg_price is None or usdttwd_price is None:
         return None
-    return tsm_price * usdttwd_price / 5.0
+    return us_leg_price * usdttwd_price / 5.0
 
 
-def _combined_tsm_contract_twd_price(
-    tsm_price: float | None,
+def _combined_us_leg_contract_twd_price(
+    us_leg_price: float | None,
     usdttwd_price: float | None,
     multiplier: float,
 ) -> float | None:
-    tsm_twd_price = _combined_tsm_twd_price(tsm_price, usdttwd_price)
-    if tsm_twd_price is None:
+    us_leg_twd_price = _combined_us_leg_twd_price(us_leg_price, usdttwd_price)
+    if us_leg_twd_price is None:
         return None
-    return tsm_twd_price * float(multiplier)
+    return us_leg_twd_price * float(multiplier)

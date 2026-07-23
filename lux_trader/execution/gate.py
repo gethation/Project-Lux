@@ -115,10 +115,10 @@ def evaluate_live_execution_gate(
         payload={"actual": config.live_execution.enabled},
     )
     add(
-        "execution_order_qff_first",
-        config.live_execution.qff_first,
-        "first live execution policy requires qff_first=true",
-        payload={"actual": config.live_execution.qff_first},
+        "execution_order_tw_leg_first",
+        config.live_execution.tw_leg_first,
+        "first live execution policy requires tw_leg_first=true",
+        payload={"actual": config.live_execution.tw_leg_first},
     )
 
     for name, enabled in live_order_env_gates(environ).items():

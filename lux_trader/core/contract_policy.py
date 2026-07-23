@@ -10,7 +10,7 @@ from .time import TAIPEI_TZ
 
 
 @dataclass(frozen=True)
-class QffContractSelection:
+class TwLegContractSelection:
     symbol: str
     expiry: date
     raw: dict[str, Any]
@@ -28,9 +28,9 @@ class ExpiryBufferContractPolicy:
         *,
         product: str,
         now: datetime | None = None,
-    ) -> QffContractSelection:
+    ) -> TwLegContractSelection:
         now = ensure_policy_time(now)
-        parsed: list[QffContractSelection] = []
+        parsed: list[TwLegContractSelection] = []
         rejected: list[str] = []
         for candidate in candidates:
             raw = row_to_dict(candidate)
@@ -48,7 +48,7 @@ class ExpiryBufferContractPolicy:
             remaining = business_days_between(now.date(), expiry, self.holidays)
             if remaining >= self.config.min_business_days_to_expiry:
                 parsed.append(
-                    QffContractSelection(
+                    TwLegContractSelection(
                         symbol=symbol,
                         expiry=expiry,
                         raw=raw,

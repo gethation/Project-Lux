@@ -7,8 +7,8 @@ from typing import Any
 
 
 class Direction(StrEnum):
-    SHORT_TSM_LONG_QFF = "short_tsm_long_qff"
-    LONG_TSM_SHORT_QFF = "long_tsm_short_qff"
+    SHORT_US_LONG_TW = "short_us_long_tw"
+    LONG_US_SHORT_TW = "long_us_short_tw"
 
 
 class StrategyState(StrEnum):
@@ -33,8 +33,8 @@ class OrderStatus(StrEnum):
 
 
 class BrokerName(StrEnum):
-    FUBON_QFF = "FUBON_QFF"
-    BINANCE_TSM = "BINANCE_TSM"
+    FUBON = "FUBON"
+    BINANCE = "BINANCE"
 
 
 class StrategyAction(StrEnum):
@@ -54,14 +54,14 @@ class StrategyAction(StrEnum):
 class MarketBar:
     row_index: int
     timestamp: datetime
-    qff_close: float | None
-    qff_close_filled: float
-    tsm_twd_fair: float
+    tw_leg_close: float | None
+    tw_leg_close_filled: float
+    us_leg_twd_fair: float
     spread: float
-    qff_entry_price: float | None = None
-    tsm_entry_twd_fair: float | None = None
-    qff_was_filled: bool = False
-    qff_entry_open_was_filled: bool = False
+    tw_leg_entry_price: float | None = None
+    us_leg_entry_twd_fair: float | None = None
+    tw_leg_was_filled: bool = False
+    tw_leg_entry_open_was_filled: bool = False
     expected_zscore: float | None = None
     expected_zscore_valid: bool | None = None
     entry_allowed: bool = False
@@ -69,8 +69,8 @@ class MarketBar:
     friday_night_close_only: bool = False
     weekend_session_close_only: bool = False
     friday_session_end_force_close: bool = False
-    qff_symbol: str | None = None
-    qff_expiry: str | None = None
+    tw_leg_symbol: str | None = None
+    tw_leg_expiry: str | None = None
     contract_policy_state: str | None = None
 
 
@@ -91,21 +91,21 @@ class IndicatorSnapshot:
 
 @dataclass(frozen=True)
 class PositionSizing:
-    tsm_units: float
-    qff_units: float
-    qff_contracts: int
-    raw_qff_contracts: float
+    us_leg_units: float
+    tw_leg_units: float
+    tw_leg_contracts: int
+    raw_tw_leg_contracts: float
     actual_leg_notional_twd: float
 
 
 @dataclass(frozen=True)
 class Position:
     direction: Direction
-    tsm_units: float
-    qff_units: float
-    qff_contracts: int
-    entry_tsm_twd_fair: float
-    entry_qff_close: float
+    us_leg_units: float
+    tw_leg_units: float
+    tw_leg_contracts: int
+    entry_us_leg_twd_fair: float
+    entry_tw_leg_close: float
     entry_time: datetime
     entry_zscore: float | None
 
@@ -128,8 +128,8 @@ class OrderRequest:
     timestamp: datetime
     row_index: int
     fee_twd: float = 0.0
-    qff_symbol: str | None = None
-    qff_expiry: str | None = None
+    tw_leg_symbol: str | None = None
+    tw_leg_expiry: str | None = None
     contract_policy_state: str | None = None
     order_type: str = "market"
     expected_price: float | None = None
@@ -158,8 +158,8 @@ class Fill:
     fee_twd: float
     timestamp: datetime
     row_index: int
-    qff_symbol: str | None = None
-    qff_expiry: str | None = None
+    tw_leg_symbol: str | None = None
+    tw_leg_expiry: str | None = None
     contract_policy_state: str | None = None
 
 

@@ -10,8 +10,8 @@
 # not the config directory; keep CLI invocations rooted at the repo.
 input_csv = 'tests/fixtures/replay/spread_zscore_w500.csv'
 store_path = 'data/replay_fixture.sqlite3'
-qff_ohlcv_csv = 'tests/fixtures/replay/qff1_1m_open.csv'
-tsm_ohlcv_csv = 'tests/fixtures/replay/binance_tsm_open.csv'
+tw_leg_ohlcv_csv = 'tests/fixtures/replay/qff1_1m_open.csv'
+us_leg_ohlcv_csv = 'tests/fixtures/replay/binance_tsm_open.csv'
 usdttwd_ohlcv_csv = 'tests/fixtures/replay/bitopro_usdttwd_open.csv'
 
 [strategy]
@@ -23,11 +23,11 @@ max_entry_delay_minutes = 15
 zscore_window = 500
 
 [fees]
-tsm_fee_bps = 5.0
-qff_fee_per_contract_twd = 5.0
-qff_tax_rate = 0.00002
-qff_contract_multiplier = 100.0
-tsm_contract_multiplier = 5.0
+us_leg_fee_bps = 5.0
+tw_leg_fee_per_contract_twd = 5.0
+tw_leg_tax_rate = 0.00002
+tw_leg_contract_multiplier = 100.0
+us_leg_contract_multiplier = 5.0
 
 [safety]
 allow_live_order = false

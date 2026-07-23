@@ -32,8 +32,8 @@ SQLITE_SCHEMA = r"""
                 quantity REAL NOT NULL,
                 price REAL NOT NULL,
                 status TEXT NOT NULL,
-                qff_symbol TEXT,
-                qff_expiry TEXT,
+                tw_leg_symbol TEXT,
+                tw_leg_expiry TEXT,
                 contract_policy_state TEXT,
                 payload_json TEXT NOT NULL
             );
@@ -49,8 +49,8 @@ SQLITE_SCHEMA = r"""
                 quantity REAL NOT NULL,
                 price REAL NOT NULL,
                 fee_twd REAL NOT NULL,
-                qff_symbol TEXT,
-                qff_expiry TEXT,
+                tw_leg_symbol TEXT,
+                tw_leg_expiry TEXT,
                 contract_policy_state TEXT,
                 payload_json TEXT NOT NULL,
                 FOREIGN KEY(order_id) REFERENCES orders(order_id)
@@ -62,9 +62,9 @@ SQLITE_SCHEMA = r"""
                 timestamp TEXT NOT NULL,
                 state TEXT NOT NULL,
                 direction TEXT,
-                tsm_units REAL NOT NULL,
-                qff_units REAL NOT NULL,
-                qff_contracts INTEGER NOT NULL,
+                us_leg_units REAL NOT NULL,
+                tw_leg_units REAL NOT NULL,
+                tw_leg_contracts INTEGER NOT NULL,
                 actual_leg_notional_twd REAL NOT NULL,
                 realized_pnl REAL NOT NULL,
                 unrealized_pnl REAL NOT NULL,
@@ -84,14 +84,14 @@ SQLITE_SCHEMA = r"""
                 friday_night_close_only INTEGER NOT NULL,
                 weekend_session_close_only INTEGER NOT NULL DEFAULT 0,
                 friday_session_end_force_close INTEGER NOT NULL DEFAULT 0,
-                qff_close_filled REAL NOT NULL,
-                tsm_twd_fair REAL NOT NULL,
-                qff_was_filled INTEGER NOT NULL DEFAULT 0,
-                qff_entry_price REAL,
-                tsm_entry_twd_fair REAL,
-                qff_entry_open_was_filled INTEGER NOT NULL DEFAULT 0,
-                qff_symbol TEXT,
-                qff_expiry TEXT,
+                tw_leg_close_filled REAL NOT NULL,
+                us_leg_twd_fair REAL NOT NULL,
+                tw_leg_was_filled INTEGER NOT NULL DEFAULT 0,
+                tw_leg_entry_price REAL,
+                us_leg_entry_twd_fair REAL,
+                tw_leg_entry_open_was_filled INTEGER NOT NULL DEFAULT 0,
+                tw_leg_symbol TEXT,
+                tw_leg_expiry TEXT,
                 contract_policy_state TEXT,
                 short_spread REAL,
                 short_zscore REAL,
@@ -101,9 +101,9 @@ SQLITE_SCHEMA = r"""
                 decision_zscore REAL,
                 state TEXT NOT NULL,
                 position TEXT NOT NULL,
-                tsm_units REAL NOT NULL,
-                qff_units REAL NOT NULL,
-                qff_contracts INTEGER NOT NULL,
+                us_leg_units REAL NOT NULL,
+                tw_leg_units REAL NOT NULL,
+                tw_leg_contracts INTEGER NOT NULL,
                 actual_leg_notional_twd REAL NOT NULL,
                 realized_pnl REAL NOT NULL,
                 realized_fee_twd REAL NOT NULL,
@@ -124,18 +124,18 @@ SQLITE_SCHEMA = r"""
                 entry_delay_minutes INTEGER NOT NULL,
                 entry_fill_zscore REAL,
                 direction TEXT NOT NULL,
-                entry_tsm_twd_fair REAL NOT NULL,
-                entry_qff_close REAL NOT NULL,
-                tsm_units REAL NOT NULL,
-                qff_units REAL NOT NULL,
-                qff_contracts INTEGER NOT NULL,
-                raw_qff_contracts REAL NOT NULL,
+                entry_us_leg_twd_fair REAL NOT NULL,
+                entry_tw_leg_close REAL NOT NULL,
+                us_leg_units REAL NOT NULL,
+                tw_leg_units REAL NOT NULL,
+                tw_leg_contracts INTEGER NOT NULL,
+                raw_tw_leg_contracts REAL NOT NULL,
                 leg_notional_twd REAL NOT NULL,
                 actual_leg_notional_twd REAL NOT NULL,
-                qff_contract_multiplier REAL NOT NULL,
-                entry_tsm_fee_twd REAL NOT NULL,
-                entry_qff_fee_twd REAL NOT NULL,
-                entry_qff_tax_twd REAL NOT NULL,
+                tw_leg_contract_multiplier REAL NOT NULL,
+                entry_us_leg_fee_twd REAL NOT NULL,
+                entry_tw_leg_fee_twd REAL NOT NULL,
+                entry_tw_leg_tax_twd REAL NOT NULL,
                 entry_fee_twd REAL NOT NULL,
                 exit_signal_idx INTEGER NOT NULL,
                 exit_signal_time TEXT NOT NULL,
@@ -143,25 +143,25 @@ SQLITE_SCHEMA = r"""
                 exit_idx INTEGER NOT NULL,
                 exit_time TEXT NOT NULL,
                 exit_fill_zscore REAL,
-                exit_tsm_twd_fair REAL NOT NULL,
-                exit_qff_close REAL NOT NULL,
-                tsm_pnl REAL NOT NULL,
-                qff_pnl REAL NOT NULL,
+                exit_us_leg_twd_fair REAL NOT NULL,
+                exit_tw_leg_close REAL NOT NULL,
+                us_leg_pnl REAL NOT NULL,
+                tw_leg_pnl REAL NOT NULL,
                 gross_pnl_twd REAL NOT NULL,
-                exit_tsm_fee_twd REAL NOT NULL,
-                exit_qff_fee_twd REAL NOT NULL,
-                exit_qff_tax_twd REAL NOT NULL,
+                exit_us_leg_fee_twd REAL NOT NULL,
+                exit_tw_leg_fee_twd REAL NOT NULL,
+                exit_tw_leg_tax_twd REAL NOT NULL,
                 exit_fee_twd REAL NOT NULL,
-                tsm_fee_twd REAL NOT NULL,
-                qff_fee_twd REAL NOT NULL,
-                qff_tax_twd REAL NOT NULL,
+                us_leg_fee_twd REAL NOT NULL,
+                tw_leg_fee_twd REAL NOT NULL,
+                tw_leg_tax_twd REAL NOT NULL,
                 total_fee_twd REAL NOT NULL,
                 net_pnl_twd REAL NOT NULL,
                 total_pnl REAL NOT NULL,
                 exit_reason TEXT NOT NULL,
                 holding_minutes INTEGER NOT NULL,
-                qff_symbol TEXT,
-                qff_expiry TEXT,
+                tw_leg_symbol TEXT,
+                tw_leg_expiry TEXT,
                 contract_policy_state TEXT,
                 payload_json TEXT NOT NULL
             );
@@ -180,13 +180,13 @@ SQLITE_SCHEMA = r"""
 
             CREATE TABLE IF NOT EXISTS warmup_bars (
                 timestamp TEXT PRIMARY KEY,
-                qff_close REAL,
-                qff_close_filled REAL NOT NULL,
-                tsm_twd_fair REAL NOT NULL,
+                tw_leg_close REAL,
+                tw_leg_close_filled REAL NOT NULL,
+                us_leg_twd_fair REAL NOT NULL,
                 spread REAL NOT NULL,
-                qff_was_filled INTEGER NOT NULL DEFAULT 0,
-                qff_symbol TEXT,
-                qff_expiry TEXT,
+                tw_leg_was_filled INTEGER NOT NULL DEFAULT 0,
+                tw_leg_symbol TEXT,
+                tw_leg_expiry TEXT,
                 contract_policy_state TEXT
             );
 
@@ -195,7 +195,7 @@ SQLITE_SCHEMA = r"""
                 started_at TEXT NOT NULL,
                 finished_at TEXT,
                 mode TEXT NOT NULL,
-                qff_symbol TEXT,
+                tw_leg_symbol TEXT,
                 status TEXT NOT NULL,
                 payload_json TEXT NOT NULL
             );
@@ -245,8 +245,8 @@ SQLITE_SCHEMA = r"""
                 reason TEXT NOT NULL,
                 decision_zscore REAL,
                 decision_spread_type TEXT,
-                qff_symbol TEXT,
-                qff_expiry TEXT,
+                tw_leg_symbol TEXT,
+                tw_leg_expiry TEXT,
                 contract_policy_state TEXT,
                 payload_json TEXT NOT NULL
             );
@@ -262,8 +262,8 @@ SQLITE_SCHEMA = r"""
                 quantity REAL NOT NULL,
                 price REAL NOT NULL,
                 fee_twd REAL NOT NULL,
-                qff_symbol TEXT,
-                qff_expiry TEXT,
+                tw_leg_symbol TEXT,
+                tw_leg_expiry TEXT,
                 contract_policy_state TEXT,
                 payload_json TEXT NOT NULL,
                 FOREIGN KEY(plan_id) REFERENCES execution_plans(plan_id)
@@ -312,7 +312,7 @@ SQLITE_SCHEMA = r"""
                 settled_at TEXT,
                 status TEXT NOT NULL,
                 row_index INTEGER NOT NULL,
-                qff_symbol TEXT NOT NULL,
+                tw_leg_symbol TEXT NOT NULL,
                 reason TEXT NOT NULL,
                 original_state_json TEXT NOT NULL,
                 settlement_json TEXT
@@ -401,8 +401,8 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
 
 def ensure_live_metadata_columns(connection: sqlite3.Connection) -> None:
     for table in ("orders", "fills", "bars", "trades", "warmup_bars"):
-        ensure_column(connection, table, "qff_symbol", "TEXT")
-        ensure_column(connection, table, "qff_expiry", "TEXT")
+        ensure_column(connection, table, "tw_leg_symbol", "TEXT")
+        ensure_column(connection, table, "tw_leg_expiry", "TEXT")
         ensure_column(connection, table, "contract_policy_state", "TEXT")
     for column in (
         "short_spread",
@@ -410,18 +410,18 @@ def ensure_live_metadata_columns(connection: sqlite3.Connection) -> None:
         "long_spread",
         "long_zscore",
         "decision_zscore",
-        "qff_entry_price",
-        "tsm_entry_twd_fair",
+        "tw_leg_entry_price",
+        "us_leg_entry_twd_fair",
     ):
         ensure_column(connection, "bars", column, "REAL")
     for column in (
         "weekend_session_close_only",
         "friday_session_end_force_close",
-        "qff_was_filled",
-        "qff_entry_open_was_filled",
+        "tw_leg_was_filled",
+        "tw_leg_entry_open_was_filled",
     ):
         ensure_column(connection, "bars", column, "INTEGER NOT NULL DEFAULT 0")
-    ensure_column(connection, "warmup_bars", "qff_was_filled", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection, "warmup_bars", "tw_leg_was_filled", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(connection, "bars", "decision_spread_type", "TEXT")
 
 

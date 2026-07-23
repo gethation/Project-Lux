@@ -26,7 +26,7 @@ def live_enabled_config(tmp_path):
     return replace(
         base,
         safety=replace(base.safety, allow_live_order=True),
-        live=replace(base.live, qff_symbol="QFFG6"),
+        live=replace(base.live, tw_leg_symbol="QFFG6"),
         live_execution=replace(base.live_execution, enabled=True),
     )
 
@@ -45,10 +45,10 @@ def matched_report(config, timestamp: datetime) -> ReconciliationReport:
         status=ReconciliationStatus.MATCHED,
         expected=ExpectedBrokerState(
             timestamp=timestamp,
-            tsm_symbol=config.live.binance_symbol,
-            qff_symbol=config.live.qff_symbol,
-            expected_tsm_units=0.0,
-            expected_qff_contracts=0,
+            us_leg_symbol=config.live.binance_symbol,
+            tw_leg_symbol=config.live.tw_leg_symbol,
+            expected_us_leg_units=0.0,
+            expected_tw_leg_contracts=0,
         ),
         snapshots=(),
         issues=(),
@@ -59,14 +59,14 @@ def report_with_open_order(config, timestamp: datetime) -> ReconciliationReport:
     issue = ReconciliationIssue(
         status=ReconciliationStatus.WARNING,
         issue_type="unexpected_open_order",
-        broker=BrokerName.FUBON_QFF,
-        symbol=config.live.qff_symbol,
-        message="FUBON_QFF has open order TEST QFFG6",
+        broker=BrokerName.FUBON,
+        symbol=config.live.tw_leg_symbol,
+        message="FUBON has open order TEST QFFG6",
         payload={
             "order": BrokerOrderSnapshot(
-                broker=BrokerName.FUBON_QFF,
+                broker=BrokerName.FUBON,
                 order_id="TEST",
-                symbol=config.live.qff_symbol,
+                symbol=config.live.tw_leg_symbol,
                 side=OrderSide.BUY,
                 quantity=1,
                 status="open",
