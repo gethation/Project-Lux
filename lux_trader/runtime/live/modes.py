@@ -960,7 +960,8 @@ def execute_dry_run_entry(
         bar.us_leg_twd_fair,
         bar.tw_leg_close_filled,
         strategy.strategy,
-        strategy.fees,
+        tw_leg_contract_multiplier=strategy.tw_leg_contract_multiplier,
+        us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
     )
     if sizing is None:
         clear_entry_candidate(state)
@@ -981,6 +982,8 @@ def execute_dry_run_entry(
         tw_leg_contracts=sizing.tw_leg_contracts,
         tw_leg_price=bar.tw_leg_close_filled,
         fees=strategy.fees,
+        tw_leg_contract_multiplier=strategy.tw_leg_contract_multiplier,
+        us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
     )
     requests = strategy.build_entry_order_requests(
         bar=bar,
@@ -1002,7 +1005,7 @@ def execute_dry_run_entry(
             quote_set,
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
-            us_leg_contract_multiplier=strategy.fees.us_leg_contract_multiplier,
+            us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:
@@ -1061,6 +1064,8 @@ def execute_dry_run_exit(
         tw_leg_contracts=state.tw_leg_contracts,
         tw_leg_price=bar.tw_leg_close_filled,
         fees=strategy.fees,
+        tw_leg_contract_multiplier=strategy.tw_leg_contract_multiplier,
+        us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
     )
     requests = strategy.build_exit_order_requests(bar=bar, costs=costs)
     plan = pair_execution_plan_from_order_requests(
@@ -1077,7 +1082,7 @@ def execute_dry_run_exit(
             quote_set,
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
-            us_leg_contract_multiplier=strategy.fees.us_leg_contract_multiplier,
+            us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:
@@ -1157,7 +1162,8 @@ def execute_live_entry(
         bar.us_leg_twd_fair,
         bar.tw_leg_close_filled,
         strategy.strategy,
-        strategy.fees,
+        tw_leg_contract_multiplier=strategy.tw_leg_contract_multiplier,
+        us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
     )
     if sizing is None:
         clear_entry_candidate(state)
@@ -1178,6 +1184,8 @@ def execute_live_entry(
         tw_leg_contracts=sizing.tw_leg_contracts,
         tw_leg_price=bar.tw_leg_close_filled,
         fees=strategy.fees,
+        tw_leg_contract_multiplier=strategy.tw_leg_contract_multiplier,
+        us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
     )
     requests = strategy.build_entry_order_requests(
         bar=bar,
@@ -1199,7 +1207,7 @@ def execute_live_entry(
             quote_set,
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
-            us_leg_contract_multiplier=strategy.fees.us_leg_contract_multiplier,
+            us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:
@@ -1209,7 +1217,7 @@ def execute_live_entry(
                 outcome.fills,
                 us_leg_symbol=strategy.us_leg_symbol,
                 tw_leg_symbol=bar.tw_leg_symbol or strategy.tw_leg_symbol,
-                tw_leg_contract_multiplier=strategy.fees.tw_leg_contract_multiplier,
+                tw_leg_contract_multiplier=strategy.tw_leg_contract_multiplier,
             )
         except ExecutedPositionError:
             clear_entry_candidate(state)
@@ -1229,6 +1237,8 @@ def execute_live_entry(
             tw_leg_contracts=executed_sizing.tw_leg_contracts,
             tw_leg_price=bar.tw_leg_close_filled,
             fees=strategy.fees,
+            tw_leg_contract_multiplier=strategy.tw_leg_contract_multiplier,
+            us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
         )
         result = strategy.apply_entry_execution(
             bar=bar,
@@ -1285,6 +1295,8 @@ def execute_live_exit(
         tw_leg_contracts=state.tw_leg_contracts,
         tw_leg_price=bar.tw_leg_close_filled,
         fees=strategy.fees,
+        tw_leg_contract_multiplier=strategy.tw_leg_contract_multiplier,
+        us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
     )
     requests = strategy.build_exit_order_requests(bar=bar, costs=costs)
     plan = pair_execution_plan_from_order_requests(
@@ -1301,7 +1313,7 @@ def execute_live_exit(
             quote_set,
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
-            us_leg_contract_multiplier=strategy.fees.us_leg_contract_multiplier,
+            us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:

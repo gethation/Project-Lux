@@ -1995,7 +1995,11 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
     store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
-        summary = store.build_summary(config.strategy, config.fees)
+        summary = store.build_summary(
+            config.strategy,
+            config.fees,
+            tw_leg_contract_multiplier=config.active_pair.tw_leg.contract_multiplier,
+        )
         assert summary["rows"] == 1
         assert summary["trade_count"] == 0
         row = store.connection.execute(

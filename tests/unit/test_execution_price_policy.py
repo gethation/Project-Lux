@@ -95,6 +95,7 @@ def test_short_entry_price_policy_uses_sell_bid_and_buy_ask() -> None:
         pair_plan(Direction.SHORT_US_LONG_TW, timestamp),
         quote_set(timestamp),
         max_plan_age_seconds=120,
+        us_leg_contract_multiplier=5.0,
     )
 
     us_leg = leg_by_broker(plan, BrokerName.BINANCE)
@@ -121,6 +122,7 @@ def test_long_entry_price_policy_uses_buy_ask_and_sell_bid() -> None:
         pair_plan(Direction.LONG_US_SHORT_TW, timestamp),
         quote_set(timestamp),
         max_plan_age_seconds=120,
+        us_leg_contract_multiplier=5.0,
     )
 
     us_leg = leg_by_broker(plan, BrokerName.BINANCE)
@@ -137,6 +139,7 @@ def test_price_policy_plan_validates_and_simulated_fill_uses_expected_price() ->
         pair_plan(Direction.SHORT_US_LONG_TW, timestamp),
         quote_set(timestamp),
         max_plan_age_seconds=120,
+        us_leg_contract_multiplier=5.0,
     )
 
     validated = validate_pair_execution_plan(plan)

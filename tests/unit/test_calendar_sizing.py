@@ -168,20 +168,22 @@ def test_weekend_force_exit_is_false_outside_trading_hours() -> None:
     )
 
 
-def test_position_sizing_direction_signs(strategy_config, fee_config) -> None:
+def test_position_sizing_direction_signs(strategy_config) -> None:
     short_us_leg = size_position_for_direction(
         Direction.SHORT_US_LONG_TW,
         us_leg_price=2500.0,
         tw_leg_price=250.0,
         strategy=strategy_config,
-        fees=fee_config,
+        tw_leg_contract_multiplier=100.0,
+        us_leg_contract_multiplier=5.0,
     )
     long_us_leg = size_position_for_direction(
         Direction.LONG_US_SHORT_TW,
         us_leg_price=2500.0,
         tw_leg_price=250.0,
         strategy=strategy_config,
-        fees=fee_config,
+        tw_leg_contract_multiplier=100.0,
+        us_leg_contract_multiplier=5.0,
     )
 
     assert short_us_leg is not None
@@ -195,13 +197,14 @@ def test_position_sizing_direction_signs(strategy_config, fee_config) -> None:
     assert long_us_leg.tw_leg_units < 0
 
 
-def test_position_sizing_uses_binance_contract_quantity(strategy_config, fee_config) -> None:
+def test_position_sizing_uses_binance_contract_quantity(strategy_config) -> None:
     sizing = size_position_for_direction(
         Direction.SHORT_US_LONG_TW,
         us_leg_price=2880.31068,
         tw_leg_price=2487.5,
         strategy=replace_strategy_notional(strategy_config, 240_000.0),
-        fees=fee_config,
+        tw_leg_contract_multiplier=100.0,
+        us_leg_contract_multiplier=5.0,
     )
 
     assert sizing is not None
@@ -210,13 +213,14 @@ def test_position_sizing_uses_binance_contract_quantity(strategy_config, fee_con
     assert sizing.us_leg_units == pytest.approx(-17.27244229)
 
 
-def test_position_sizing_can_use_fixed_tw_leg_lots(strategy_config, fee_config) -> None:
+def test_position_sizing_can_use_fixed_tw_leg_lots(strategy_config) -> None:
     sizing = size_position_for_direction(
         Direction.SHORT_US_LONG_TW,
         us_leg_price=2880.31068,
         tw_leg_price=2487.5,
         strategy=replace_strategy_tw_leg_lots(strategy_config, 2),
-        fees=fee_config,
+        tw_leg_contract_multiplier=100.0,
+        us_leg_contract_multiplier=5.0,
     )
 
     assert sizing is not None
@@ -226,13 +230,14 @@ def test_position_sizing_can_use_fixed_tw_leg_lots(strategy_config, fee_config) 
     assert sizing.us_leg_units == pytest.approx(-34.54488459)
 
 
-def test_fixed_tw_leg_lots_preserves_direction_signs(strategy_config, fee_config) -> None:
+def test_fixed_tw_leg_lots_preserves_direction_signs(strategy_config) -> None:
     sizing = size_position_for_direction(
         Direction.LONG_US_SHORT_TW,
         us_leg_price=2500.0,
         tw_leg_price=250.0,
         strategy=replace_strategy_tw_leg_lots(strategy_config, 3),
-        fees=fee_config,
+        tw_leg_contract_multiplier=100.0,
+        us_leg_contract_multiplier=5.0,
     )
 
     assert sizing is not None
@@ -248,9 +253,39 @@ def test_us_leg_fee_uses_binance_contract_twd_price(fee_config) -> None:
         tw_leg_contracts=1,
         tw_leg_price=2487.5,
         fees=fee_config,
+        tw_leg_contract_multiplier=100.0,
+        us_leg_contract_multiplier=5.0,
     )
 
     assert costs["us_leg_fee_twd"] == pytest.approx(124.375)
+
+
+@pytest.mark.parametrize(
+    ("instrument", "contract_multiplier", "expected_contracts"),
+    [
+        ("QFF", 100.0, 100),
+        ("CCF", 2000.0, 5),
+    ],
+)
+def test_pair_contract_multiplier_sizes_qff_and_ccf_correctly(
+    strategy_config,
+    instrument: str,
+    contract_multiplier: float,
+    expected_contracts: int,
+) -> None:
+    sizing = size_position_for_direction(
+        Direction.SHORT_US_LONG_TW,
+        us_leg_price=100.0,
+        tw_leg_price=100.0,
+        strategy=strategy_config,
+        tw_leg_contract_multiplier=contract_multiplier,
+        us_leg_contract_multiplier=5.0,
+    )
+
+    assert instrument in {"QFF", "CCF"}
+    assert sizing is not None
+    assert sizing.tw_leg_contracts == expected_contracts
+    assert sizing.actual_leg_notional_twd == pytest.approx(1_000_000.0)
 
 
 def replace_strategy_notional(strategy_config, leg_notional_twd: float):

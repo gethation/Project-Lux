@@ -42,7 +42,11 @@ def test_fixture_replay_matches_golden_summary(tmp_path) -> None:
     store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
-        actual = store.build_summary(config.strategy, config.fees)
+        actual = store.build_summary(
+            config.strategy,
+            config.fees,
+            tw_leg_contract_multiplier=config.active_pair.tw_leg.contract_multiplier,
+        )
     finally:
         store.close()
 

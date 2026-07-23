@@ -20,7 +20,7 @@ def apply_live_touch_market_price_policy(
     *,
     max_plan_age_seconds: int | None = None,
     plan_age_seconds: float = 0.0,
-    us_leg_contract_multiplier: float = 5.0,
+    us_leg_contract_multiplier: float,
 ) -> PairExecutionPlan:
     return replace(
         plan,

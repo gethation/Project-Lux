@@ -56,6 +56,8 @@ def test_strategy_entry_open_exit_cycle(strategy_config, fee_config) -> None:
         PaperBroker(),
         us_leg_symbol="TSM/USDT:USDT",
         tw_leg_symbol="QFF",
+        tw_leg_contract_multiplier=100.0,
+        us_leg_contract_multiplier=5.0,
     )
     bar0 = make_bar(0, "2026-06-08T08:45:00+08:00")
     bar1 = make_bar(1, "2026-06-08T08:46:00+08:00")
@@ -87,6 +89,8 @@ def test_entry_delay_exceeded_cancels_pending(strategy_config, fee_config) -> No
         PaperBroker(),
         us_leg_symbol="TSM/USDT:USDT",
         tw_leg_symbol="QFF",
+        tw_leg_contract_multiplier=100.0,
+        us_leg_contract_multiplier=5.0,
     )
     day_close = make_bar(0, "2026-06-08T13:45:00+08:00")
     night_open = make_bar(1, "2026-06-08T17:25:00+08:00")
@@ -109,6 +113,8 @@ def test_strategy_builds_entry_order_requests_without_submitting(
         PaperBroker(),
         us_leg_symbol="CUSTOM/USDT:USDT",
         tw_leg_symbol="QFF",
+        tw_leg_contract_multiplier=100.0,
+        us_leg_contract_multiplier=5.0,
     )
     bar = make_bar(10, "2026-06-08T08:55:00+08:00")
 
@@ -156,6 +162,8 @@ def test_strategy_builds_exit_order_requests_from_open_state(
         state=state,
         us_leg_symbol="TSM/USDT:USDT",
         tw_leg_symbol="QFF",
+        tw_leg_contract_multiplier=100.0,
+        us_leg_contract_multiplier=5.0,
     )
     bar = make_bar(11, "2026-06-08T08:56:00+08:00")
 

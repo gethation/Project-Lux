@@ -47,7 +47,16 @@ def command_summary(args: argparse.Namespace) -> int:
             print(json.dumps(store.build_execution_summary(), indent=2))
         else:
             print(
-                json.dumps(store.build_summary(config.strategy, config.fees), indent=2)
+                json.dumps(
+                    store.build_summary(
+                        config.strategy,
+                        config.fees,
+                        tw_leg_contract_multiplier=(
+                            config.active_pair.tw_leg.contract_multiplier
+                        ),
+                    ),
+                    indent=2,
+                )
             )
     finally:
         store.close()

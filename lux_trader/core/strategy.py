@@ -212,12 +212,16 @@ class PairStrategy:
         *,
         us_leg_symbol: str,
         tw_leg_symbol: str,
+        tw_leg_contract_multiplier: float,
+        us_leg_contract_multiplier: float,
     ) -> None:
         self.strategy = strategy
         self.fees = fees
         self.broker = broker
         self.us_leg_symbol = us_leg_symbol
         self.tw_leg_symbol = tw_leg_symbol
+        self.tw_leg_contract_multiplier = float(tw_leg_contract_multiplier)
+        self.us_leg_contract_multiplier = float(us_leg_contract_multiplier)
         self.state = state or StrategyRuntimeState(
             running_max_equity=strategy.initial_capital_twd
         )
@@ -405,7 +409,8 @@ class PairStrategy:
             entry_us_leg_price(bar),
             entry_tw_leg_price(bar),
             self.strategy,
-            self.fees,
+            tw_leg_contract_multiplier=self.tw_leg_contract_multiplier,
+            us_leg_contract_multiplier=self.us_leg_contract_multiplier,
         )
         if sizing is None:
             self._clear_candidate()
@@ -418,6 +423,8 @@ class PairStrategy:
             tw_leg_contracts=sizing.tw_leg_contracts,
             tw_leg_price=entry_tw_leg_price(bar),
             fees=self.fees,
+            tw_leg_contract_multiplier=self.tw_leg_contract_multiplier,
+            us_leg_contract_multiplier=self.us_leg_contract_multiplier,
         )
         orders, fills = self._place_entry_orders(
             bar,
@@ -490,7 +497,7 @@ class PairStrategy:
             "raw_tw_leg_contracts": sizing.raw_tw_leg_contracts,
             "leg_notional_twd": self.strategy.leg_notional_twd,
             "actual_leg_notional_twd": sizing.actual_leg_notional_twd,
-            "tw_leg_contract_multiplier": self.fees.tw_leg_contract_multiplier,
+            "tw_leg_contract_multiplier": self.tw_leg_contract_multiplier,
             "entry_us_leg_fee_twd": costs["us_leg_fee_twd"],
             "entry_tw_leg_fee_twd": costs["tw_leg_fee_twd"],
             "entry_tw_leg_tax_twd": costs["tw_leg_tax_twd"],
@@ -528,6 +535,8 @@ class PairStrategy:
             tw_leg_contracts=self.state.tw_leg_contracts,
             tw_leg_price=bar.tw_leg_close_filled,
             fees=self.fees,
+            tw_leg_contract_multiplier=self.tw_leg_contract_multiplier,
+            us_leg_contract_multiplier=self.us_leg_contract_multiplier,
         )
         orders, fills = self._place_exit_orders(bar, costs)
         result = self.apply_exit_execution(
@@ -564,8 +573,13 @@ class PairStrategy:
             )
         open_trade = self.state.open_trade
         us_leg_pnl = self.state.us_leg_units * (
-            us_leg_contract_twd_price(bar.us_leg_twd_fair, self.fees)
-            - us_leg_contract_twd_price(float(open_trade["entry_us_leg_twd_fair"]), self.fees)
+            us_leg_contract_twd_price(
+                bar.us_leg_twd_fair, self.us_leg_contract_multiplier
+            )
+            - us_leg_contract_twd_price(
+                float(open_trade["entry_us_leg_twd_fair"]),
+                self.us_leg_contract_multiplier,
+            )
         )
         tw_leg_pnl = self.state.tw_leg_units * (
             bar.tw_leg_close_filled - float(open_trade["entry_tw_leg_close"])
@@ -728,8 +742,12 @@ class PairStrategy:
         unrealized = 0.0
         if self.state.position_direction is not None and self.state.entry_us_leg is not None and self.state.entry_tw_leg is not None:
             unrealized = self.state.us_leg_units * (
-                us_leg_contract_twd_price(bar.us_leg_twd_fair, self.fees)
-                - us_leg_contract_twd_price(self.state.entry_us_leg, self.fees)
+                us_leg_contract_twd_price(
+                    bar.us_leg_twd_fair, self.us_leg_contract_multiplier
+                )
+                - us_leg_contract_twd_price(
+                    self.state.entry_us_leg, self.us_leg_contract_multiplier
+                )
             ) + self.state.tw_leg_units * (bar.tw_leg_close_filled - self.state.entry_tw_leg)
         equity = self.strategy.initial_capital_twd + self.state.realized_pnl + unrealized
         self.state.running_max_equity = max(self.state.running_max_equity, equity)

@@ -593,6 +593,8 @@ def entry_pending_strategy(tmp_path) -> PairStrategy:
         state=state,
         us_leg_symbol=SYMBOL_TSM,
         tw_leg_symbol=SYMBOL_QFF,
+        tw_leg_contract_multiplier=config.active_pair.tw_leg.contract_multiplier,
+        us_leg_contract_multiplier=config.active_pair.us_leg.adr_share_ratio,
     )
 
 
@@ -661,6 +663,8 @@ def test_live_entry_uses_actual_fills_for_state_and_exit_quantity(tmp_path) -> N
         tw_leg_contracts=strategy.state.tw_leg_contracts,
         tw_leg_price=live_bar().tw_leg_close_filled,
         fees=strategy.fees,
+        tw_leg_contract_multiplier=strategy.tw_leg_contract_multiplier,
+        us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
     )
     exit_requests = strategy.build_exit_order_requests(
         bar=live_bar(),

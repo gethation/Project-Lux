@@ -930,14 +930,23 @@ class LiveRuntime:
         us_leg_price = getattr(bar, "us_leg_twd_fair", None)
         contracts = int(getattr(state, "tw_leg_contracts", 0) or 0)
         if contracts != 0 and tw_leg_price:
-            return abs(contracts) * self.config.fees.tw_leg_contract_multiplier * tw_leg_price
+            return (
+                abs(contracts)
+                * self.config.active_pair.tw_leg.contract_multiplier
+                * tw_leg_price
+            )
         if us_leg_price and tw_leg_price:
             sizing = size_position_for_direction(
                 Direction.LONG_US_SHORT_TW,
                 us_leg_price,
                 tw_leg_price,
                 self.config.strategy,
-                self.config.fees,
+                tw_leg_contract_multiplier=(
+                    self.config.active_pair.tw_leg.contract_multiplier
+                ),
+                us_leg_contract_multiplier=(
+                    self.config.active_pair.us_leg.adr_share_ratio
+                ),
             )
             if sizing is not None and sizing.actual_leg_notional_twd > 0:
                 return sizing.actual_leg_notional_twd

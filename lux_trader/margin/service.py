@@ -88,7 +88,7 @@ def resolve_margin_leg_notional_twd(config: AppConfig, store: Any | None = None)
                 price = loader()
     if price is None or price <= 0:
         return None
-    return tw_leg_lots * config.fees.tw_leg_contract_multiplier * price
+    return tw_leg_lots * config.active_pair.tw_leg.contract_multiplier * price
 
 
 class MarginCheckService:

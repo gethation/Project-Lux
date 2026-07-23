@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from ..config import FeeConfig, StrategyConfig
+from ..config import StrategyConfig
 from .models import Direction, PositionSizing
 
 
@@ -17,24 +17,28 @@ def size_position_for_direction(
     us_leg_price: float,
     tw_leg_price: float,
     strategy: StrategyConfig,
-    fees: FeeConfig,
+    *,
+    tw_leg_contract_multiplier: float,
+    us_leg_contract_multiplier: float,
 ) -> PositionSizing | None:
     if strategy.tw_leg_lots is not None:
         raw_tw_leg_contracts = float(strategy.tw_leg_lots)
         tw_leg_contract_count = strategy.tw_leg_lots
     else:
         raw_tw_leg_contracts = strategy.leg_notional_twd / (
-            tw_leg_price * fees.tw_leg_contract_multiplier
+            tw_leg_price * tw_leg_contract_multiplier
         )
         tw_leg_contract_count = round_half_up_nonnegative(raw_tw_leg_contracts)
     if tw_leg_contract_count == 0:
         return None
 
     actual_leg_notional_twd = (
-        tw_leg_contract_count * fees.tw_leg_contract_multiplier * tw_leg_price
+        tw_leg_contract_count * tw_leg_contract_multiplier * tw_leg_price
     )
-    us_leg_units = actual_leg_notional_twd / us_leg_contract_twd_price(us_leg_price, fees)
-    tw_leg_units = tw_leg_contract_count * fees.tw_leg_contract_multiplier
+    us_leg_units = actual_leg_notional_twd / us_leg_contract_twd_price(
+        us_leg_price, us_leg_contract_multiplier
+    )
+    tw_leg_units = tw_leg_contract_count * tw_leg_contract_multiplier
 
     if direction == Direction.SHORT_US_LONG_TW:
         return PositionSizing(
@@ -53,8 +57,11 @@ def size_position_for_direction(
     )
 
 
-def us_leg_contract_twd_price(us_leg_twd_fair: float, fees: FeeConfig) -> float:
-    multiplier = float(fees.us_leg_contract_multiplier)
+def us_leg_contract_twd_price(
+    us_leg_twd_fair: float,
+    us_leg_contract_multiplier: float,
+) -> float:
+    multiplier = float(us_leg_contract_multiplier)
     if multiplier <= 0:
         raise ValueError(
             f"Expected a positive USD-leg contract multiplier, got {multiplier}"

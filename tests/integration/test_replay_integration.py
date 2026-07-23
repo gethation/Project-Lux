@@ -15,7 +15,11 @@ def build_summary(config):
     store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
-        return store.build_summary(config.strategy, config.fees)
+        return store.build_summary(
+            config.strategy,
+            config.fees,
+            tw_leg_contract_multiplier=config.active_pair.tw_leg.contract_multiplier,
+        )
     finally:
         store.close()
 

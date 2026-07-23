@@ -57,8 +57,6 @@ def fee_config() -> FeeConfig:
         us_leg_fee_bps=5.0,
         tw_leg_fee_per_contract_twd=5.0,
         tw_leg_tax_rate=0.00002,
-        tw_leg_contract_multiplier=100.0,
-        us_leg_contract_multiplier=5.0,
     )
 
 
@@ -81,8 +79,6 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             us_leg_fee_bps=5.0,
             tw_leg_fee_per_contract_twd=5.0,
             tw_leg_tax_rate=0.00002,
-            tw_leg_contract_multiplier=100.0,
-            us_leg_contract_multiplier=5.0,
         ),
         safety=SafetyConfig(
             allow_live_order=False,

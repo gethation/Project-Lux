@@ -12,16 +12,18 @@ def fill_costs(
     tw_leg_contracts: int,
     tw_leg_price: float,
     fees: FeeConfig,
+    tw_leg_contract_multiplier: float,
+    us_leg_contract_multiplier: float,
 ) -> dict[str, float]:
     us_leg_fee_twd = (
         abs(us_leg_units)
-        * us_leg_contract_twd_price(us_leg_price, fees)
+        * us_leg_contract_twd_price(us_leg_price, us_leg_contract_multiplier)
         * fees.us_leg_fee_bps
         / 10000.0
     )
     tw_leg_fee_twd = abs(tw_leg_contracts) * fees.tw_leg_fee_per_contract_twd
     tw_leg_tax_per_contract_twd = round_half_up_nonnegative(
-        tw_leg_price * fees.tw_leg_contract_multiplier * fees.tw_leg_tax_rate
+        tw_leg_price * tw_leg_contract_multiplier * fees.tw_leg_tax_rate
     )
     tw_leg_tax_twd = abs(tw_leg_contracts) * tw_leg_tax_per_contract_twd
     return {

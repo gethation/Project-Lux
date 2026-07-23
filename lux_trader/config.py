@@ -25,8 +25,6 @@ class FeeConfig:
     us_leg_fee_bps: float
     tw_leg_fee_per_contract_twd: float
     tw_leg_tax_rate: float
-    tw_leg_contract_multiplier: float
-    us_leg_contract_multiplier: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -515,8 +513,6 @@ def load_pair_config(raw: object, root: Path, index: int) -> PairConfig:
             fees_raw.get("tw_leg_fee_per_contract_twd", 5.0)
         ),
         tw_leg_tax_rate=float(fees_raw.get("tw_leg_tax_rate", 0.00002)),
-        tw_leg_contract_multiplier=tw_multiplier,
-        us_leg_contract_multiplier=adr_share_ratio,
     )
     return PairConfig(
         id=pair_id,

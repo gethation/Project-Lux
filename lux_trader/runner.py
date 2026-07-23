@@ -73,6 +73,12 @@ class SystemRunner:
                 state=strategy_state,
                 us_leg_symbol=self.config.live.binance_symbol,
                 tw_leg_symbol=self.config.active_pair.tw_leg.product,
+                tw_leg_contract_multiplier=(
+                    self.config.active_pair.tw_leg.contract_multiplier
+                ),
+                us_leg_contract_multiplier=(
+                    self.config.active_pair.us_leg.adr_share_ratio
+                ),
             )
 
             rows_processed = 0

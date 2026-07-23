@@ -1019,6 +1019,7 @@ class SQLiteStore:
         strategy: StrategyConfig,
         fees: FeeConfig,
         *,
+        tw_leg_contract_multiplier: float,
         tw_leg_display: str | None = None,
         us_leg_display: str | None = None,
     ) -> dict[str, Any]:
@@ -1116,7 +1117,7 @@ class SQLiteStore:
                 f"{us_key}_fee_bps": fees.us_leg_fee_bps,
                 f"{tw_key}_fee_per_contract_twd": fees.tw_leg_fee_per_contract_twd,
                 f"{tw_key}_tax_rate": fees.tw_leg_tax_rate,
-                f"{tw_key}_contract_multiplier": fees.tw_leg_contract_multiplier,
+                f"{tw_key}_contract_multiplier": tw_leg_contract_multiplier,
             },
             "rows": int(bar_count),
             "start": start_text,
