@@ -610,7 +610,33 @@ UMC 時段（台北 21:30–04:00 = 美東 09:30–16:00）落在流動性**更�
 倫敦／紐約重疊帶，新鮮度理論上只會更好 —— 但這是推論，不是量測。
 上線前補一次時段內的探針即可。
 
-探針腳本：`scratchpad/probe_twelvedata.py`（不印出 key）。
+探針腳本：`scripts/probe_twelvedata.py`（不印出 key）。
+
+**與 tvdatafeed 的並排實測（20 個取樣、30 秒間隔、2026-07-24 06:43–06:53）**
+
+| | 平均延遲 | 範圍 |
+|---|---|---|
+| Twelve Data | 116s | 80–139s |
+| tvdatafeed (FX_IDC) | 53s | 11–129s |
+
+tvdatafeed 看似較新鮮是**假象**：它回傳**還在形成中的 bar**（06:46:10 時回傳 06:46
+那根，該根才存在 10 秒）。Twelve Data 只回完成的 bar，且穩定在**收盤後 30–40 秒**
+發布。兩者不是在量同一件事，而套上 300 秒快取後這個差異完全消失。
+
+**結論：live 用 Twelve Data。** tvdatafeed 是非官方 API（執行時自報
+`nologin method, data you access may be limited`）、失敗時丟裸 exception、
+無速率契約、精度較粗。
+
+> ### ⚠️ Twelve Data 系統性高於 FX_IDC 0.060%
+>
+> 20 筆取樣**全部同向**，範圍 0.046–0.076%。
+>
+> **所有既有回測用的都是 FX_IDC**（`fxidc_usdtwd_*_taipei_tv.csv`），
+> 上線改用 Twelve Data 會讓 live 的 FX 比回測基準高 0.06%。
+>
+> 大機率無害 —— 滾動 z-score 吸收**固定**偏差，而 BitoPro 之所以不能用是因為
+> 它的溢價在 z-window 內**漂移**（§8.2 量化三）。但這是 10 分鐘的觀察，
+> **不足以宣稱長期穩定**。累積夠久的 Twelve Data 樣本後應重跑一次回測比對。
 
 ---
 
