@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from fakes import write_execution_test_config as write_config
+
 import lux_trader.cli.commands_execution as cli_module
 from lux_trader.integrations.binance.execution import (
     BinanceTsmExecutionAdapter,
@@ -597,39 +599,6 @@ def test_adapter_rejects_invalid_plan_without_calling_exchange(
     assert fake_exchange.create_calls == []
 
 
-def write_config(
-    tmp_path: Path,
-    *,
-    allow_live_order: bool = True,
-    live_execution_enabled: bool = True,
-) -> Path:
-    config_path = tmp_path / "config.test.toml"
-    config_path.write_text(
-        "\n".join(
-            [
-                "[paths]",
-                "input_csv = ''",
-                f"store_path = '{(tmp_path / 'store.sqlite3').as_posix()}'",
-                "",
-                "[safety]",
-                f"allow_live_order = {str(allow_live_order).lower()}",
-                "",
-                "[live_market_data]",
-                "qff_symbol = 'QFFG6'",
-                f"binance_symbol = '{SYMBOL}'",
-                "fubon_env_path = '.env'",
-                f"taifex_cache_dir = '{(tmp_path / 'taifex').as_posix()}'",
-                "",
-                "[live_execution]",
-                f"enabled = {str(live_execution_enabled).lower()}",
-                "qff_first = true",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return config_path
-
-
 class FakeSmokeAdapter:
     def __init__(
         self,
@@ -703,7 +672,7 @@ def test_binance_exec_smoke_requires_quantity_arg(tmp_path: Path) -> None:
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "binance",
+            "admin", "exec-smoke", "--venue", "binance",
             "--config",
             str(write_config(tmp_path)),
             "--confirm-symbol",
@@ -719,7 +688,7 @@ def test_binance_exec_smoke_rejects_missing_env_gates(tmp_path: Path) -> None:
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "binance",
+            "admin", "exec-smoke", "--venue", "binance",
             "--config",
             str(write_config(tmp_path)),
             "--quantity",
@@ -741,7 +710,7 @@ def test_binance_exec_smoke_rejects_symbol_mismatch(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "binance",
+            "admin", "exec-smoke", "--venue", "binance",
             "--config",
             str(write_config(tmp_path)),
             "--quantity",
@@ -769,7 +738,7 @@ def test_binance_exec_smoke_rejects_existing_position(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "binance",
+            "admin", "exec-smoke", "--venue", "binance",
             "--config",
             str(write_config(tmp_path)),
             "--quantity",
@@ -800,7 +769,7 @@ def test_binance_exec_smoke_rejects_existing_open_orders(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "binance",
+            "admin", "exec-smoke", "--venue", "binance",
             "--config",
             str(write_config(tmp_path)),
             "--quantity",
@@ -832,7 +801,7 @@ def test_binance_exec_smoke_opens_then_reduce_only_closes(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "binance",
+            "admin", "exec-smoke", "--venue", "binance",
             "--config",
             str(write_config(tmp_path)),
             "--quantity",

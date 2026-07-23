@@ -226,3 +226,59 @@ def write_test_config(
             lines.append(f"leg_notional_twd = {margin_leg_notional_twd}")
     config_path.write_text("\n".join(lines), encoding="utf-8")
     return config_path
+
+
+def write_execution_test_config(
+    tmp_path: Path,
+    *,
+    config_name: str = "config.test.toml",
+    store_name: str = "store.sqlite3",
+    cache_name: str = "taifex",
+    allow_live_order: bool = True,
+    live_execution_enabled: bool = True,
+    include_broker_reconciliation: bool = False,
+    fubon_env_path: str | None = ".env",
+) -> Path:
+    """Write the common live-execution/admin CLI test configuration."""
+
+    config_path = tmp_path / config_name
+    lines = [
+        "[paths]",
+        "input_csv = ''",
+        f"store_path = '{(tmp_path / store_name).as_posix()}'",
+        "",
+        "[safety]",
+        f"allow_live_order = {str(allow_live_order).lower()}",
+        "",
+        "[live_market_data]",
+        "qff_symbol = 'QFFG6'",
+        "binance_symbol = 'TSM/USDT:USDT'",
+        "bitopro_symbol = 'USDT/TWD'",
+    ]
+    if fubon_env_path is not None:
+        lines.append(f"fubon_env_path = '{fubon_env_path}'")
+    lines.append(f"taifex_cache_dir = '{(tmp_path / cache_name).as_posix()}'")
+    if include_broker_reconciliation:
+        lines.extend(
+            [
+                "",
+                "[broker_reconciliation]",
+                "enabled = true",
+                "fail_on_mismatch = true",
+                "tsm_units_tolerance = 0.000001",
+                "qff_contract_tolerance = 0",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "[live_execution]",
+            f"enabled = {str(live_execution_enabled).lower()}",
+            "require_readonly_reconciliation = true",
+            "max_plan_age_seconds = 120",
+            "qff_first = true",
+        ]
+    )
+    config_path.write_text("\n".join(lines), encoding="utf-8")
+    return config_path
+

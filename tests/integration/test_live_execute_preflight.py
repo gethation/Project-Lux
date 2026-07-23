@@ -1,54 +1,27 @@
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
 import pytest
 
 import lux_trader.cli.commands_execution as commands_execution
 import lux_trader.cli.commands_live as commands_live
-from fakes import make_fake_broker_builder
+from fakes import make_fake_broker_builder, write_execution_test_config
 from lux_trader.cli.commands_execution import command_live_execute
 from lux_trader.cli.parser import build_parser
 from lux_trader.reconciliation import ReconciliationStatus
 from lux_trader.store import SQLiteStore
 
 
-def write_live_execute_config(tmp_path: Path) -> Path:
-    config_path = tmp_path / "config.live-execute.toml"
-    store_path = (tmp_path / "live-execute.sqlite3").as_posix()
-    cache_dir = (tmp_path / "taifex_cache").as_posix()
-    config_path.write_text(
-        "\n".join(
-            [
-                "[paths]",
-                "input_csv = ''",
-                f"store_path = '{store_path}'",
-                "",
-                "[safety]",
-                "allow_live_order = true",
-                "",
-                "[live_market_data]",
-                "qff_symbol = 'QFFG6'",
-                "binance_symbol = 'TSM/USDT:USDT'",
-                "bitopro_symbol = 'USDT/TWD'",
-                f"taifex_cache_dir = '{cache_dir}'",
-                "",
-                "[broker_reconciliation]",
-                "enabled = true",
-                "fail_on_mismatch = true",
-                "tsm_units_tolerance = 0.000001",
-                "qff_contract_tolerance = 0",
-                "",
-                "[live_execution]",
-                "enabled = true",
-                "require_readonly_reconciliation = true",
-                "max_plan_age_seconds = 120",
-                "qff_first = true",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return config_path
+write_live_execute_config = partial(
+    write_execution_test_config,
+    config_name="config.live-execute.toml",
+    store_name="live-execute.sqlite3",
+    cache_name="taifex_cache",
+    include_broker_reconciliation=True,
+    fubon_env_path=None,
+)
 
 
 def set_live_order_env(monkeypatch) -> None:
@@ -113,7 +86,7 @@ def test_live_execute_refreshes_matched_reconciliation_before_runner(
     )
     args = build_parser().parse_args(
         [
-            "live-execute",
+            "live", "--mode", "execute",
             "--config",
             str(config_path),
             "--reset-store",
@@ -153,7 +126,7 @@ def test_live_execute_stops_before_runner_when_reconciliation_mismatches(
     )
     args = build_parser().parse_args(
         [
-            "live-execute",
+            "live", "--mode", "execute",
             "--config",
             str(config_path),
             "--reset-store",

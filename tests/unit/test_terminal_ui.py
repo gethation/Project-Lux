@@ -630,7 +630,7 @@ def test_live_dry_run_cli_flags_default_on_and_can_disable_ui_or_color() -> None
     parser = build_parser()
 
     defaults = parser.parse_args(
-        ["live-dry-run", "--config", "configs/live.example.toml"]
+        ["live", "--mode", "dry-run", "--config", "configs/live.example.toml"]
     )
     assert defaults.ui == "compact"
     assert not defaults.quiet_ui
@@ -639,7 +639,7 @@ def test_live_dry_run_cli_flags_default_on_and_can_disable_ui_or_color() -> None
 
     disabled = parser.parse_args(
         [
-            "live-dry-run",
+            "live", "--mode", "dry-run",
             "--config",
             "configs/live.example.toml",
             "--ui",
