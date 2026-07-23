@@ -141,6 +141,22 @@ Get-Content "D:\Users\Work place\Project Lux\.codex-logs\<當次log>" -Wait
 
 ---
 
+## 富邦 session 互斥 —— 跨機器的約束
+
+**富邦一個帳號只能一個 SDK session。** QFF/TSM 的 live 目前跑在**另一台機器**上，
+所以只要它在跑，這台開發機**不得執行任何會連上富邦的指令**，否則可能把正在交易的
+session 踢掉：
+
+```
+status broker · status reconcile · status margin
+live --mode dry-run · live --mode execute · admin exec-smoke · admin manual-close
+```
+
+連帶影響：**新程式的 dry-run soak 沒辦法在開發機上做**，必須挑 live 停機的空檔。
+CCF/UMC 的 dry-run 之後也受同一條約束（CCF 行情同樣來自富邦）。
+
+IBKR 不受此限 —— 不同券商，且只在開發機上使用。
+
 ## 已知環境問題
 
 | 問題 | 狀態 |
