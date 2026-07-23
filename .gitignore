@@ -20,9 +20,13 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .tmp_pytest*/
+.codex_pytest_tmp/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/
+
+# Codex delegation logs
+.codex-logs/
 
 # OS
 .DS_Store
