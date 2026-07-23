@@ -1,3 +1,12 @@
+from .client_process import (
+    DEFAULT_CLIENT_ID,
+    IbkrClientProcess,
+    IbkrConnectionConfig,
+    IbkrContractDetails,
+    IbkrGatewayUnavailable,
+    IbkrWorkerError,
+    IbkrWorkerTimeout,
+)
 from .diagnostic import (
     DEFAULT_DIAGNOSTIC_CLIENT_ID,
     IbkrConnectivityError,
@@ -7,9 +16,16 @@ from .diagnostic import (
 )
 
 __all__ = [
+    "DEFAULT_CLIENT_ID",
     "DEFAULT_DIAGNOSTIC_CLIENT_ID",
+    "IbkrClientProcess",
+    "IbkrConnectionConfig",
+    "IbkrContractDetails",
     "IbkrConnectivityError",
     "IbkrDiagnosticConfig",
     "IbkrDiagnosticResult",
+    "IbkrGatewayUnavailable",
+    "IbkrWorkerError",
+    "IbkrWorkerTimeout",
     "run_connectivity_diagnostic",
 ]
