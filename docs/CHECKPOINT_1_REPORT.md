@@ -1,16 +1,20 @@
-# Checkpoint 1 Report — BLOCKED (not a passing checkpoint)
+# Checkpoint 1 Report — Phase 0 complete
 
-Phase 0 is not complete. Work stopped under §0.1 because the reusable subprocess
-transport and consolidated CLI routing contract are not fully defined. Phase 1 has
-not started. The completed, independently verifiable work and all blocking decisions
-are recorded below.
+Phase 0 is complete on `feature/multipair-phase` through commit `b223138`. Phase 1
+has not started.
 
 ## 1. Golden baseline
 
-`tests/integration/test_replay_golden.py` is green. The post-change replay processed
-29,909 rows and the full summary still matches
-`tests/fixtures/replay/golden_summary.json` (integer/string/null fields exactly;
-float fields at relative tolerance `1e-9`).
+`tests/integration/test_replay_golden.py` is green in the full suite. The checkpoint
+replay and summary were also rerun directly in the `Quant` environment:
+
+```text
+Replay complete: rows_processed=29909, start_row=0, end_row=29908, finalized=True
+```
+
+The result remains `rows=29909`, `trade_count=66`,
+`net_pnl_twd=261507.82918245535`, and
+`total_fee_twd=68317.49687897251`. Full `summary` JSON output, verbatim:
 
 ```json
 {
@@ -63,79 +67,175 @@ float fields at relative tolerance `1e-9`).
 }
 ```
 
+The golden test compares integer, string, and null fields exactly and floating-point
+fields at relative tolerance `1e-9`.
+
 ## 2. Test result
 
+Actual `pytest -q` output from the completed Phase 0 tree:
+
 ```text
-........................................................................ [ 18%]
-........................................................................ [ 37%]
-......ssssssss.......................................................... [ 56%]
-........................................................................ [ 75%]
-........................................................................ [ 93%]
-........................                                                 [100%]
-376 passed, 8 skipped in 129.23s (0:02:09)
+........................................................................ [ 17%]
+........................................................................ [ 34%]
+......ssssssss.......................................................... [ 51%]
+........................................................................ [ 68%]
+........................................................................ [ 86%]
+..........................................................               [100%]
+410 passed, 8 skipped in 165.08s (0:02:45)
 ```
 
-Reconciliation against the original `372 passed / 8 skipped`:
+The eight live-gated smoke tests remain skipped. The count reconciles against both
+the original baseline and the intermediate checkpoint as follows:
 
-| Change | Pass-count effect |
-|---|---:|
-| Task 2.3 replay golden test | +1 |
-| ExecutionAdapter protocol/preflight tests | +3 |
-| Parameterized rollover scenarios | 0 (two old cases remain two collected cases) |
-| Live-gated smoke tests | 0; all 8 remain skipped |
-| Final | 376 passed / 8 skipped |
+| Change | Collected-pass effect | Running result |
+|---|---:|---:|
+| Original baseline | — | 372 passed / 8 skipped |
+| Golden replay regression | +1 | 373 / 8 |
+| ExecutionAdapter/preflight protocol tests | +3 | 376 / 8 |
+| Intermediate checkpoint | — | 376 passed / 8 skipped |
+| Reusable subprocess transport timeout-policy test | +1 | 377 / 8 |
+| CLI mapping cases, one per implemented route | +14 | 391 / 8 |
+| Exact seven-command surface test | +1 | 392 / 8 |
+| Required `live --mode` and nested-action cases | +4 | 396 / 8 |
+| Rejection cases for the 12 retired top-level names | +12 | 408 / 8 |
+| Explicit live dispatch cases (`dry-run`, `execute`) | +2 | 410 / 8 |
+| Parameterized rollover merge | 0; two old tests became two collected cases | 410 / 8 |
+| Final | +38 from original; +34 from intermediate | **410 passed / 8 skipped** |
 
-## 3. CLI mapping — proposed only, blocked by Q4/Q5
+## 3. Exhaustive CLI mapping
 
-No parser or dispatcher changes were made. The table is exhaustive over the current
-14 commands and every current flag, but selector syntax marked `PROPOSED` is not an
-implemented interface and must be confirmed first.
+All 17 help surfaces (root, seven top-level commands, and all nested subcommands)
+were run directly and exited successfully. The root surface is:
 
-| Old command and flags | Proposed target | Status |
+```text
+usage: lux_trader [-h] {replay,summary,live,status,recover,warmup,admin} ...
+```
+
+The nested surfaces are `status {live,broker,doctor,reconcile,margin}`,
+`recover {clear-pause,manual-flat}`, and `admin {exec-smoke,manual-close}`.
+`live --mode {dry-run,execute}` is required and has no default. `status`, `recover`,
+and `admin` also require an explicit nested subcommand. No legacy aliases are
+registered.
+
+Every old command and every old flag maps as follows. “Unchanged” means spelling,
+type, choices, requiredness, and flag semantics were preserved at the new route.
+
+| Old command / flag | Implemented new home | Mapping detail |
 |---|---|---|
-| `replay --config --max-bars --resume --reset-store` | `replay` with the same flags plus `--pair qff_tsm` | Unambiguous; not implemented because 4.3 is one blocked task |
-| `summary --config --execution` | `summary` with the same flags plus `--pair qff_tsm` | Unambiguous; not implemented |
-| `doctor --config --mode replay\|live\|order` | PROPOSED `status --doctor --doctor-mode replay\|live\|order --config` | Selector/default undefined |
-| `live-dry-run --config --resume --reset-store --max-iterations --skip-warmup --ui --quiet-ui --no-color` | PROPOSED `live --mode dry-run` with every remaining flag unchanged plus `--pair qff_tsm` | Whether `--mode` is required is undefined |
-| `live-status --config` | PROPOSED default `status --config --pair qff_tsm` | Default status view is undefined |
-| `reconcile-brokers --config --readonly` | PROPOSED `status --reconcile --config --readonly --pair qff_tsm` | Status selector contract undefined |
-| `clear-pause --config --readonly` | PROPOSED `recover --clear-pause --config --readonly --pair qff_tsm` | Recover selector/default undefined |
-| `recover-manual-flat --config --readonly --apply --reason` | PROPOSED `recover --manual-flat` with every remaining flag unchanged plus `--pair qff_tsm` | Recover selector/default undefined |
-| `warmup-live --config --reset-store` | `warmup` with the same flags plus `--pair qff_tsm` | Unambiguous; not implemented |
-| `margin-check --config` | PROPOSED `status --margin --config --pair qff_tsm` | Status selector contract undefined |
-| `live-execute --config --resume --reset-store --max-iterations --skip-warmup --ui --quiet-ui --no-color` | PROPOSED `live --mode execute` with every remaining flag unchanged plus `--pair qff_tsm` | Must never be a default; exact mode contract undefined |
-| `exec-smoke --config --venue --symbol --lot --quantity --confirm-symbol --raw-json` | PROPOSED `admin --action exec-smoke` with every remaining flag unchanged | Admin selector syntax undefined; all env gates/confirm guard must remain in the existing handler |
-| `manual-close --config --venue --symbol --side --lot --quantity --confirm-symbol --raw-json` | PROPOSED `admin --action manual-close` with every remaining flag unchanged | Admin selector syntax undefined; all env gates/confirm guard must remain in the existing handler |
-| `broker-status --config --funds --orders --raw-json` | PROPOSED `status --broker` with every remaining flag unchanged | Status selector contract undefined |
+| `replay` | `replay` | Top-level name retained |
+| `replay --config` | `replay --config` | Unchanged |
+| `replay --max-bars` | `replay --max-bars` | Unchanged |
+| `replay --resume` | `replay --resume` | Unchanged |
+| `replay --reset-store` | `replay --reset-store` | Unchanged |
+| `summary` | `summary` | Top-level name retained |
+| `summary --config` | `summary --config` | Unchanged |
+| `summary --execution` | `summary --execution` | Unchanged |
+| `doctor` | `status doctor` | Absorbed as required nested action |
+| `doctor --config` | `status doctor --config` | Unchanged |
+| `doctor --mode replay\|live\|order` | `status doctor --mode replay\|live\|order` | Unchanged; default remains `replay`; unrelated to `live --mode` |
+| `live-dry-run` | `live --mode dry-run` | Old command becomes the required mode selector |
+| `live-dry-run --config` | `live --mode dry-run --config` | Unchanged |
+| `live-dry-run --resume` | `live --mode dry-run --resume` | Unchanged |
+| `live-dry-run --reset-store` | `live --mode dry-run --reset-store` | Unchanged |
+| `live-dry-run --max-iterations` | `live --mode dry-run --max-iterations` | Unchanged |
+| `live-dry-run --skip-warmup` | `live --mode dry-run --skip-warmup` | Unchanged |
+| `live-dry-run --ui dashboard\|compact` | `live --mode dry-run --ui dashboard\|compact` | Unchanged; default remains `compact` |
+| `live-dry-run --quiet-ui` | `live --mode dry-run --quiet-ui` | Unchanged |
+| `live-dry-run --no-color` | `live --mode dry-run --no-color` | Unchanged |
+| `live-status` | `status live` | Absorbed as required nested action |
+| `live-status --config` | `status live --config` | Unchanged |
+| `reconcile-brokers` | `status reconcile` | Absorbed as required nested action |
+| `reconcile-brokers --config` | `status reconcile --config` | Unchanged |
+| `reconcile-brokers --readonly` | `status reconcile --readonly` | Unchanged, including its live-readonly env requirement |
+| `clear-pause` | `recover clear-pause` | Absorbed as required nested action |
+| `clear-pause --config` | `recover clear-pause --config` | Unchanged |
+| `clear-pause --readonly` | `recover clear-pause --readonly` | Unchanged, including its live-readonly env requirement |
+| `recover-manual-flat` | `recover manual-flat` | Absorbed as required nested action |
+| `recover-manual-flat --config` | `recover manual-flat --config` | Unchanged |
+| `recover-manual-flat --readonly` | `recover manual-flat --readonly` | Unchanged, including its live-readonly env requirement |
+| `recover-manual-flat --apply` | `recover manual-flat --apply` | Unchanged; default remains dry-run |
+| `recover-manual-flat --reason` | `recover manual-flat --reason` | Unchanged; required by the handler when `--apply` is used |
+| `warmup-live` | `warmup` | Renamed top-level command |
+| `warmup-live --config` | `warmup --config` | Unchanged |
+| `warmup-live --reset-store` | `warmup --reset-store` | Unchanged |
+| `margin-check` | `status margin` | Absorbed as required nested action |
+| `margin-check --config` | `status margin --config` | Unchanged |
+| `live-execute` | `live --mode execute` | Old command becomes the required mode selector; no default reaches execute |
+| `live-execute --config` | `live --mode execute --config` | Unchanged |
+| `live-execute --resume` | `live --mode execute --resume` | Unchanged |
+| `live-execute --reset-store` | `live --mode execute --reset-store` | Unchanged |
+| `live-execute --max-iterations` | `live --mode execute --max-iterations` | Unchanged |
+| `live-execute --skip-warmup` | `live --mode execute --skip-warmup` | Unchanged |
+| `live-execute --ui dashboard\|compact` | `live --mode execute --ui dashboard\|compact` | Unchanged; default remains `compact` |
+| `live-execute --quiet-ui` | `live --mode execute --quiet-ui` | Unchanged |
+| `live-execute --no-color` | `live --mode execute --no-color` | Unchanged |
+| `exec-smoke` | `admin exec-smoke` | Absorbed as required gated admin action |
+| `exec-smoke --config` | `admin exec-smoke --config` | Unchanged |
+| `exec-smoke --venue fubon\|binance` | `admin exec-smoke --venue fubon\|binance` | Unchanged and still required |
+| `exec-smoke --symbol` | `admin exec-smoke --symbol` | Unchanged |
+| `exec-smoke --lot` | `admin exec-smoke --lot` | Unchanged |
+| `exec-smoke --quantity` | `admin exec-smoke --quantity` | Unchanged |
+| `exec-smoke --confirm-symbol` | `admin exec-smoke --confirm-symbol` | Unchanged and still required |
+| `exec-smoke --raw-json` | `admin exec-smoke --raw-json` | Unchanged |
+| `manual-close` | `admin manual-close` | Absorbed as required gated admin action |
+| `manual-close --config` | `admin manual-close --config` | Unchanged |
+| `manual-close --venue fubon\|binance` | `admin manual-close --venue fubon\|binance` | Unchanged and still required |
+| `manual-close --symbol` | `admin manual-close --symbol` | Unchanged and still required |
+| `manual-close --side buy\|sell` | `admin manual-close --side buy\|sell` | Unchanged and still required |
+| `manual-close --lot` | `admin manual-close --lot` | Unchanged |
+| `manual-close --quantity` | `admin manual-close --quantity` | Unchanged |
+| `manual-close --confirm-symbol` | `admin manual-close --confirm-symbol` | Unchanged and still required |
+| `manual-close --raw-json` | `admin manual-close --raw-json` | Unchanged |
+| `broker-status` | `status broker` | Absorbed as required nested action |
+| `broker-status --config` | `status broker --config` | Unchanged |
+| `broker-status --funds` | `status broker --funds` | Unchanged |
+| `broker-status --orders SYMBOL` | `status broker --orders SYMBOL` | Unchanged |
+| `broker-status --raw-json` | `status broker --raw-json` | Unchanged |
 
-The heading “14 subcommands → 6” conflicts with the target table, which contains
-seven top-level names when gated `admin` is counted. No interpretation was chosen.
+Phase 0 also adds `--pair qff_tsm` to strategy-state routes. It is optional at parse
+time, defaults to the only accepted value `qff_tsm`, and is present on `replay`,
+`summary`, both `live` modes, `status live`, `status reconcile`, `status margin`,
+both `recover` actions, and `warmup`. It is intentionally absent from generic
+`status doctor`, account-level `status broker`, and the single-venue `admin` tools.
 
-## 4. Removed/merged tests
+The routing-only claim for the live-order invariant has especially strong evidence:
+`lux_trader/cli/commands_execution.py`, `commands_live.py`, and
+`commands_recovery.py` are byte-identical to `master`. Thus the order handlers,
+safety gates, reconciliation checks, order construction, and fill confirmation were
+not edited; only parser/dispatcher routing changed.
 
-No behavior test was deleted. These named tests were merged into one parameterized
-body; pytest still collects both cases.
+## 4. Removed and merged tests
 
-| Previous test | Replacement | Why coverage is unchanged |
+No behavior test was dropped. Exactly two named tests were merged into one
+parameterized body, and pytest still collects two cases:
+
+| Previous test | Replacement collected case | Why coverage is unchanged |
 |---|---|---|
-| `test_expiry_buffer_selects_front_contract_when_buffer_is_satisfied` | `test_expiry_buffer_selects_contract_for_business_day_distance[2026-07-08...-QFFG6-5]` | Preserves the front-contract symbol and business-day assertions |
-| `test_expiry_buffer_switches_to_next_contract_when_front_has_four_days_left` | `test_expiry_buffer_selects_contract_for_business_day_distance[2026-07-09...-QFFH6-29]` | Preserves rollover selection and adds the selected contract's business-day assertion |
+| `test_expiry_buffer_selects_front_contract_when_buffer_is_satisfied` | `test_expiry_buffer_selects_contract_for_business_day_distance[2026-07-08T09:00:00+08:00-QFFG6-5]` | Preserves front-contract selection and the five-business-day assertion |
+| `test_expiry_buffer_switches_to_next_contract_when_front_has_four_days_left` | `test_expiry_buffer_selects_contract_for_business_day_distance[2026-07-09T09:00:00+08:00-QFFH6-29]` | Preserves rollover-to-next-contract selection and asserts its business-day distance |
 
-Duplicated fixture/config builders consolidated without deleting tests:
+The following duplicated local config builders were merged into shared helpers.
+These are fixture consolidations, not deleted test cases, and have no collection-count
+effect:
 
-| Removed local helper | Shared replacement |
-|---|---|
-| `test_margin_check.write_config` | `tests/fakes.py::write_test_config` with a `margin_enabled=True` partial |
-| `test_reconciliation_store_cli.write_config` | Shared helper with broker-reconciliation section enabled |
-| `test_recovery_cli.write_config` | Shared helper with safety and broker-reconciliation sections enabled |
+| Removed local helper | Shared replacement | Preserved specialization |
+|---|---|---|
+| `test_margin_check.write_config` | `tests/fakes.py::write_test_config` via `partial` | `margin_enabled=True` default |
+| `test_reconciliation_store_cli.write_config` | `tests/fakes.py::write_test_config` via `partial` | Broker reconciliation enabled |
+| `test_recovery_cli.write_config` | `tests/fakes.py::write_test_config` via `partial` | Safety and broker reconciliation enabled |
+| `test_live_execute_preflight.write_live_execute_config` | `tests/fakes.py::write_execution_test_config` via `partial` | Original config/store/cache names, reconciliation, and omitted Fubon env path |
+| `test_binance_execution.write_config` | `tests/fakes.py::write_execution_test_config` | Existing safety/live-execution toggles and Binance defaults |
+| `test_fubon_execution.write_config` | `tests/fakes.py::write_execution_test_config` | Existing safety/live-execution toggles and Fubon defaults |
 
-## 5. ExecutionAdapter protocol
+Other touched tests retained their test functions and assertions while updating only
+the invoked command route to the implemented nested CLI.
 
-The pre-existing one-method protocol in `lux_trader/execution/outcome.py` was expanded
-in place. This keeps it beside `ExecutionOutcome`/`PairExecutionPlan`, where current
-coordinators already import it, instead of coupling execution to the reconciliation
-package. `PlanExecutor` retains the intentionally smaller seam used by simulated
-execution.
+## 5. ExecutionAdapter protocol and subprocess transport
+
+The final protocol lives in `lux_trader/execution/outcome.py`, beside
+`ExecutionOutcome` and `PairExecutionPlan`, because execution coordinators already
+depend on that module and this avoids coupling execution to reconciliation.
+`PlanExecutor` remains the deliberately narrower seam used by simulated execution.
 
 ```python
 @dataclass(frozen=True)
@@ -155,53 +255,82 @@ class ExecutionAdapter(Protocol):
     def close(self) -> None: ...
 ```
 
-Fubon and Binance preflight records had exactly the same fields, so they now alias
-the single `ExecutionPreflight` dataclass without information loss. Fubon-only
-`fetch_order_records` and `session_health` remain off the shared protocol and are
-represented by `OrderRecordsProvider` and `SessionHealthProvider`; the existing
-runtime health call remains capability-checked with `getattr`.
+Fubon and Binance preflight records contained the same two fields, so
+`FubonExecutionPreflight` and `BinanceExecutionPreflight` now alias the shared
+`ExecutionPreflight` dataclass with no information loss. Fubon-only
+`fetch_order_records()` and `session_health()` stay off the shared interface and are
+described by the narrow runtime-checkable `OrderRecordsProvider` and
+`SessionHealthProvider` protocols. Existing runtime access to session health remains
+capability-checked with `getattr`.
 
-The transport extraction is not implemented pending Q3. In particular, the Fubon
-execution worker remains symbol-bound, as required for Phase 0.
+`lux_trader/integrations/subprocess_transport.py` now owns the reusable mechanics
+previously duplicated by `fubon/execution_process.py` and
+`fubon/readonly_process.py`: spawn-context/Pipe/process lifecycle, serialized request
+locking, send/poll/receive handling, worker-error wrapping, worker PID/liveness,
+idempotent close, restart, terminate-then-kill, and connection cleanup. Worker
+targets, payloads, labels, exception classes, and timeout policy remain supplied by
+the adapters. The transport hardcodes no request timeout.
+
+Q3 is preserved exactly:
+
+| Adapter | Execution | Query | Terminate |
+|---|---:|---:|---:|
+| `FubonFutureExecutionProcess` | 30 s | 15 s | 3 s |
+| `FubonReadOnlyBrokerProcess` | N/A | 20 s | 3 s |
+
+The Fubon execution worker remains symbol-bound, as required; symbol generalization
+was not started.
 
 ## 6. Changes outside §4
 
 | Change | Justification |
 |---|---|
-| Golden JSON and integration test | Explicit Task 2.3 prerequisite |
-| `PlanExecutor` narrow protocol | Prevents the broader venue protocol from falsely requiring query/preflight methods on the simulated execution adapter |
-| This report and `HANDOFF_QUESTIONS.md` | Required by §0.1 and §5 |
+| `tests/fixtures/replay/golden_summary.json` and `tests/integration/test_replay_golden.py` | Required by baseline Task 2.3 before Phase 0 work |
+| `.gitignore`: `.codex_pytest_tmp/` and `.codex-logs/` | Prevent local pytest scratch and delegation logs from appearing as repository changes; no runtime effect |
+| `docs/IMPLEMENTATION_SPEC_PHASE_0_1.md` Q1-Q5 resolution text | Records reviewer/owner decisions that unblocked the already-scoped Phase 0 tasks; no product behavior |
+| This report and `docs/HANDOFF_QUESTIONS.md` | Required Checkpoint 1 deliverables |
 
-No production behavior, order construction, order timing, fill confirmation, or env
-gate was changed.
+`PlanExecutor` is not listed here: it is the narrow supporting protocol needed by the
+§4.2 `ExecutionAdapter` extraction so simulated execution is not falsely required to
+implement venue-query methods.
 
-## 7. Open questions / blockers
+### Minor behavioral delta
 
-See `docs/HANDOFF_QUESTIONS.md` for the full context, options, and recommendations:
+The previous BLOCKED report's statement that “No production behavior ... was
+changed” was slightly overstated. At the current location
+`lux_trader/integrations/fubon/execution_process.py:169`, `preflight()` now validates
+the subprocess result with `isinstance(result, ExecutionPreflight)` and raises
+`FubonExecutionWorkerError` for an unexpected result type. Previously it returned
+the worker result without this type check.
 
-1. disposition of `issue/M6_FUBON_SYMBOL_FORMAT_ISSUE.md`;
-2. deletion of three protected `.tmp_pytest*` directories;
-3. readonly subprocess 20-second default versus the spec's 15-second query timeout;
-4. consolidated CLI selector/default contract;
-5. legacy CLI alias/deprecation policy.
+This is a safe defensive validation and stays, but it is a real minor behavioral
+delta because malformed worker output now has a new raise path. It does not alter a
+valid preflight result, an order payload, order timing, fill confirmation, or a live
+safety gate.
+
+## 7. Handoff questions
+
+`docs/HANDOFF_QUESTIONS.md` marks Q1-Q5 resolved and records the implemented decision
+for each. There are no new open questions and no newly discovered out-of-scope bugs.
 
 ## 8. LOC before/after
 
-Counts are physical Python lines from tracked `master` versus the current worktree,
-grouped by the first path component under `lux_trader/`. The tests row includes all
-Python files under `tests/`; JSON fixtures are excluded.
+Counts are physical Python lines from the tracked `master` tree
+(`8171132`) versus `b223138`, grouped by the first path component under
+`lux_trader/`. The tests row includes all Python files under `tests/`; JSON fixtures
+are excluded.
 
 | Top-level module | Before | After | Delta |
 |---|---:|---:|---:|
 | `__init__.py` | 3 | 3 | 0 |
 | `__main__.py` | 5 | 5 | 0 |
 | `brokers/` | 46 | 46 | 0 |
-| `cli/` | 2,217 | 2,217 | 0 |
+| `cli/` | 2,217 | 2,295 | +78 |
 | `config.py` | 470 | 470 | 0 |
 | `core/` | 1,815 | 1,815 | 0 |
 | `dashboard_ui.py` | 458 | 458 | 0 |
 | `execution/` | 2,119 | 2,163 | +44 |
-| `integrations/` | 5,406 | 5,407 | +1 |
+| `integrations/` | 5,406 | 5,434 | +28 |
 | `margin/` | 874 | 874 | 0 |
 | `market_data/` | 1,256 | 1,256 | 0 |
 | `ntfy.py` | 759 | 759 | 0 |
@@ -212,18 +341,8 @@ Python files under `tests/`; JSON fixtures are excluded.
 | `store.py` | 1,062 | 1,062 | 0 |
 | `terminal_ui.py` | 585 | 585 | 0 |
 | `trade_pnl.py` | 67 | 67 | 0 |
-| **`lux_trader/` total** | **22,628** | **22,673** | **+45** |
-| **`tests/`** | **14,595** | **14,682** | **+87** |
+| **`lux_trader/` total** | **22,628** | **22,778** | **+150** |
+| **`tests/`** | **14,595** | **15,041** | **+446** |
 
-## 9. Plan/spec discrepancies observed
-
-- `MULTIPAIR_PLAN.md` describes a broader venue interface (`quote`, historical data,
-  place/cancel, positions, account), while §4.2 defines the current five-method
-  execution adapter. The implementation spec wins; only the five-method protocol was
-  formalized.
-- The implementation spec names branch `feature/multipair-phase-0-1`; the owner's
-  direct instruction for this run names `feature/multipair-phase`. The direct
-  instruction was followed.
-- The plan says “about 6” CLI commands and the implementation-spec heading says 6,
-  but its target table lists 7 including `admin`. This remains unresolved with the
-  rest of Q4/Q5.
+Phase 0 therefore stops at Checkpoint 1 with the golden baseline intact; no Phase 1
+schema, naming, configuration, calendar, or fee work has begun.
