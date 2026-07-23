@@ -14,6 +14,18 @@ from lux_trader.integrations.fubon.market_data_process import (
 )
 
 
+# The two rebuild tests below require the *replacement* worker to answer inside
+# init_timeout_seconds. On Windows a cold worker needs ~1.8s to spawn, import, and
+# reply (measured 2026-07-24: min 1.73s, median 1.77s, max 1.92s over 10 samples),
+# so the previous 2.0s left about 4% headroom and the pair failed ~60% of runs once
+# anything else was competing for the machine. 5.0s gives ~2.6x headroom and was
+# stable over repeated runs.
+#
+# This is a test-pacing value only. Production is unaffected: the live provider uses
+# DEFAULT_INIT_TIMEOUT_SECONDS (30.0s).
+REBUILD_INIT_TIMEOUT_SECONDS = 5.0
+
+
 def _send_ok(connection: Connection, result: Any = None) -> None:
     connection.send(
         {
@@ -89,7 +101,7 @@ def test_initial_realtime_timeout_terminates_and_rebuilds_worker(tmp_path) -> No
     marker = tmp_path / "first-worker.txt"
     provider = FubonTwLegMarketDataProcess(
         marker,
-        init_timeout_seconds=2.0,
+        init_timeout_seconds=REBUILD_INIT_TIMEOUT_SECONDS,
         terminate_timeout_seconds=0.5,
         worker_target=_first_init_hangs_worker,
     )
@@ -108,7 +120,7 @@ def test_reconnect_timeout_terminates_and_rebuilds_worker(tmp_path) -> None:
     marker = tmp_path / "first-worker.txt"
     provider = FubonTwLegMarketDataProcess(
         marker,
-        init_timeout_seconds=2.0,
+        init_timeout_seconds=REBUILD_INIT_TIMEOUT_SECONDS,
         terminate_timeout_seconds=0.5,
         worker_target=_reconnect_hangs_worker,
     )
