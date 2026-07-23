@@ -172,6 +172,48 @@ recover (--clear-pause|--manual-flat) · warmup · summary
 4. **Dashboard**：多 panel，每個 pair 一格，顯示各自的真實標的名
 5. 單一 store，以 `pair_id` 分割；resume / 對帳 / 事件全部 pair-aware
 
+### 5.1 啟用哪些 pair —— config + CLI（已定案）
+
+單行程拓撲下兩個 pair 無法分行程跑（富邦一帳號一 session），所以「這次要跑哪些」
+必須是明確開關，否則無法分階段上線（先 QFF/TSM → 加 CCF/UMC dry-run → 兩者實單）。
+
+```toml
+[[pairs]]
+id = "qff_tsm"
+enabled = true      # 此 pair 允許被啟動
+
+[[pairs]]
+id = "ccf_umc"
+enabled = false     # 設定保留在版控裡，但不載入
+```
+
+| 情境 | 行為 |
+|---|---|
+| `enabled = false` | 不載入。`--pair` 明確指名也不能跑 —— 停用就是停用 |
+| `live --mode dry-run`（不帶 `--pair`） | 跑所有 enabled 的 pair |
+| **`live --mode execute`（不帶 `--pair`）** | **拒絕啟動並報錯** |
+| `live --mode execute --pair qff_tsm` | 只跑指名的；要兩個就重複指定 |
+
+**實單模式強制明寫 `--pair` 的理由**與 `--mode` 必填相同：*在 config 新增一個 pair
+不該讓下次啟動默默多交易一個標的。* 擴大實單曝險必須是指令列上看得見的動作。
+
+`--pair` 已於 Phase 0 加入 9 個涉及策略狀態的指令，機制已存在，Phase 2 只需賦予
+多值語意。
+
+### 5.2 故障隔離（已定案）
+
+**單一 pair 的問題只停該 pair，另一個繼續。** 對帳不符、合約換月失敗、單腿異常
+都是 pair 局部事件，沒有理由連坐健康的另一邊。
+
+例外是**共用資源層級的故障**，本質上就會同時影響兩者，不需要特別的連坐規則：
+
+- 全帳戶保證金紅線 → 依 §9 未決事項 #1 的優先序處理
+- Fubon SDK session 斷線 → 兩個 pair 的 tw_leg 都不通
+- 時鐘偏移、Windows 時間同步失敗 → 全域前置檢查
+
+實作上：`StrategyState.PAUSED` 成為 per-pair 狀態，主迴圈跳過 PAUSED 的 pair 但
+繼續推進其餘；`recover` 指令用 `--pair` 指定要解除哪一個。
+
 ---
 
 ## 6. Phase 3 — IBKR 整合
