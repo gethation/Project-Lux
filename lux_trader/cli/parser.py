@@ -46,9 +46,27 @@ def add_readonly_argument(
     )
 
 
+def add_live_pair_argument(parser: argparse.ArgumentParser) -> None:
+    """Repeatable ``--pair id[:mode]`` for the one command that drives many pairs.
+
+    Kept separate from ``add_pair_argument`` because every other command acts on a
+    single pair, and turning their ``--pair`` into a list would change 9 call
+    sites for no gain.
+    """
+    parser.add_argument(
+        "--pair",
+        action="append",
+        metavar="ID[:MODE]",
+        help=(
+            "Strategy pair to run, repeatable. An optional ':dry-run' or "
+            "':execute' suffix overrides --mode for that pair"
+        ),
+    )
+
+
 def add_live_loop_arguments(parser: argparse.ArgumentParser) -> None:
     add_config_argument(parser)
-    add_pair_argument(parser)
+    add_live_pair_argument(parser)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--reset-store", action="store_true")
     parser.add_argument("--max-iterations", type=int)
@@ -92,8 +110,11 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument(
         "--mode",
         choices=("dry-run", "execute"),
-        required=True,
-        help="Required live mode; execute retains all real-order safety gates",
+        help=(
+            "Default mode for pairs whose --pair carries no ':mode' suffix. "
+            "Required unless every --pair names its own mode; execute retains "
+            "all real-order safety gates and still refuses to run without --pair"
+        ),
     )
     add_live_loop_arguments(live)
 

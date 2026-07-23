@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..core.calendar import SessionCalendar, TaifexSessionCalendar
+from ..core.calendar import (
+    WEEKEND_POLICY_FLAT,
+    SessionCalendar,
+    TaifexSessionCalendar,
+)
 from ..core.models import MarketBar
 
 TAIPEI_TZ = "Asia/Taipei"
@@ -32,9 +36,10 @@ class CsvReplayMarketData:
         tw_leg_ohlcv_path: Path | None = None,
         us_leg_ohlcv_path: Path | None = None,
         usdttwd_ohlcv_path: Path | None = None,
+        weekend_policy: str = WEEKEND_POLICY_FLAT,
     ) -> None:
         self.csv_path = csv_path
-        self.calendar = calendar or TaifexSessionCalendar()
+        self.calendar = calendar or TaifexSessionCalendar(weekend_policy)
         self.tw_leg_ohlcv_path = tw_leg_ohlcv_path
         self.us_leg_ohlcv_path = us_leg_ohlcv_path
         self.usdttwd_ohlcv_path = usdttwd_ohlcv_path

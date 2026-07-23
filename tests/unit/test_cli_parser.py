@@ -12,6 +12,12 @@ from lux_trader.cli.parser import build_parser
 CONFIG = "config.toml"
 PAIR_ID = "qff_tsm"
 
+# Route resolution reads the [[pairs]] catalog, so dispatch-level tests need a
+# config that actually exists, unlike the parse-only cases above.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+FIXTURE_CONFIG = str(REPO_ROOT / "configs" / "replay.fixture.toml")
+MULTIPAIR_CONFIG = str(REPO_ROOT / "tests" / "fixtures" / "config" / "multipair.toml")
+
 
 CLI_CASES = (
     (
@@ -68,7 +74,9 @@ CLI_CASES = (
             "ui": "dashboard",
             "quiet_ui": True,
             "no_color": True,
-            "pair": PAIR_ID,
+            # live is the one command that drives several pairs, so its --pair is
+            # repeatable and parses into a list of `id[:mode]` specs.
+            "pair": [PAIR_ID],
         },
     ),
     (
@@ -100,7 +108,7 @@ CLI_CASES = (
             "ui": "compact",
             "quiet_ui": True,
             "no_color": True,
-            "pair": PAIR_ID,
+            "pair": [PAIR_ID],
         },
     ),
     (
@@ -296,15 +304,12 @@ def test_pair_id_is_resolved_from_config_instead_of_parser_choices() -> None:
 @pytest.mark.parametrize(
     "argv",
     (
-        ["live", "--config", CONFIG],
         ["status"],
         ["recover"],
         ["admin"],
     ),
 )
-def test_explicit_live_mode_and_nested_action_are_required(
-    argv: list[str],
-) -> None:
+def test_nested_action_is_required(argv: list[str]) -> None:
     with pytest.raises(SystemExit):
         build_parser().parse_args(argv)
 
@@ -331,26 +336,114 @@ def test_retired_top_level_names_are_rejected(legacy_name: str) -> None:
         build_parser().parse_args([legacy_name])
 
 
-@pytest.mark.parametrize(
-    ("mode", "expected_route"),
-    (("dry-run", "live.dry-run"), ("execute", "live.execute")),
-)
-def test_live_dispatch_requires_and_uses_explicit_mode(
-    mode: str,
-    expected_route: str,
+def capture_route(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    route: str,
+) -> list[argparse.Namespace]:
     calls: list[argparse.Namespace] = []
 
     def handler(args: argparse.Namespace) -> int:
         calls.append(args)
         return 17
 
-    monkeypatch.setitem(dispatch.COMMAND_HANDLERS, expected_route, handler)
+    monkeypatch.setitem(dispatch.COMMAND_HANDLERS, route, handler)
+    return calls
+
+
+def test_live_dry_run_without_pair_runs_every_enabled_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = capture_route(monkeypatch, "live.dry-run")
+
+    assert dispatch.main(["live", "--mode", "dry-run", "--config", FIXTURE_CONFIG]) == 17
+
+    assert len(calls) == 1
+    assert calls[0].mode == "dry-run"
+    # The list of specs is collapsed to the single resolved pair id the
+    # single-pair command handlers still expect.
+    assert calls[0].pair == "qff_tsm"
+
+
+def test_live_execute_is_refused_without_pair(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """§5.1: widening real-order exposure has to be visible on the command line."""
+    calls = capture_route(monkeypatch, "live.execute")
+
+    with pytest.raises(SystemExit):
+        dispatch.main(["live", "--mode", "execute", "--config", FIXTURE_CONFIG])
+
+    assert calls == []
+    assert "without --pair" in capsys.readouterr().err
+
+
+def test_live_requires_a_mode_from_somewhere(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        dispatch.main(["live", "--config", FIXTURE_CONFIG])
+
+    assert "--mode is required" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("mode", ("dry-run", "execute"))
+def test_per_pair_mode_suffix_selects_the_route(
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = capture_route(monkeypatch, f"live.{mode}")
 
     assert (
-        dispatch.main(["live", "--mode", mode, "--config", CONFIG])
+        dispatch.main(
+            ["live", "--config", FIXTURE_CONFIG, "--pair", f"qff_tsm:{mode}"]
+        )
         == 17
     )
+
     assert len(calls) == 1
     assert calls[0].mode == mode
+    assert calls[0].pair == "qff_tsm"
+
+
+def test_pair_suffix_overrides_the_global_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = capture_route(monkeypatch, "live.dry-run")
+
+    assert (
+        dispatch.main(
+            [
+                "live",
+                "--mode",
+                "execute",
+                "--config",
+                FIXTURE_CONFIG,
+                "--pair",
+                "qff_tsm:dry-run",
+            ]
+        )
+        == 17
+    )
+
+    assert len(calls) == 1
+    assert calls[0].mode == "dry-run"
+
+
+def test_selecting_two_pairs_is_refused_until_the_runtime_supports_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        dispatch.main(
+            [
+                "live",
+                "--config",
+                MULTIPAIR_CONFIG,
+                "--pair",
+                "qff_tsm:execute",
+                "--pair",
+                "ccf_umc:dry-run",
+            ]
+        )
+
+    assert "not implemented yet" in capsys.readouterr().err

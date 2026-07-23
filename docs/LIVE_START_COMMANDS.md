@@ -6,6 +6,13 @@
 Set-Location 'C:\Users\huang\workplace\Project-Lux'
 ```
 
+> **升級到 Phase 2 config 之後，`live --mode execute` 必須加上 `--pair`。**
+> 不帶 `--pair` 的實單啟動會被拒絕（計畫書 §5.1：擴大實單曝險必須在指令列上
+> 看得見）。本文件的 execute 指令已改成新形式；**若你的機器還在跑升級前的版本，
+> 舊指令仍然有效**，升級步驟見 `LIVE_UPGRADE_RUNBOOK.md`。
+>
+> dry-run 不受影響 —— 不帶 `--pair` 會跑所有 `enabled` 的 pair。
+
 ## Live dry run
 
 使用真實即時行情及模擬成交，不會送出真實訂單：
@@ -55,14 +62,17 @@ finally {
 啟動全新的真實交易：
 
 ```powershell
-.\scripts\lux.ps1 live --mode execute --config configs\config.live.exec.local.toml --reset-store
+.\scripts\lux.ps1 live --config configs\config.live.exec.local.toml --pair qff_tsm:execute --reset-store
 ```
 
 從既有狀態繼續執行：
 
 ```powershell
-.\scripts\lux.ps1 live --mode execute --config configs\config.live.exec.local.toml --resume
+.\scripts\lux.ps1 live --config configs\config.live.exec.local.toml --pair qff_tsm:execute --resume
 ```
+
+`--pair qff_tsm:execute` 等同於 `--mode execute --pair qff_tsm`；當一個行程要同時
+跑不同模式的 pair 時（例如 QFF/TSM 實單搭配 CCF/UMC dry-run），只有前者表達得出來。
 
 `scripts\lux.ps1` 會在 `live --mode execute` 執行期間設定所需的 live-order 環境 gate，並在程序結束後還原原本的環境變數。
 每次啟動及 resume 都會重新執行唯讀 reconciliation；核對失敗時不會進入真實下單 runner。

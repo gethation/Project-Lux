@@ -1,0 +1,141 @@
+# Three-pair config used only by CLI selection tests. The data paths are never
+# opened -- these tests stop at route resolution -- so they point at the replay
+# fixture snapshot purely to keep the file a valid AppConfig.
+#
+# The shape is deliberate: two enabled pairs with different weekend policies, and
+# one disabled pair, so the selection rules in §5.1 of docs/MULTIPAIR_PLAN.md all
+# have something to bite on.
+[paths]
+store_path = 'data/multipair_selection_test.sqlite3'
+
+[[pairs]]
+id = 'qff_tsm'
+label = 'QFF/TSM'
+# weekend_policy omitted on purpose: the default has to stay 'flat' so existing
+# configs keep the behaviour the frozen replay baseline was measured under.
+
+[pairs.data]
+input_csv = 'tests/fixtures/replay/spread_zscore_w500.csv'
+tw_leg_ohlcv_csv = 'tests/fixtures/replay/qff1_1m_open.csv'
+us_leg_ohlcv_csv = 'tests/fixtures/replay/binance_tsm_open.csv'
+fx_ohlcv_csv = 'tests/fixtures/replay/bitopro_usdttwd_open.csv'
+
+[pairs.tw_leg]
+display = 'QFF'
+venue = 'fubon'
+product = 'QFF'
+symbol = 'auto'
+contract_multiplier = 100.0
+
+[pairs.us_leg]
+display = 'TSM'
+venue = 'binance'
+symbol = 'TSM/USDT:USDT'
+adr_share_ratio = 5.0
+
+[pairs.fx]
+venue = 'bitopro'
+symbol = 'USDT/TWD'
+
+[pairs.sizing]
+mode = 'notional'
+leg_notional_twd = 1000000.0
+
+[pairs.strategy]
+entry_z = 2.0
+exit_z = 1.0
+initial_capital_twd = 2000000.0
+max_entry_delay_minutes = 15
+zscore_window = 500
+
+[pairs.fees]
+us_leg_fee_bps = 5.0
+tw_leg_fee_per_contract_twd = 5.0
+tw_leg_tax_rate = 0.00002
+
+[[pairs]]
+id = 'ccf_umc'
+label = 'CCF/UMC'
+weekend_policy = 'none'
+
+[pairs.data]
+input_csv = 'tests/fixtures/replay/spread_zscore_w500.csv'
+
+[pairs.tw_leg]
+display = 'CCF'
+venue = 'fubon'
+product = 'CCF'
+symbol = 'auto'
+contract_multiplier = 2000.0
+
+[pairs.us_leg]
+display = 'UMC'
+venue = 'ibkr'
+symbol = 'UMC'
+adr_share_ratio = 5.0
+
+[pairs.fx]
+venue = 'twelvedata'
+symbol = 'USD/TWD'
+
+[pairs.sizing]
+mode = 'fixed_lots'
+lots = 1
+
+[pairs.strategy]
+entry_z = 1.5
+exit_z = 0.0
+initial_capital_twd = 2000000.0
+max_entry_delay_minutes = 15
+zscore_window = 2500
+
+[pairs.fees]
+us_leg_fee_bps = 5.0
+tw_leg_fee_per_contract_twd = 88.0
+tw_leg_tax_rate = 0.00002
+
+[[pairs]]
+id = 'retired_pair'
+label = 'Retired'
+enabled = false
+
+[pairs.data]
+input_csv = 'tests/fixtures/replay/spread_zscore_w500.csv'
+
+[pairs.tw_leg]
+display = 'XXF'
+venue = 'fubon'
+product = 'XXF'
+symbol = 'auto'
+contract_multiplier = 100.0
+
+[pairs.us_leg]
+display = 'XXX'
+venue = 'binance'
+symbol = 'XXX/USDT:USDT'
+adr_share_ratio = 5.0
+
+[pairs.fx]
+venue = 'bitopro'
+symbol = 'USDT/TWD'
+
+[pairs.sizing]
+mode = 'fixed_lots'
+lots = 1
+
+[pairs.strategy]
+entry_z = 2.0
+exit_z = 1.0
+initial_capital_twd = 2000000.0
+max_entry_delay_minutes = 15
+zscore_window = 500
+
+[pairs.fees]
+us_leg_fee_bps = 5.0
+tw_leg_fee_per_contract_twd = 5.0
+tw_leg_tax_rate = 0.00002
+
+[safety]
+allow_live_order = false
+validate_expected_zscore = true
+expected_zscore_tolerance = 0.0000001

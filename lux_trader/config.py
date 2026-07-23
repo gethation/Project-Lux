@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import date
 
+from lux_trader.core.calendar import WEEKEND_POLICY_FLAT, validate_weekend_policy
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -77,6 +79,12 @@ class PairConfig:
     strategy: StrategyConfig
     fees: FeeConfig
     data: PairDataConfig
+    # Config-level kill switch. A disabled pair is never loaded, not even when
+    # named explicitly on the command line -- disabled means disabled.
+    enabled: bool = True
+    # See lux_trader.core.calendar for what each policy does and why QFF/TSM and
+    # CCF/UMC need different ones. Defaults to the historical behaviour.
+    weekend_policy: str = WEEKEND_POLICY_FLAT
 
 
 @dataclass(frozen=True)
@@ -245,22 +253,26 @@ def load_config(path: Path, *, pair_id: str | None = None) -> AppConfig:
     root = config_path_root(path)
 
     paths = raw.get("paths", {})
-    pairs_raw = raw.get("pairs")
-    if not isinstance(pairs_raw, list) or not pairs_raw:
-        raise RuntimeError("Config must declare at least one [[pairs]] entry")
-    pairs = tuple(load_pair_config(item, root, index) for index, item in enumerate(pairs_raw))
+    pairs = parse_pair_catalog(raw, root)
     pair_ids = [pair.id for pair in pairs]
-    if len(pair_ids) != len(set(pair_ids)):
-        raise RuntimeError("Config [[pairs]] ids must be unique")
     if pair_id is None:
-        if len(pairs) != 1:
-            raise RuntimeError("A pair_id is required when more than one pair is configured")
-        active_pair = pairs[0]
+        enabled_pairs = [pair for pair in pairs if pair.enabled]
+        if len(enabled_pairs) != 1:
+            raise RuntimeError(
+                "A pair_id is required unless exactly one pair is enabled; "
+                f"enabled pairs: {[pair.id for pair in enabled_pairs]}"
+            )
+        active_pair = enabled_pairs[0]
     else:
         active_pair = next((pair for pair in pairs if pair.id == pair_id), None)
         if active_pair is None:
             raise RuntimeError(
                 f"Pair {pair_id!r} is not configured; available pairs: {pair_ids}"
+            )
+        if not active_pair.enabled:
+            raise RuntimeError(
+                f"Pair {pair_id!r} is disabled in config (enabled = false); "
+                "re-enable it there before selecting it"
             )
 
     safety = raw.get("safety", {})
@@ -437,12 +449,47 @@ def load_config(path: Path, *, pair_id: str | None = None) -> AppConfig:
     )
 
 
+def parse_pair_catalog(raw: dict[str, object], root: Path) -> tuple[PairConfig, ...]:
+    pairs_raw = raw.get("pairs")
+    if not isinstance(pairs_raw, list) or not pairs_raw:
+        raise RuntimeError("Config must declare at least one [[pairs]] entry")
+    pairs = tuple(
+        load_pair_config(item, root, index) for index, item in enumerate(pairs_raw)
+    )
+    pair_ids = [pair.id for pair in pairs]
+    if len(pair_ids) != len(set(pair_ids)):
+        raise RuntimeError("Config [[pairs]] ids must be unique")
+    return pairs
+
+
+def load_pair_catalog(path: Path) -> tuple[PairConfig, ...]:
+    """Read the ``[[pairs]]`` array without choosing an active pair.
+
+    The CLI has to know which pairs exist before it can decide which to run, and
+    ``load_config`` cannot answer that -- it must resolve exactly one active pair
+    to build an AppConfig.
+    """
+    path = path.expanduser().resolve()
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    return parse_pair_catalog(raw, config_path_root(path))
+
+
 def load_pair_config(raw: object, root: Path, index: int) -> PairConfig:
     if not isinstance(raw, dict):
         raise RuntimeError(f"pairs[{index}] must be a TOML table")
     prefix = f"pairs[{index}]"
     pair_id = required_text(raw.get("id"), f"{prefix}.id")
     label = required_text(raw.get("label"), f"{prefix}.label")
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise RuntimeError(f"{prefix}.enabled must be a boolean")
+    try:
+        weekend_policy = validate_weekend_policy(
+            raw.get("weekend_policy", WEEKEND_POLICY_FLAT),
+            field=f"{prefix}.weekend_policy",
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
     tw_raw = require_table(raw.get("tw_leg"), f"{prefix}.tw_leg")
     us_raw = require_table(raw.get("us_leg"), f"{prefix}.us_leg")
     fx_raw = require_table(raw.get("fx"), f"{prefix}.fx")
@@ -517,6 +564,8 @@ def load_pair_config(raw: object, root: Path, index: int) -> PairConfig:
     return PairConfig(
         id=pair_id,
         label=label,
+        enabled=enabled,
+        weekend_policy=weekend_policy,
         tw_leg=tw_leg,
         us_leg=us_leg,
         fx=FxConfig(

@@ -197,6 +197,14 @@ class DryRunLiveModeHandler(LiveModeHandler):
         self.coordinator: ExecutionCoordinator | None = None
 
     def validate_config(self, config: AppConfig) -> None:
+        # A process that drives one pair can only be dry-running, so holding
+        # live-order permission is contradictory and refused outright.
+        #
+        # Phase 2 relaxes this rather than deletes it: once a process runs one pair
+        # in execute mode alongside another in dry-run (plan §5.1), the flag has to
+        # be true for the executing pair, and the condition becomes "no execute pair
+        # in this process". What keeps *this* pair simulated either way is
+        # structural -- see on_runtime_ready -- not this comparison.
         if config.safety.allow_live_order:
             raise RuntimeError("Refusing live-dry-run with allow_live_order=true")
 
@@ -207,10 +215,12 @@ class DryRunLiveModeHandler(LiveModeHandler):
         tw_leg_symbol: str,
         tw_leg_expiry: str | None,
     ) -> None:
-        self.recorder = DryRunExecutionRecorder(
-            store,
-            allow_live_order=self.config.safety.allow_live_order,
-        )
+        # Two things keep this pair simulated no matter what the process is allowed
+        # to do, and both are structural rather than conditional: the coordinator is
+        # handed a SimulatedExecutionAdapter unconditionally, and the recorder is
+        # denied live-order permission, so the plan validator rejects any plan that
+        # asks for one.
+        self.recorder = DryRunExecutionRecorder(store, allow_live_order=False)
         self.coordinator = ExecutionCoordinator(
             store,
             self.recorder,

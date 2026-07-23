@@ -200,6 +200,23 @@ Copy-Item "configs\archive\config.live.exec.local.<stamp>.toml" configs\config.l
 
 完整的逐旗標對照在 `docs/CHECKPOINT_1_REPORT.md` §3。
 
+### 若升級目標包含 Phase 2 的 pair 選擇（`phase2-multipair-config` 之後）
+
+**實單啟動指令會多一個必填參數。** `live --mode execute` 不帶 `--pair` 會被拒絕：
+
+```powershell
+# 舊
+.\scripts\lux.ps1 live --mode execute --config configs/config.live.exec.local.toml --resume
+# 新
+.\scripts\lux.ps1 live --config configs/config.live.exec.local.toml --pair qff_tsm:execute --resume
+```
+
+理由是計畫書 §5.1：config 多一個 pair 不該讓下次啟動默默多交易一個標的，所以擴大
+實單曝險必須在指令列上看得見。**dry-run 不受影響**，不帶 `--pair` 會跑所有 `enabled`
+的 pair。
+
+升級前先確認你的啟動腳本／排程有沒有寫死舊指令 —— 這是唯一會讓升級後起不來的改動。
+
 ---
 
 ## 升級後才有的能力
