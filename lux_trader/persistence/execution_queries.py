@@ -22,29 +22,31 @@ def timestamp_text(value: datetime) -> str:
 
 
 class ExecutionStore:
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, connection: sqlite3.Connection, pair_id: str) -> None:
         self.connection = connection
+        self.pair_id = pair_id
 
     def record_plan(self, plan: PairExecutionPlan) -> None:
         payload = plan.to_jsonable()
         self.connection.execute(
-            "DELETE FROM execution_legs WHERE plan_id = ?",
-            (plan.plan_id,),
+            "DELETE FROM execution_legs WHERE pair_id = ? AND plan_id = ?",
+            (self.pair_id, plan.plan_id),
         )
         self.connection.execute(
-            "DELETE FROM execution_checks WHERE plan_id = ?",
-            (plan.plan_id,),
+            "DELETE FROM execution_checks WHERE pair_id = ? AND plan_id = ?",
+            (self.pair_id, plan.plan_id),
         )
         self.connection.execute(
             """
             INSERT OR REPLACE INTO execution_plans (
-                plan_id, row_index, timestamp, plan_type, direction, status,
+                plan_id, pair_id, row_index, timestamp, plan_type, direction, status,
                 reason, decision_zscore, decision_spread_type, tw_leg_symbol,
                 tw_leg_expiry, contract_policy_state, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 plan.plan_id,
+                self.pair_id,
                 plan.row_index,
                 timestamp_text(plan.timestamp),
                 plan.plan_type.value,
@@ -62,13 +64,14 @@ class ExecutionStore:
         self.connection.executemany(
             """
             INSERT INTO execution_legs (
-                plan_id, row_index, timestamp, broker, symbol, side, quantity,
+                pair_id, plan_id, row_index, timestamp, broker, symbol, side, quantity,
                 price, fee_twd, tw_leg_symbol, tw_leg_expiry,
                 contract_policy_state, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
+                    self.pair_id,
                     plan.plan_id,
                     leg.row_index,
                     timestamp_text(leg.timestamp),
@@ -89,11 +92,12 @@ class ExecutionStore:
         self.connection.executemany(
             """
             INSERT INTO execution_checks (
-                plan_id, check_type, passed, broker, symbol, message, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                pair_id, plan_id, check_type, passed, broker, symbol, message, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
+                    self.pair_id,
                     plan.plan_id,
                     check.check_type,
                     int(check.passed),
@@ -111,9 +115,11 @@ class ExecutionStore:
             """
             SELECT payload_json
             FROM execution_plans
+            WHERE pair_id = ?
             ORDER BY timestamp DESC, row_index DESC, plan_id DESC
             LIMIT 1
-            """
+            """,
+            (self.pair_id,),
         ).fetchone()
         if row is None:
             return None
@@ -124,9 +130,9 @@ class ExecutionStore:
             """
             SELECT COUNT(*) AS count
             FROM execution_outcomes
-            WHERE plan_id = ?
+            WHERE pair_id = ? AND plan_id = ?
             """,
-            (plan_id,),
+            (self.pair_id, plan_id),
         ).fetchone()
         return bool(row["count"] if row is not None else 0)
 
@@ -135,11 +141,12 @@ class ExecutionStore:
         cursor = self.connection.execute(
             """
             INSERT INTO execution_simulations (
-                plan_id, timestamp, scenario, status, broker, symbol, message,
+                pair_id, plan_id, timestamp, scenario, status, broker, symbol, message,
                 recommended_state, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                self.pair_id,
                 result.plan_id,
                 timestamp_text(result.timestamp),
                 result.scenario.value,
@@ -159,11 +166,12 @@ class ExecutionStore:
         cursor = self.connection.execute(
             """
             INSERT INTO execution_outcomes (
-                plan_id, timestamp, status, message, recommended_state,
+                pair_id, plan_id, timestamp, status, message, recommended_state,
                 payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                self.pair_id,
                 outcome.plan_id,
                 timestamp_text(outcome.timestamp),
                 outcome.status.value,
@@ -179,9 +187,11 @@ class ExecutionStore:
             """
             SELECT payload_json
             FROM execution_simulations
+            WHERE pair_id = ?
             ORDER BY simulation_id DESC
             LIMIT 1
-            """
+            """,
+            (self.pair_id,),
         ).fetchone()
         if row is None:
             return None
@@ -193,7 +203,11 @@ class ExecutionStore:
         check_count = self._count("execution_checks")
         failed_check_count = int(
             self.connection.execute(
-                "SELECT COUNT(*) AS count FROM execution_checks WHERE passed = 0"
+                """
+                SELECT COUNT(*) AS count FROM execution_checks
+                WHERE pair_id = ? AND passed = 0
+                """,
+                (self.pair_id,),
             ).fetchone()["count"]
             or 0
         )
@@ -203,26 +217,32 @@ class ExecutionStore:
             """
             SELECT status, COUNT(*) AS count
             FROM execution_plans
+            WHERE pair_id = ?
             GROUP BY status
             ORDER BY status
-            """
+            """,
+            (self.pair_id,),
         ).fetchall()
         outcome_status_rows = self.connection.execute(
             """
             SELECT status, COUNT(*) AS count
             FROM execution_outcomes
+            WHERE pair_id = ?
             GROUP BY status
             ORDER BY status
-            """
+            """,
+            (self.pair_id,),
         ).fetchall()
         latest = self.connection.execute(
             """
             SELECT plan_id, timestamp, row_index, plan_type, direction, status,
                    reason, tw_leg_symbol
             FROM execution_plans
+            WHERE pair_id = ?
             ORDER BY timestamp DESC, row_index DESC, plan_id DESC
             LIMIT 1
-            """
+            """,
+            (self.pair_id,),
         ).fetchone()
         table_counts = {
             table: self._count(table)
@@ -252,6 +272,8 @@ class ExecutionStore:
         return int(
             self.connection.execute(
                 f"SELECT COUNT(*) AS count FROM {table}"
+                " WHERE pair_id = ?",
+                (self.pair_id,),
             ).fetchone()["count"]
             or 0
         )

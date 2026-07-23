@@ -3,27 +3,47 @@ from __future__ import annotations
 import sqlite3
 
 
+SCHEMA_VERSION = 2
+
+
+class StoreSchemaVersionError(RuntimeError):
+    pass
+
+
 SQLITE_SCHEMA = r"""
+            CREATE TABLE IF NOT EXISTS pairs (
+                pair_id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                tw_leg_display TEXT NOT NULL,
+                us_leg_display TEXT NOT NULL,
+                tw_leg_venue TEXT NOT NULL,
+                us_leg_venue TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS strategy_state (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
+                pair_id TEXT PRIMARY KEY,
                 row_index INTEGER NOT NULL,
                 timestamp TEXT NOT NULL,
                 state_json TEXT NOT NULL,
                 indicator_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id)
             );
 
             CREATE TABLE IF NOT EXISTS events (
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id TEXT NOT NULL,
                 row_index INTEGER NOT NULL,
                 timestamp TEXT NOT NULL,
                 event_type TEXT NOT NULL,
                 message TEXT NOT NULL,
-                payload_json TEXT NOT NULL
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id)
             );
 
             CREATE TABLE IF NOT EXISTS orders (
                 order_id TEXT PRIMARY KEY,
+                pair_id TEXT NOT NULL,
                 row_index INTEGER NOT NULL,
                 timestamp TEXT NOT NULL,
                 broker TEXT NOT NULL,
@@ -35,11 +55,13 @@ SQLITE_SCHEMA = r"""
                 tw_leg_symbol TEXT,
                 tw_leg_expiry TEXT,
                 contract_policy_state TEXT,
-                payload_json TEXT NOT NULL
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id)
             );
 
             CREATE TABLE IF NOT EXISTS fills (
                 fill_id TEXT PRIMARY KEY,
+                pair_id TEXT NOT NULL,
                 order_id TEXT NOT NULL,
                 row_index INTEGER NOT NULL,
                 timestamp TEXT NOT NULL,
@@ -53,11 +75,13 @@ SQLITE_SCHEMA = r"""
                 tw_leg_expiry TEXT,
                 contract_policy_state TEXT,
                 payload_json TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id),
                 FOREIGN KEY(order_id) REFERENCES orders(order_id)
             );
 
             CREATE TABLE IF NOT EXISTS positions (
                 snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id TEXT NOT NULL,
                 row_index INTEGER NOT NULL,
                 timestamp TEXT NOT NULL,
                 state TEXT NOT NULL,
@@ -68,12 +92,14 @@ SQLITE_SCHEMA = r"""
                 actual_leg_notional_twd REAL NOT NULL,
                 realized_pnl REAL NOT NULL,
                 unrealized_pnl REAL NOT NULL,
-                equity REAL NOT NULL
+                equity REAL NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id)
             );
 
             CREATE TABLE IF NOT EXISTS bars (
-                row_index INTEGER PRIMARY KEY,
-                timestamp TEXT NOT NULL UNIQUE,
+                pair_id TEXT NOT NULL,
+                row_index INTEGER NOT NULL,
+                timestamp TEXT NOT NULL,
                 spread REAL NOT NULL,
                 spread_mean REAL,
                 spread_std REAL,
@@ -111,11 +137,15 @@ SQLITE_SCHEMA = r"""
                 equity REAL NOT NULL,
                 running_max_equity REAL NOT NULL,
                 drawdown_twd REAL NOT NULL,
-                drawdown_pct REAL NOT NULL
+                drawdown_pct REAL NOT NULL,
+                PRIMARY KEY(pair_id, row_index),
+                UNIQUE(pair_id, timestamp),
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id)
             );
 
             CREATE TABLE IF NOT EXISTS trades (
                 trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id TEXT NOT NULL,
                 entry_signal_idx INTEGER NOT NULL,
                 entry_signal_time TEXT NOT NULL,
                 entry_signal_zscore REAL,
@@ -163,11 +193,13 @@ SQLITE_SCHEMA = r"""
                 tw_leg_symbol TEXT,
                 tw_leg_expiry TEXT,
                 contract_policy_state TEXT,
-                payload_json TEXT NOT NULL
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id)
             );
 
             CREATE TABLE IF NOT EXISTS market_ticks (
                 tick_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id TEXT NOT NULL,
                 observed_at TEXT NOT NULL,
                 source TEXT NOT NULL,
                 symbol TEXT NOT NULL,
@@ -175,11 +207,13 @@ SQLITE_SCHEMA = r"""
                 price REAL NOT NULL,
                 bid REAL,
                 ask REAL,
-                raw_json TEXT NOT NULL
+                raw_json TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id)
             );
 
             CREATE TABLE IF NOT EXISTS warmup_bars (
-                timestamp TEXT PRIMARY KEY,
+                pair_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
                 tw_leg_close REAL,
                 tw_leg_close_filled REAL NOT NULL,
                 us_leg_twd_fair REAL NOT NULL,
@@ -187,7 +221,9 @@ SQLITE_SCHEMA = r"""
                 tw_leg_was_filled INTEGER NOT NULL DEFAULT 0,
                 tw_leg_symbol TEXT,
                 tw_leg_expiry TEXT,
-                contract_policy_state TEXT
+                contract_policy_state TEXT,
+                PRIMARY KEY(pair_id, timestamp),
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id)
             );
 
             CREATE TABLE IF NOT EXISTS live_runs (
@@ -224,6 +260,7 @@ SQLITE_SCHEMA = r"""
             CREATE TABLE IF NOT EXISTS broker_reconciliation_issues (
                 issue_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id INTEGER NOT NULL,
+                pair_id TEXT,
                 status TEXT NOT NULL,
                 issue_type TEXT NOT NULL,
                 broker TEXT NOT NULL,
@@ -232,11 +269,13 @@ SQLITE_SCHEMA = r"""
                 expected_quantity REAL,
                 actual_quantity REAL,
                 payload_json TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id),
                 FOREIGN KEY(run_id) REFERENCES broker_reconciliation_runs(run_id)
             );
 
             CREATE TABLE IF NOT EXISTS execution_plans (
                 plan_id TEXT PRIMARY KEY,
+                pair_id TEXT NOT NULL,
                 row_index INTEGER NOT NULL,
                 timestamp TEXT NOT NULL,
                 plan_type TEXT NOT NULL,
@@ -248,11 +287,13 @@ SQLITE_SCHEMA = r"""
                 tw_leg_symbol TEXT,
                 tw_leg_expiry TEXT,
                 contract_policy_state TEXT,
-                payload_json TEXT NOT NULL
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id)
             );
 
             CREATE TABLE IF NOT EXISTS execution_legs (
                 leg_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id TEXT NOT NULL,
                 plan_id TEXT NOT NULL,
                 row_index INTEGER NOT NULL,
                 timestamp TEXT NOT NULL,
@@ -266,11 +307,13 @@ SQLITE_SCHEMA = r"""
                 tw_leg_expiry TEXT,
                 contract_policy_state TEXT,
                 payload_json TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id),
                 FOREIGN KEY(plan_id) REFERENCES execution_plans(plan_id)
             );
 
             CREATE TABLE IF NOT EXISTS execution_checks (
                 check_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id TEXT NOT NULL,
                 plan_id TEXT NOT NULL,
                 check_type TEXT NOT NULL,
                 passed INTEGER NOT NULL,
@@ -278,11 +321,13 @@ SQLITE_SCHEMA = r"""
                 symbol TEXT,
                 message TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id),
                 FOREIGN KEY(plan_id) REFERENCES execution_plans(plan_id)
             );
 
             CREATE TABLE IF NOT EXISTS execution_simulations (
                 simulation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id TEXT NOT NULL,
                 plan_id TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 scenario TEXT NOT NULL,
@@ -292,22 +337,26 @@ SQLITE_SCHEMA = r"""
                 message TEXT NOT NULL,
                 recommended_state TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id),
                 FOREIGN KEY(plan_id) REFERENCES execution_plans(plan_id)
             );
 
             CREATE TABLE IF NOT EXISTS execution_outcomes (
                 outcome_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id TEXT NOT NULL,
                 plan_id TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 status TEXT NOT NULL,
                 message TEXT NOT NULL,
                 recommended_state TEXT,
                 payload_json TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id),
                 FOREIGN KEY(plan_id) REFERENCES execution_plans(plan_id)
             );
 
             CREATE TABLE IF NOT EXISTS pending_manual_closes (
                 recovery_id TEXT PRIMARY KEY,
+                pair_id TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 settled_at TEXT,
                 status TEXT NOT NULL,
@@ -315,11 +364,13 @@ SQLITE_SCHEMA = r"""
                 tw_leg_symbol TEXT NOT NULL,
                 reason TEXT NOT NULL,
                 original_state_json TEXT NOT NULL,
-                settlement_json TEXT
+                settlement_json TEXT,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id)
             );
 
             CREATE TABLE IF NOT EXISTS position_adjustments (
                 adjustment_id TEXT PRIMARY KEY,
+                pair_id TEXT NOT NULL,
                 recovery_id TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 broker TEXT NOT NULL,
@@ -328,6 +379,7 @@ SQLITE_SCHEMA = r"""
                 reason TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 UNIQUE(recovery_id, broker, symbol),
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id),
                 FOREIGN KEY(recovery_id) REFERENCES pending_manual_closes(recovery_id)
             );
 
@@ -336,20 +388,24 @@ SQLITE_SCHEMA = r"""
 
             CREATE TABLE IF NOT EXISTS fubon_order_attempts (
                 attempt_id TEXT PRIMARY KEY,
+                pair_id TEXT NOT NULL,
                 plan_id TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 state TEXT NOT NULL,
-                payload_json TEXT NOT NULL
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id)
             );
 
             CREATE TABLE IF NOT EXISTS fubon_evidence_events (
                 evidence_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id TEXT NOT NULL,
                 attempt_id TEXT NOT NULL,
                 observed_at TEXT NOT NULL,
                 evidence_type TEXT NOT NULL,
                 accepted INTEGER NOT NULL,
                 rejection_reason TEXT,
                 payload_json TEXT NOT NULL,
+                FOREIGN KEY(pair_id) REFERENCES pairs(pair_id),
                 FOREIGN KEY(attempt_id) REFERENCES fubon_order_attempts(attempt_id)
             );
 
@@ -395,45 +451,21 @@ SQLITE_SCHEMA = r"""
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
+    validate_schema_compatibility(connection)
     connection.executescript(SQLITE_SCHEMA)
-    ensure_live_metadata_columns(connection)
+    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
-def ensure_live_metadata_columns(connection: sqlite3.Connection) -> None:
-    for table in ("orders", "fills", "bars", "trades", "warmup_bars"):
-        ensure_column(connection, table, "tw_leg_symbol", "TEXT")
-        ensure_column(connection, table, "tw_leg_expiry", "TEXT")
-        ensure_column(connection, table, "contract_policy_state", "TEXT")
-    for column in (
-        "short_spread",
-        "short_zscore",
-        "long_spread",
-        "long_zscore",
-        "decision_zscore",
-        "tw_leg_entry_price",
-        "us_leg_entry_twd_fair",
-    ):
-        ensure_column(connection, "bars", column, "REAL")
-    for column in (
-        "weekend_session_close_only",
-        "friday_session_end_force_close",
-        "tw_leg_was_filled",
-        "tw_leg_entry_open_was_filled",
-    ):
-        ensure_column(connection, "bars", column, "INTEGER NOT NULL DEFAULT 0")
-    ensure_column(connection, "warmup_bars", "tw_leg_was_filled", "INTEGER NOT NULL DEFAULT 0")
-    ensure_column(connection, "bars", "decision_spread_type", "TEXT")
-
-
-def ensure_column(
-    connection: sqlite3.Connection,
-    table: str,
-    column: str,
-    definition: str,
-) -> None:
-    columns = {
-        str(row["name"])
-        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
-    }
-    if column not in columns:
-        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+def validate_schema_compatibility(connection: sqlite3.Connection) -> None:
+    tables = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    if not tables:
+        return
+    current_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if current_version != SCHEMA_VERSION:
+        raise StoreSchemaVersionError(
+            "Project Lux store schema is incompatible "
+            f"(found version {current_version}, required {SCHEMA_VERSION}). "
+            "Archive this store and create a new one; in-place migration is not supported."
+        )

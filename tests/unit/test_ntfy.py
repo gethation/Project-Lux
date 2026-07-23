@@ -358,6 +358,7 @@ def seed_status_bars(path, count: int) -> None:
         connection.execute(
             """
             CREATE TABLE bars (
+                pair_id TEXT NOT NULL,
                 row_index INTEGER PRIMARY KEY,
                 timestamp TEXT NOT NULL,
                 spread REAL,
@@ -376,11 +377,12 @@ def seed_status_bars(path, count: int) -> None:
             connection.execute(
                 """
                 INSERT INTO bars (
-                    row_index, timestamp, spread, short_zscore, long_zscore,
+                    pair_id, row_index, timestamp, spread, short_zscore, long_zscore,
                     state, position, unrealized_pnl
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    "qff_tsm",
                     index,
                     (start + timedelta(minutes=index)).isoformat(),
                     10.0 + index / 10.0,

@@ -265,7 +265,7 @@ def test_real_live_dry_run_simulates_entry_exit_and_resume() -> None:
         assert latest_plan == ("recorded", "exit")
 
         state_json = connection.execute(
-            "SELECT state_json FROM strategy_state WHERE id = 1"
+            "SELECT state_json FROM strategy_state WHERE pair_id = 'qff_tsm'"
         ).fetchone()[0]
         assert '"state": "flat"' in state_json
     finally:

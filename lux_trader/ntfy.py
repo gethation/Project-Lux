@@ -89,6 +89,7 @@ class NtfyStatusBar:
 def load_recent_status_bars(
     store_path: Path,
     *,
+    pair_id: str = "qff_tsm",
     limit: int = STATUS_BAR_COUNT,
 ) -> tuple[NtfyStatusBar, ...]:
     """Load committed BARs without touching the live writer connection."""
@@ -107,10 +108,11 @@ def load_recent_status_bars(
             SELECT timestamp, spread, short_zscore, long_zscore,
                    state, position, unrealized_pnl
             FROM bars
+            WHERE pair_id = ?
             ORDER BY row_index DESC
             LIMIT ?
             """,
-            (max(int(limit), 1),),
+            (pair_id, max(int(limit), 1)),
         ).fetchall()
     finally:
         connection.close()
@@ -177,6 +179,7 @@ class NtfyStatusCommandSubscriber:
         store_path: Path,
         mode_label: str,
         publisher: Any,
+        pair_id: str = "qff_tsm",
         transport: Callable[..., Any] | None = None,
         error_stream: TextIO | None = None,
     ) -> None:
@@ -184,6 +187,7 @@ class NtfyStatusCommandSubscriber:
         self.store_path = Path(store_path)
         self.mode_label = mode_label
         self.publisher = publisher
+        self.pair_id = pair_id
         self._session = requests.Session() if transport is None else None
         self._transport = transport or self._session.get
         self._error_stream = error_stream or sys.stderr
@@ -254,6 +258,7 @@ class NtfyStatusCommandSubscriber:
         try:
             bars = load_recent_status_bars(
                 self.store_path,
+                pair_id=self.pair_id,
                 limit=STATUS_BAR_COUNT,
             )
         except Exception as exc:

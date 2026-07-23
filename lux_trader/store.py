@@ -11,7 +11,7 @@ from .config import FeeConfig, StrategyConfig
 from .core.indicator import IndicatorEngine
 from .persistence.execution_queries import ExecutionStore
 from .persistence.reconciliation_queries import ReconciliationStore
-from .persistence.schema import initialize_schema
+from .persistence.schema import initialize_schema, validate_schema_compatibility
 from .execution.intent import PairExecutionPlan
 from .execution.simulation import ExecutionSimulationResult
 from .core.models import BrokerName, Fill, IndicatorSnapshot, MarketBar, OrderResult
@@ -48,14 +48,35 @@ class ResumeState:
 
 
 class SQLiteStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        pair_id: str = "qff_tsm",
+        pair_label: str = "QFF/TSM",
+        tw_leg_display: str = "QFF",
+        us_leg_display: str = "TSM",
+        tw_leg_venue: str = "fubon",
+        us_leg_venue: str = "binance",
+    ) -> None:
         self.path = path
+        self.pair_id = pair_id
+        self.pair_label = pair_label
+        self.tw_leg_display = tw_leg_display
+        self.us_leg_display = us_leg_display
+        self.tw_leg_venue = tw_leg_venue
+        self.us_leg_venue = us_leg_venue
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.path)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA synchronous = NORMAL")
+        try:
+            validate_schema_compatibility(self.connection)
+        except Exception:
+            self.connection.close()
+            raise
 
     def close(self) -> None:
         self.connection.close()
@@ -72,21 +93,48 @@ class SQLiteStore:
 
     def initialize(self) -> None:
         initialize_schema(self.connection)
+        self.connection.execute(
+            """
+            INSERT INTO pairs (
+                pair_id, label, tw_leg_display, us_leg_display,
+                tw_leg_venue, us_leg_venue
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(pair_id) DO UPDATE SET
+                label = excluded.label,
+                tw_leg_display = excluded.tw_leg_display,
+                us_leg_display = excluded.us_leg_display,
+                tw_leg_venue = excluded.tw_leg_venue,
+                us_leg_venue = excluded.us_leg_venue
+            """,
+            (
+                self.pair_id,
+                self.pair_label,
+                self.tw_leg_display,
+                self.us_leg_display,
+                self.tw_leg_venue,
+                self.us_leg_venue,
+            ),
+        )
         self.connection.commit()
 
     def has_bars(self) -> bool:
-        row = self.connection.execute("SELECT COUNT(*) AS count FROM bars").fetchone()
+        row = self.connection.execute(
+            "SELECT COUNT(*) AS count FROM bars WHERE pair_id = ?",
+            (self.pair_id,),
+        ).fetchone()
         return bool(row["count"])
 
     def has_warmup_bars(self) -> bool:
         row = self.connection.execute(
-            "SELECT COUNT(*) AS count FROM warmup_bars"
+            "SELECT COUNT(*) AS count FROM warmup_bars WHERE pair_id = ?",
+            (self.pair_id,),
         ).fetchone()
         return bool(row["count"])
 
     def latest_bar_row_index(self) -> int:
         row = self.connection.execute(
-            "SELECT MAX(row_index) AS row_index FROM bars"
+            "SELECT MAX(row_index) AS row_index FROM bars WHERE pair_id = ?",
+            (self.pair_id,),
         ).fetchone()
         if row is None or row["row_index"] is None:
             return -1
@@ -94,14 +142,19 @@ class SQLiteStore:
 
     def bar_exists_for_timestamp(self, timestamp: datetime) -> bool:
         row = self.connection.execute(
-            "SELECT 1 FROM bars WHERE timestamp = ? LIMIT 1",
-            (timestamp_text(timestamp),),
+            "SELECT 1 FROM bars WHERE pair_id = ? AND timestamp = ? LIMIT 1",
+            (self.pair_id, timestamp_text(timestamp)),
         ).fetchone()
         return row is not None
 
     def load_resume_state(self) -> ResumeState | None:
         row = self.connection.execute(
-            "SELECT row_index, state_json, indicator_json FROM strategy_state WHERE id = 1"
+            """
+            SELECT row_index, state_json, indicator_json
+            FROM strategy_state
+            WHERE pair_id = ?
+            """,
+            (self.pair_id,),
         ).fetchone()
         if row is None:
             return None
@@ -122,9 +175,9 @@ class SQLiteStore:
         self.connection.execute(
             """
             INSERT INTO strategy_state (
-                id, row_index, timestamp, state_json, indicator_json, updated_at
-            ) VALUES (1, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
+                pair_id, row_index, timestamp, state_json, indicator_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(pair_id) DO UPDATE SET
                 row_index = excluded.row_index,
                 timestamp = excluded.timestamp,
                 state_json = excluded.state_json,
@@ -132,6 +185,7 @@ class SQLiteStore:
                 updated_at = excluded.updated_at
             """,
             (
+                self.pair_id,
                 row_index,
                 timestamp_text(timestamp),
                 json.dumps(strategy.to_jsonable(), default=json_default),
@@ -151,10 +205,11 @@ class SQLiteStore:
         self.connection.execute(
             """
             INSERT INTO events (
-                row_index, timestamp, event_type, message, payload_json
-            ) VALUES (?, ?, ?, ?, ?)
+                pair_id, row_index, timestamp, event_type, message, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
+                self.pair_id,
                 row_index,
                 timestamp_text(timestamp),
                 event_type,
@@ -180,6 +235,7 @@ class SQLiteStore:
         )
         values = (
             order.order_id,
+            self.pair_id,
             request.row_index,
             timestamp_text(request.timestamp),
             request.broker.value,
@@ -207,10 +263,10 @@ class SQLiteStore:
         self.connection.execute(
             """
             INSERT INTO orders (
-                order_id, row_index, timestamp, broker, symbol, side,
+                order_id, pair_id, row_index, timestamp, broker, symbol, side,
                 quantity, price, status, tw_leg_symbol, tw_leg_expiry,
                 contract_policy_state, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -222,6 +278,7 @@ class SQLiteStore:
         )
         values = (
             fill.fill_id,
+            self.pair_id,
             fill.order_id,
             fill.row_index,
             timestamp_text(fill.timestamp),
@@ -250,10 +307,10 @@ class SQLiteStore:
         self.connection.execute(
             """
             INSERT INTO fills (
-                fill_id, order_id, row_index, timestamp, broker, symbol,
+                fill_id, pair_id, order_id, row_index, timestamp, broker, symbol,
                 side, quantity, price, fee_twd, tw_leg_symbol, tw_leg_expiry,
                 contract_policy_state, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -268,18 +325,21 @@ class SQLiteStore:
             """
             SELECT broker, SUM(quantity) AS quantity
             FROM (
-                SELECT broker, symbol,
+                SELECT pair_id, broker, symbol,
                        CASE WHEN side = 'buy' THEN quantity ELSE -quantity END AS quantity
                 FROM fills
                 UNION ALL
-                SELECT broker, symbol, quantity
+                SELECT pair_id, broker, symbol, quantity
                 FROM position_adjustments
             ) exposure_rows
-            WHERE (broker = ? AND symbol = ?)
+            WHERE pair_id = ?
+              AND ((broker = ? AND symbol = ?)
                OR (broker = ? AND symbol = ?)
+              )
             GROUP BY broker
             """,
             (
+                self.pair_id,
                 BrokerName.BINANCE.value,
                 us_leg_symbol,
                 BrokerName.FUBON.value,
@@ -304,10 +364,11 @@ class SQLiteStore:
         row = self.connection.execute(
             """
             SELECT * FROM pending_manual_closes
-            WHERE status = 'pending'
+            WHERE pair_id = ? AND status = 'pending'
             ORDER BY created_at DESC
             LIMIT 1
-            """
+            """,
+            (self.pair_id,),
         ).fetchone()
         if row is None:
             return None
@@ -331,12 +392,13 @@ class SQLiteStore:
         self.connection.execute(
             """
             INSERT INTO pending_manual_closes (
-                recovery_id, created_at, settled_at, status, row_index,
+                recovery_id, pair_id, created_at, settled_at, status, row_index,
                 tw_leg_symbol, reason, original_state_json, settlement_json
-            ) VALUES (?, ?, NULL, 'pending', ?, ?, ?, ?, NULL)
+            ) VALUES (?, ?, ?, NULL, 'pending', ?, ?, ?, ?, NULL)
             """,
             (
                 recovery_id,
+                self.pair_id,
                 timestamp_text(created_at),
                 row_index,
                 tw_leg_symbol,
@@ -362,12 +424,13 @@ class SQLiteStore:
             self.connection.execute(
                 """
                 INSERT INTO position_adjustments (
-                    adjustment_id, recovery_id, created_at, broker, symbol,
+                    adjustment_id, pair_id, recovery_id, created_at, broker, symbol,
                     quantity, reason, payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     adjustment_id,
+                    self.pair_id,
                     recovery_id,
                     timestamp_text(created_at),
                     broker,
@@ -390,6 +453,7 @@ class SQLiteStore:
             for key, value in trade.items()
         }
         columns = [
+            "pair_id",
             "entry_signal_idx",
             "entry_signal_time",
             "entry_signal_zscore",
@@ -438,7 +502,10 @@ class SQLiteStore:
             "tw_leg_expiry",
             "contract_policy_state",
         ]
-        values = [payload.get(column) for column in columns]
+        values = [
+            self.pair_id if column == "pair_id" else payload.get(column)
+            for column in columns
+        ]
         placeholders = ", ".join("?" for _ in columns)
         self.connection.execute(
             f"""
@@ -470,7 +537,7 @@ class SQLiteStore:
         self.connection.execute(
             """
             INSERT OR REPLACE INTO bars (
-                row_index, timestamp, spread, spread_mean, spread_std,
+                pair_id, row_index, timestamp, spread, spread_mean, spread_std,
                 spread_zscore, zscore_valid, entry_allowed, close_allowed,
                 friday_night_close_only, weekend_session_close_only,
                 friday_session_end_force_close, tw_leg_close_filled, us_leg_twd_fair,
@@ -483,9 +550,10 @@ class SQLiteStore:
                 actual_leg_notional_twd, realized_pnl, realized_fee_twd,
                 unrealized_pnl, equity, running_max_equity, drawdown_twd,
                 drawdown_pct
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                self.pair_id,
                 bar.row_index,
                 timestamp_text(bar.timestamp),
                 snapshot.spread,
@@ -531,12 +599,13 @@ class SQLiteStore:
         self.connection.execute(
             """
             INSERT INTO positions (
-                row_index, timestamp, state, direction, us_leg_units, tw_leg_units,
+                pair_id, row_index, timestamp, state, direction, us_leg_units, tw_leg_units,
                 tw_leg_contracts, actual_leg_notional_twd, realized_pnl,
                 unrealized_pnl, equity
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                self.pair_id,
                 bar.row_index,
                 timestamp_text(bar.timestamp),
                 strategy.state.value,
@@ -556,10 +625,11 @@ class SQLiteStore:
         self.connection.execute(
             """
             INSERT INTO market_ticks (
-                observed_at, source, symbol, quote_timestamp, price, bid, ask, raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                pair_id, observed_at, source, symbol, quote_timestamp, price, bid, ask, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                self.pair_id,
                 timestamp_text(observed_at),
                 str(quote.source),
                 str(quote.symbol),
@@ -575,12 +645,13 @@ class SQLiteStore:
         self.connection.executemany(
             """
             INSERT OR REPLACE INTO warmup_bars (
-                timestamp, tw_leg_close, tw_leg_close_filled, us_leg_twd_fair, spread,
+                pair_id, timestamp, tw_leg_close, tw_leg_close_filled, us_leg_twd_fair, spread,
                 tw_leg_was_filled, tw_leg_symbol, tw_leg_expiry, contract_policy_state
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
+                    self.pair_id,
                     timestamp_text(bar.timestamp),
                     bar.tw_leg_close,
                     bar.tw_leg_close_filled,
@@ -596,7 +667,10 @@ class SQLiteStore:
         )
 
     def replace_warmup_bars(self, bars: list[MarketBar]) -> None:
-        self.connection.execute("DELETE FROM warmup_bars")
+        self.connection.execute(
+            "DELETE FROM warmup_bars WHERE pair_id = ?",
+            (self.pair_id,),
+        )
         self.record_warmup_bars(bars)
 
     def load_indicator_seed_bars(
@@ -606,15 +680,15 @@ class SQLiteStore:
         tw_leg_symbol: str | None = None,
     ) -> list[MarketBar]:
         rows = []
-        warmup_where = ""
-        warmup_params: tuple[Any, ...] = ()
-        bars_where = ""
-        bars_params: tuple[Any, ...] = ()
+        warmup_where = "WHERE pair_id = ?"
+        warmup_params: tuple[Any, ...] = (self.pair_id,)
+        bars_where = "WHERE pair_id = ?"
+        bars_params: tuple[Any, ...] = (self.pair_id,)
         if tw_leg_symbol is not None:
-            warmup_where = "WHERE tw_leg_symbol = ?"
-            warmup_params = (tw_leg_symbol,)
-            bars_where = "WHERE tw_leg_symbol = ?"
-            bars_params = (tw_leg_symbol,)
+            warmup_where += " AND tw_leg_symbol = ?"
+            warmup_params += (tw_leg_symbol,)
+            bars_where += " AND tw_leg_symbol = ?"
+            bars_params += (tw_leg_symbol,)
         rows.extend(
             self.connection.execute(
                 f"""
@@ -657,15 +731,15 @@ class SQLiteStore:
         ]
 
     def load_latest_tw_leg_close_filled(self, *, tw_leg_symbol: str | None = None) -> float | None:
-        warmup_where = ""
-        warmup_params: tuple[Any, ...] = ()
-        bars_where = ""
-        bars_params: tuple[Any, ...] = ()
+        warmup_where = "WHERE pair_id = ?"
+        warmup_params: tuple[Any, ...] = (self.pair_id,)
+        bars_where = "WHERE pair_id = ?"
+        bars_params: tuple[Any, ...] = (self.pair_id,)
         if tw_leg_symbol is not None:
-            warmup_where = "WHERE tw_leg_symbol = ?"
-            warmup_params = (tw_leg_symbol,)
-            bars_where = "WHERE tw_leg_symbol = ?"
-            bars_params = (tw_leg_symbol,)
+            warmup_where += " AND tw_leg_symbol = ?"
+            warmup_params += (tw_leg_symbol,)
+            bars_where += " AND tw_leg_symbol = ?"
+            bars_params += (tw_leg_symbol,)
         rows = self.connection.execute(
             f"""
             SELECT tw_leg_close_filled
@@ -730,10 +804,10 @@ class SQLiteStore:
         )
 
     def record_reconciliation_report(self, report: ReconciliationReport) -> int:
-        return ReconciliationStore(self.connection).record_report(report)
+        return ReconciliationStore(self.connection, self.pair_id).record_report(report)
 
     def load_latest_reconciliation_report(self) -> ReconciliationReport | None:
-        return ReconciliationStore(self.connection).load_latest_report()
+        return ReconciliationStore(self.connection, self.pair_id).load_latest_report()
 
     def record_margin_check(self, decision: Any) -> int:
         cursor = self.connection.execute(
@@ -778,22 +852,22 @@ class SQLiteStore:
         return dict(row) if row is not None else None
 
     def record_execution_plan(self, plan: PairExecutionPlan) -> None:
-        ExecutionStore(self.connection).record_plan(plan)
+        ExecutionStore(self.connection, self.pair_id).record_plan(plan)
 
     def load_latest_execution_plan_payload(self) -> dict[str, Any] | None:
-        return ExecutionStore(self.connection).load_latest_plan_payload()
+        return ExecutionStore(self.connection, self.pair_id).load_latest_plan_payload()
 
     def execution_plan_has_outcome(self, plan_id: str) -> bool:
-        return ExecutionStore(self.connection).plan_has_outcome(plan_id)
+        return ExecutionStore(self.connection, self.pair_id).plan_has_outcome(plan_id)
 
     def record_execution_simulation(
         self,
         result: ExecutionSimulationResult,
     ) -> int:
-        return ExecutionStore(self.connection).record_simulation(result)
+        return ExecutionStore(self.connection, self.pair_id).record_simulation(result)
 
     def record_execution_outcome(self, outcome: Any) -> int:
-        return ExecutionStore(self.connection).record_outcome(outcome)
+        return ExecutionStore(self.connection, self.pair_id).record_outcome(outcome)
 
     def start_fubon_attempt(
         self,
@@ -806,11 +880,12 @@ class SQLiteStore:
         self.connection.execute(
             """
             INSERT INTO fubon_order_attempts (
-                attempt_id, plan_id, created_at, state, payload_json
-            ) VALUES (?, ?, ?, ?, ?)
+                attempt_id, pair_id, plan_id, created_at, state, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 attempt_id,
+                self.pair_id,
                 plan_id,
                 timestamp_text(created_at),
                 "submitting",
@@ -826,8 +901,11 @@ class SQLiteStore:
         payload: dict[str, Any],
     ) -> None:
         existing = self.connection.execute(
-            "SELECT payload_json FROM fubon_order_attempts WHERE attempt_id = ?",
-            (attempt_id,),
+            """
+            SELECT payload_json FROM fubon_order_attempts
+            WHERE pair_id = ? AND attempt_id = ?
+            """,
+            (self.pair_id, attempt_id),
         ).fetchone()
         merged_payload = (
             json.loads(existing["payload_json"])
@@ -839,9 +917,14 @@ class SQLiteStore:
             """
             UPDATE fubon_order_attempts
             SET state = ?, payload_json = ?
-            WHERE attempt_id = ?
+            WHERE pair_id = ? AND attempt_id = ?
             """,
-            (state, json.dumps(merged_payload, default=json_default), attempt_id),
+            (
+                state,
+                json.dumps(merged_payload, default=json_default),
+                self.pair_id,
+                attempt_id,
+            ),
         )
 
     def record_fubon_evidence(
@@ -857,11 +940,12 @@ class SQLiteStore:
         cursor = self.connection.execute(
             """
             INSERT INTO fubon_evidence_events (
-                attempt_id, observed_at, evidence_type, accepted,
+                pair_id, attempt_id, observed_at, evidence_type, accepted,
                 rejection_reason, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                self.pair_id,
                 attempt_id,
                 timestamp_text(observed_at),
                 evidence_type,
@@ -917,10 +1001,12 @@ class SQLiteStore:
         return dict(row) if row is not None else None
 
     def load_latest_execution_simulation_payload(self) -> dict[str, Any] | None:
-        return ExecutionStore(self.connection).load_latest_simulation_payload()
+        return ExecutionStore(
+            self.connection, self.pair_id
+        ).load_latest_simulation_payload()
 
     def build_execution_summary(self) -> dict[str, Any]:
-        return ExecutionStore(self.connection).build_summary()
+        return ExecutionStore(self.connection, self.pair_id).build_summary()
 
     def commit(self) -> None:
         self.connection.commit()
@@ -933,14 +1019,15 @@ class SQLiteStore:
         strategy: StrategyConfig,
         fees: FeeConfig,
         *,
-        tw_leg_display: str = "QFF",
-        us_leg_display: str = "TSM",
+        tw_leg_display: str | None = None,
+        us_leg_display: str | None = None,
     ) -> dict[str, Any]:
-        tw_key = tw_leg_display.strip().lower()
-        us_key = us_leg_display.strip().lower()
-        bar_count = self.connection.execute("SELECT COUNT(*) AS count FROM bars").fetchone()[
-            "count"
-        ]
+        tw_key = (tw_leg_display or self.tw_leg_display).strip().lower()
+        us_key = (us_leg_display or self.us_leg_display).strip().lower()
+        bar_count = self.connection.execute(
+            "SELECT COUNT(*) AS count FROM bars WHERE pair_id = ?",
+            (self.pair_id,),
+        ).fetchone()["count"]
         if bar_count == 0:
             return {
                 "rows": 0,
@@ -964,10 +1051,17 @@ class SQLiteStore:
                 MIN(drawdown_twd) AS max_drawdown_twd,
                 MIN(drawdown_pct) AS max_drawdown_pct
             FROM bars
-            """
+            WHERE pair_id = ?
+            """,
+            (self.pair_id,),
         ).fetchone()
         last_bar = self.connection.execute(
-            "SELECT equity FROM bars ORDER BY row_index DESC LIMIT 1"
+            """
+            SELECT equity FROM bars
+            WHERE pair_id = ?
+            ORDER BY row_index DESC LIMIT 1
+            """,
+            (self.pair_id,),
         ).fetchone()
         trade_stats = self.connection.execute(
             """
@@ -987,7 +1081,9 @@ class SQLiteStore:
                 SUM(holding_minutes) AS exposure_elapsed_minutes,
                 AVG(total_pnl) AS avg_trade_pnl_twd
             FROM trades
-            """
+            WHERE pair_id = ?
+            """,
+            (self.pair_id,),
         ).fetchone()
         trade_count = int(trade_stats["trade_count"] or 0)
         final_equity = float(last_bar["equity"])

@@ -21,8 +21,9 @@ def timestamp_text(value: datetime) -> str:
 
 
 class ReconciliationStore:
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, connection: sqlite3.Connection, pair_id: str) -> None:
         self.connection = connection
+        self.pair_id = pair_id
 
     def record_report(self, report: ReconciliationReport) -> int:
         report_payload = report.to_jsonable()
@@ -67,13 +68,22 @@ class ReconciliationStore:
         self.connection.executemany(
             """
             INSERT INTO broker_reconciliation_issues (
-                run_id, status, issue_type, broker, symbol, message,
+                run_id, pair_id, status, issue_type, broker, symbol, message,
                 expected_quantity, actual_quantity, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     run_id,
+                    (
+                        self.pair_id
+                        if issue.symbol
+                        in {
+                            report.expected.tw_leg_symbol,
+                            report.expected.us_leg_symbol,
+                        }
+                        else None
+                    ),
                     issue.status.value,
                     issue.issue_type,
                     issue.broker.value,
