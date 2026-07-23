@@ -14,8 +14,8 @@ Source of truth for the mechanism:
 | Mode | Purpose | Sends real orders |
 | --- | --- | --- |
 | `replay` | Validate strategy against the PoC/reference dataset. | No |
-| `live-dry-run` | Full live rehearsal on real/live-like data with a simulated adapter. | No |
-| `live-execute` | Minimal supervised two-leg real execution behind safety gates. | Yes |
+| `live --mode dry-run` | Full live rehearsal on real/live-like data with a simulated adapter. | No |
+| `live --mode execute` | Minimal supervised two-leg real execution behind safety gates. | Yes |
 
 `paper` mode from the legacy system is intentionally dropped.
 
@@ -49,13 +49,13 @@ Aligned reference summary: `rows=29909`, `trade_count=66`,
 
 ## M2 — live dry-run + terminal UI
 
-`live-dry-run` runs the full live rehearsal (auto warmup, 1s polling, minute
+`live --mode dry-run` runs the full live rehearsal (auto warmup, 1s polling, minute
 finalization, tradable bid/ask spread decisions, simulated `DRYRUN-*`
 execution, reconciliation, resume) without touching any real order API.
 
 ```powershell
-.\scripts\lux.ps1 live-dry-run --config configs/live.example.toml --reset-store
-.\scripts\lux.ps1 live-dry-run --config configs/live.example.toml --resume
+.\scripts\lux.ps1 live --mode dry-run --config configs/live.example.toml --reset-store
+.\scripts\lux.ps1 live --mode dry-run --config configs/live.example.toml --resume
 ```
 
 Terminal UI styles (acceptance fields: session, symbols, latest quote/bar,
@@ -68,11 +68,11 @@ spread/z-score, state, position, latest decision, reconciliation/gate):
 Operator commands (no real orders):
 
 ```powershell
-& conda run -n Quant python -m lux_trader doctor  --config configs/live.example.toml --mode live
-& conda run -n Quant python -m lux_trader live-status --config <cfg>
-& conda run -n Quant python -m lux_trader reconcile-brokers --config <cfg> --readonly   # needs LUX_READONLY_BROKER=1
-& conda run -n Quant python -m lux_trader clear-pause --config <cfg> --readonly         # only after matched reconciliation
-& conda run -n Quant python -m lux_trader warmup-live --config <cfg> --reset-store
+& conda run -n Quant python -m lux_trader status doctor --config configs/live.example.toml --mode live
+& conda run -n Quant python -m lux_trader status live --config <cfg>
+& conda run -n Quant python -m lux_trader status reconcile --config <cfg> --readonly   # needs LUX_READONLY_BROKER=1
+& conda run -n Quant python -m lux_trader recover clear-pause --config <cfg> --readonly         # only after matched reconciliation
+& conda run -n Quant python -m lux_trader warmup --config <cfg> --reset-store
 & conda run -n Quant python -m lux_trader summary --config <cfg> --execution
 ```
 
@@ -82,7 +82,7 @@ APIs (gated smoke tests skip).
 
 ## M3 — real execution + M6 two-leg smoke
 
-`live-execute` is the only real-order entrypoint. It requires
+`live --mode execute` is the only real-order entrypoint. It requires
 `safety.allow_live_order=true`, `[live_execution] enabled=true`, the three
 `*_ALLOW_LIVE_ORDER=1` env gates, and a matched read-only reconciliation.
 At every startup (including resume), it refreshes reconciliation through the
@@ -92,16 +92,16 @@ available:
 
 ```powershell
 $env:LUX_READONLY_BROKER='1'
-& conda run -n Quant python -m lux_trader reconcile-brokers --config <cfg> --readonly
+& conda run -n Quant python -m lux_trader status reconcile --config <cfg> --readonly
 ```
 
 Single-venue tools (real orders, extra env gates required):
 
 ```powershell
-& conda run -n Quant python -m lux_trader exec-smoke   --config <cfg> --venue fubon   --symbol FITMN07 --lot 1 --confirm-symbol FITMN07
-& conda run -n Quant python -m lux_trader exec-smoke   --config <cfg> --venue binance --quantity 0.02 --confirm-symbol TSM/USDT:USDT
-& conda run -n Quant python -m lux_trader manual-close --config <cfg> --venue fubon   --symbol FITMN07 --side sell --lot 1 --confirm-symbol FITMN07
-& conda run -n Quant python -m lux_trader broker-status --config <cfg> [--funds | --orders SYMBOL]
+& conda run -n Quant python -m lux_trader admin exec-smoke   --config <cfg> --venue fubon   --symbol FITMN07 --lot 1 --confirm-symbol FITMN07
+& conda run -n Quant python -m lux_trader admin exec-smoke   --config <cfg> --venue binance --quantity 0.02 --confirm-symbol TSM/USDT:USDT
+& conda run -n Quant python -m lux_trader admin manual-close --config <cfg> --venue fubon   --symbol FITMN07 --side sell --lot 1 --confirm-symbol FITMN07
+& conda run -n Quant python -m lux_trader status broker --config <cfg> [--funds | --orders SYMBOL]
 ```
 
 Fubon fill confirmation is layered (official status enum: 10=New Order,
@@ -138,7 +138,7 @@ lux_trader/
   integrations/    Fubon, Binance, BitoPro, TAIFEX adapters (frozen)
   persistence/     SQLite schema + query stores (frozen)
   brokers/         PaperBroker used by replay accounting (frozen)
-  runtime/live/    shared live engine + dry-run/live-execute handlers (paper mode removed)
+  runtime/live/    shared live engine + dry-run/execute handlers (paper mode removed)
   store.py         single SQLite facade (frozen)
   config.py        TOML config loader (frozen)
   runner.py        replay orchestration (frozen)
@@ -167,7 +167,7 @@ the terminal UI. It never places orders or initiates transfers.
 
 ```powershell
 $env:LUX_READONLY_BROKER='1'
-.\scripts\lux.ps1 margin-check --config <cfg>
+.\scripts\lux.ps1 status margin --config <cfg>
 ```
 
 - Every check is recorded in the `margin_checks` SQLite table for later

@@ -1,7 +1,7 @@
 """Command-line interface for Project Lux.
 
-M1 exposes only the replay-strategy surface: ``replay``, ``summary``, ``doctor``.
-Live and execution commands are added by later milestones.
+The public surface is consolidated into seven top-level commands with explicit
+nested actions for status, recovery, and gated administration.
 """
 
 from .dispatch import main

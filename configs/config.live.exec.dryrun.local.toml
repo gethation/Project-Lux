@@ -102,7 +102,7 @@ enforce_leverage = true
 [margin_management]
 # Completed 10:00 Taipei waterline policy from PoC docs/margin_management_analysis.md.
 # Checks are read-only: set LUX_READONLY_BROKER=1 to run the live loop margin panel
-# or `lux.ps1 margin-check`; no transfer or close is initiated automatically.
+# or `lux.ps1 status margin`; no transfer or close is initiated automatically.
 enabled = true
 check_time = '10:00'
 red_line_interval_minutes = 240

@@ -2,8 +2,8 @@
 # --no-capture-output keeps the interactive terminal UI (dashboard/compact) working.
 #
 # Usage:
-#   .\scripts\lux.ps1 live-dry-run --config configs/live.example.toml --reset-store
-#   .\scripts\lux.ps1 live-execute --config configs/config.live.exec.local.toml --reset-store
+#   .\scripts\lux.ps1 live --mode dry-run --config configs/live.example.toml --reset-store
+#   .\scripts\lux.ps1 live --mode execute --config configs/config.live.exec.local.toml --reset-store
 #   .\scripts\lux.ps1 replay --config configs/replay.fixture.toml --reset-store
 
 $ErrorActionPreference = 'Stop'
@@ -31,10 +31,19 @@ $liveExecuteEnvGates = @(
 )
 $restoreEnv = @{}
 $command = if ($args.Count -gt 0) { $args[0] } else { '' }
-$autoEnvGates = if ($command -eq 'live-execute') {
+$liveMode = ''
+if ($command -eq 'live') {
+    for ($index = 1; $index -lt ($args.Count - 1); $index++) {
+        if ($args[$index] -eq '--mode') {
+            $liveMode = [string]$args[$index + 1]
+            break
+        }
+    }
+}
+$autoEnvGates = if ($command -eq 'live' -and $liveMode -eq 'execute') {
     $liveExecuteEnvGates
 }
-elseif ($command -eq 'live-dry-run') {
+elseif ($command -eq 'live' -and $liveMode -eq 'dry-run') {
     @('LUX_READONLY_BROKER')
 }
 else {
