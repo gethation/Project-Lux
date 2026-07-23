@@ -91,12 +91,23 @@ Confirmed with the user. Two consequences:
    to start — this slice exists to validate connection, parsing, and scheduling, and
    that work is valid on delayed data.
 
-2. **Historical 1m may be refused entirely.** IBKR usually gates historical data
-   behind the same market-data permission. Expect error **162** or **354**.
+2. ~~**Historical 1m may be refused entirely.**~~ **RESOLVED — the reviewer ran the
+   probe on 2026-07-23. Historical 1m TRADES data IS available.**
 
-   This is a genuine unknown and **finding out is a deliverable**. Task 1 below is
-   exactly this probe. If historical data is refused, that is a *result*, not a
-   failure — report it clearly and stop that thread rather than working around it.
+   | Request | Result |
+   |---|---|
+   | `whatToShow="TRADES", useRTH=True` | **390 bars** — exactly one RTH session (09:30–16:00 ET) |
+   | `whatToShow="TRADES", useRTH=False` | 67 bars — extended hours, partial day |
+   | `whatToShow="MIDPOINT"` | **Error 162** — `No market data permissions for NYSE STK` |
+   | Delayed quotes (`reqMarketDataType(3)`) | Served tier 3, `last=21.39 close=21.29` |
+   | Live quotes (`reqMarketDataType(1)`) | Error 10089, no data — as expected |
+
+   **Use `TRADES`. Never `MIDPOINT`** — it needs bid/ask permissions this account
+   does not have. `TRADES` is also what the spec already required, because it matches
+   the PoC's TradingView RTH data.
+
+   The 390-bar count is a useful self-check: a complete RTH session is exactly 390
+   minutes, so a full trading day that returns anything else means something is wrong.
 
 ---
 
@@ -104,29 +115,38 @@ Confirmed with the user. Two consequences:
 
 Commit each task as soon as it is green. Run `pytest -q` before every commit.
 
-### 4.1 — Connectivity and permission probe (do this first)
+### 4.1 — Connectivity diagnostic (already probed; make it reproducible)
 
-Write a small, self-contained diagnostic — a script or a `status` subcommand, your
-choice — that connects and reports:
+The reviewer has already run this probe manually — §3 records the results, so the
+unknown that gated the rest of this slice is resolved. Your job is to turn it into a
+maintained diagnostic the operator can re-run, wired into `status doctor` or an
+equivalent, reporting:
 
-- connection success, server version, and the connected account id
-- the market-data tier actually served for UMC (`reqMarketDataType` result)
-- whether a **1-day** historical 1m request for UMC succeeds, and the exact error
-  code and message if it does not
-- the contract details IBKR resolves for UMC
+- connection, server version, and account
+- the market-data tier actually served (never let a delayed tier read as live)
+- a 1-day historical 1m probe with the exact error code on failure
+- the resolved contract details
 
-**Stop and report after this task.** Do not build the rest until the reviewer has
-seen the probe output — the answer to the historical-data question determines whether
-tasks 4.4 and 4.5 are even possible.
+**Verified reference values** (2026-07-23, live account):
 
-Contract to use:
+```text
+server version : 178
+UMC contract   : conId=46613372, SMART/NYSE, USD
+longName       : 'UNITED MICROELECTRON-SP ADR'
+timeZoneId     : US/Eastern
+tradingHours   : 20260723:0400-20260723:2000   (includes extended hours)
+```
+
+Use exactly this contract, and resolve it via `reqContractDetails` asserting exactly
+one match rather than assuming — ADRs occasionally collide with other listings:
 
 ```python
 Stock("UMC", "SMART", "USD", primaryExchange="NYSE")
 ```
 
-Resolve it via `reqContractDetails` and assert exactly one match rather than
-assuming; ADRs occasionally collide with other listings.
+Note `tradingHours` spans 04:00–20:00 ET (extended hours), while the strategy trades
+the 09:30–16:00 RTH session. **Do not derive the session window from `tradingHours`**
+— use `useRTH=True` and the RTH clock.
 
 ### 4.2 — Subprocess-isolated IBKR client
 
