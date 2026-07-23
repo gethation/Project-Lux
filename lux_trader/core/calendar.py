@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import date
 from datetime import datetime, time, timedelta, tzinfo
+from typing import Protocol
 
 from .models import MarketBar
 
@@ -175,7 +176,11 @@ def is_weekend_force_exit_bar(
     return (current_iso[0], current_iso[1]) != (next_iso[0], next_iso[1])
 
 
-class TradingCalendar:
+class SessionCalendar(Protocol):
+    def annotate(self, bars: Iterable[MarketBar]) -> list[MarketBar]: ...
+
+
+class TaifexSessionCalendar:
     """TAIFEX replay calendar that mirrors the PoC active-session masks."""
 
     def annotate(self, bars: Iterable[MarketBar]) -> list[MarketBar]:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..core.calendar import TradingCalendar
+from ..core.calendar import SessionCalendar, TaifexSessionCalendar
 from ..core.models import MarketBar
 
 TAIPEI_TZ = "Asia/Taipei"
@@ -27,14 +27,14 @@ class CsvReplayMarketData:
     def __init__(
         self,
         csv_path: Path,
-        calendar: TradingCalendar | None = None,
+        calendar: SessionCalendar | None = None,
         *,
         tw_leg_ohlcv_path: Path | None = None,
         us_leg_ohlcv_path: Path | None = None,
         usdttwd_ohlcv_path: Path | None = None,
     ) -> None:
         self.csv_path = csv_path
-        self.calendar = calendar or TradingCalendar()
+        self.calendar = calendar or TaifexSessionCalendar()
         self.tw_leg_ohlcv_path = tw_leg_ohlcv_path
         self.us_leg_ohlcv_path = us_leg_ohlcv_path
         self.usdttwd_ohlcv_path = usdttwd_ohlcv_path

@@ -5,7 +5,8 @@ from datetime import date, datetime, timezone
 import pytest
 
 from lux_trader.core.calendar import (
-    TradingCalendar,
+    SessionCalendar,
+    TaifexSessionCalendar,
     is_weekend_force_exit_bar,
     live_session_status,
 )
@@ -30,7 +31,7 @@ def make_bar(index: int, timestamp: datetime, tw_leg_close: float | None = 100.0
 
 def test_friday_night_is_close_only() -> None:
     friday_night = datetime.fromisoformat("2026-06-12T17:25:00+08:00")
-    bars = TradingCalendar().annotate([make_bar(0, friday_night)])
+    bars = TaifexSessionCalendar().annotate([make_bar(0, friday_night)])
 
     assert bars[0].close_allowed
     assert not bars[0].entry_allowed
@@ -38,7 +39,7 @@ def test_friday_night_is_close_only() -> None:
 
 
 def test_weekend_session_is_close_only_and_marks_force_close() -> None:
-    bars = TradingCalendar().annotate(
+    bars = TaifexSessionCalendar().annotate(
         [
             make_bar(0, datetime.fromisoformat("2026-06-12T13:43:00+08:00")),
             make_bar(1, datetime.fromisoformat("2026-06-12T17:25:00+08:00")),
@@ -105,10 +106,16 @@ def test_live_calendar_weekday_sessions_and_friday_close_only() -> None:
 
 def test_inactive_session_is_not_allowed_without_tw_leg_trades() -> None:
     timestamp = datetime.fromisoformat("2026-06-13T08:45:00+08:00")
-    bars = TradingCalendar().annotate([make_bar(0, timestamp, tw_leg_close=None)])
-
+    bars = TaifexSessionCalendar().annotate(
+        [make_bar(0, timestamp, tw_leg_close=None)]
+    )
     assert not bars[0].close_allowed
     assert not bars[0].entry_allowed
+
+
+def test_taifex_session_calendar_satisfies_protocol() -> None:
+    calendar: SessionCalendar = TaifexSessionCalendar()
+    assert calendar.annotate([]) == []
 
 
 def test_weekend_force_exit_fires_in_grace_window_at_friday_session_end() -> None:
