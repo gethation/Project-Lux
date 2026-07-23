@@ -20,7 +20,7 @@ from lux_trader.store import SQLiteStore
 
 
 def command_replay(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     if config.safety.allow_live_order:
         raise SystemExit("Refusing to run replay with allow_live_order=true")
     result = SystemRunner(config).replay(
@@ -39,8 +39,8 @@ def command_replay(args: argparse.Namespace) -> int:
 
 
 def command_summary(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    store = SQLiteStore(config.store_path)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         if getattr(args, "execution", False):
@@ -55,7 +55,7 @@ def command_summary(args: argparse.Namespace) -> int:
 
 
 def command_doctor(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     mode = getattr(args, "mode", "replay")
     if mode == "live":
         from .commands_live import run_live_doctor_checks

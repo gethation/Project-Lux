@@ -44,7 +44,7 @@ from lux_trader.market_data import (
     LiveMinuteBarBuilder,
     LiveQuoteSet,
     OhlcvProvider,
-    QFF_FORWARD_FILL_LOOKBACK,
+    TW_LEG_FORWARD_FILL_LOOKBACK,
     TwLegWarmupSourceReport,
     TwLegWarmupProvider,
     QuoteProvider,
@@ -71,9 +71,9 @@ from lux_trader.terminal_ui import (
 from lux_trader.core.tradable_spread import TradableSpreadSnapshot, estimate_tradable_spreads
 from lux_trader.core.time import ensure_taipei
 
-QFF_RECONNECT_GRACE_SECONDS = 10.0
-QFF_RECONNECT_RETRY_SECONDS = 30.0
-QFF_WATCHDOG_SECONDS = 120.0
+TW_LEG_RECONNECT_GRACE_SECONDS = 10.0
+TW_LEG_RECONNECT_RETRY_SECONDS = 30.0
+TW_LEG_WATCHDOG_SECONDS = 120.0
 
 
 @dataclass(frozen=True)
@@ -122,7 +122,7 @@ def restart_tw_leg_books_if_supported(
     if (
         last_restart_at is not None
         and (timestamp - ensure_taipei(last_restart_at)).total_seconds()
-        < QFF_RECONNECT_RETRY_SECONDS
+        < TW_LEG_RECONNECT_RETRY_SECONDS
     ):
         return last_restart_at
     restart = getattr(provider, "restart_books_session", None)
@@ -317,7 +317,8 @@ def switch_to_contract(
         seed_bars[-1].row_index,
         seed_bars[-1].timestamp,
         "warmup_rebuilt_for_new_contract",
-        "warmup rebuilt for QFF contract",
+        f"warmup rebuilt for {config.active_pair.tw_leg.display} "
+        f"contract {contract.symbol}",
         {
             "tw_leg_symbol": contract.symbol,
             "tw_leg_expiry": contract.expiry,

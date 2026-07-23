@@ -20,8 +20,8 @@ from .parsing import parse_optional_float, parse_timestamp
 from .types import TwLegContractCandidate
 
 
-QFF_FORWARD_FILL_LOOKBACK = timedelta(days=14)
-QFF_MONTH_CODES = {
+TW_LEG_FORWARD_FILL_LOOKBACK = timedelta(days=14)
+TAIFEX_MONTH_CODES = {
     "A": 1,
     "B": 2,
     "C": 3,
@@ -127,7 +127,7 @@ def build_tw_leg_session_warmup_index(
     session_index = build_tw_leg_session_index(tw_leg_close, end=end)
     if len(session_index) < count:
         raise RuntimeError(
-            f"QFF session warmup has only {len(session_index)} bars, need {count}"
+            f"TAIFEX session warmup has only {len(session_index)} bars, need {count}"
         )
     return pd.DatetimeIndex(session_index[-count:])
 
@@ -138,7 +138,7 @@ def build_tw_leg_expected_session_index(
     end: datetime,
     closed_dates: Iterable[date] = (),
 ) -> pd.DatetimeIndex:
-    """Return every QFF trading minute required by the live calendar.
+    """Return every TAIFEX trading minute required by the live calendar.
 
     Unlike :func:`build_tw_leg_session_index`, this index is anchored to the
     requested time range rather than inferred from whatever rows a provider
@@ -183,7 +183,7 @@ def build_tw_leg_expected_warmup_index(
     )
     if len(session_index) < count:
         raise RuntimeError(
-            "QFF expected-session warmup has only "
+            "TAIFEX expected-session warmup has only "
             f"{len(session_index)} bars, need {count}"
         )
     return pd.DatetimeIndex(session_index[-count:]), session_index
@@ -220,6 +220,7 @@ def prioritized_tw_leg_close_frame(
 def tw_leg_symbol_to_taifex_contract_month(
     symbol: str,
     *,
+    product: str,
     reference_date: date | None = None,
 ) -> str:
     normalized = symbol.strip().upper()
@@ -227,10 +228,11 @@ def tw_leg_symbol_to_taifex_contract_month(
     if numeric:
         return f"{numeric.group(1)}{numeric.group(2)}"
 
-    coded = re.search(r"QFF([A-L])(\d)", normalized)
+    normalized_product = product.strip().upper()
+    coded = re.search(rf"{re.escape(normalized_product)}([A-L])(\d)", normalized)
     if coded is None:
         raise RuntimeError(
-            f"Cannot derive TAIFEX contract month from QFF symbol: {symbol}"
+            f"Cannot derive TAIFEX contract month from {product} symbol: {symbol}"
         )
 
     reference = reference_date or datetime.now(TAIPEI_TZ).date()
@@ -239,14 +241,14 @@ def tw_leg_symbol_to_taifex_contract_month(
     year = decade + year_digit
     while year < reference.year - 1:
         year += 10
-    month = QFF_MONTH_CODES[coded.group(1)]
+    month = TAIFEX_MONTH_CODES[coded.group(1)]
     return f"{year}{month:02d}"
 
 
 def select_tw_leg_front_month(
     candidates: list[Any],
     *,
-    product: str = "QFF",
+    product: str,
     today: date | None = None,
 ) -> TwLegContractCandidate:
     today = today or datetime.now(TAIPEI_TZ).date()
@@ -278,14 +280,14 @@ def select_tw_leg_front_month(
 
     if not parsed:
         raise RuntimeError(
-            "Unable to select QFF front-month contract. "
+            f"Unable to select {product} front-month contract. "
             f"Rejected candidates: {rejected[:10]}"
         )
     return sorted(parsed, key=lambda item: (item.expiry, item.symbol))[0]
 
 
 __all__ = [
-    "QFF_FORWARD_FILL_LOOKBACK",
+    "TW_LEG_FORWARD_FILL_LOOKBACK",
     "build_tw_leg_session_index",
     "build_tw_leg_session_warmup_index",
     "build_tw_leg_expected_session_index",

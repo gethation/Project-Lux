@@ -148,7 +148,7 @@ class PairExecutionPlanValidator:
         add(
             "required_brokers",
             broker_counts == {BrokerName.BINANCE: 1, BrokerName.FUBON: 1},
-            "pair execution plan must contain one Binance TSM leg and one Fubon QFF leg",
+            "pair execution plan must contain one Binance leg and one Fubon leg",
             payload={broker.value: count for broker, count in broker_counts.items()},
         )
 
@@ -222,7 +222,7 @@ class PairExecutionPlanValidator:
             add(
                 "tw_leg_quantity_integer",
                 _is_integer_quantity(tw_leg_leg.quantity),
-                "Fubon QFF quantity must be an integer number of contracts",
+                f"Fubon {tw_leg_leg.symbol} quantity must be an integer number of contracts",
                 broker=tw_leg_leg.broker,
                 symbol=tw_leg_leg.symbol,
                 payload={"quantity": tw_leg_leg.quantity},
@@ -230,7 +230,7 @@ class PairExecutionPlanValidator:
             add(
                 "tw_leg_symbol_present",
                 bool(plan.tw_leg_symbol),
-                "pair execution plan must include the active QFF symbol",
+                f"pair execution plan must include active symbol {tw_leg_leg.symbol}",
                 broker=tw_leg_leg.broker,
                 symbol=tw_leg_leg.symbol,
             )
@@ -238,7 +238,7 @@ class PairExecutionPlanValidator:
                 add(
                     "tw_leg_symbol_matches",
                     tw_leg_leg.symbol == plan.tw_leg_symbol,
-                    "Fubon QFF leg symbol must match the active QFF symbol",
+                    f"Fubon symbol must match active symbol {plan.tw_leg_symbol}",
                     broker=tw_leg_leg.broker,
                     symbol=tw_leg_leg.symbol,
                     payload={

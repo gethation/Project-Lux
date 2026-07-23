@@ -388,7 +388,7 @@ def write_minimal_config(tmp_path: Path, live_body: str = "") -> Path:
             [
                 "[paths]",
                 "store_path = 'project_lux.sqlite3'",
-                "input_csv = ''",
+                *minimal_pair_config_lines(),
                 "",
                 "[live_market_data]",
                 live_body,
@@ -397,6 +397,43 @@ def write_minimal_config(tmp_path: Path, live_body: str = "") -> Path:
         encoding="utf-8",
     )
     return config_path
+
+
+def minimal_pair_config_lines() -> list[str]:
+    return [
+        "",
+        "[[pairs]]",
+        "id = 'qff_tsm'",
+        "label = 'QFF/TSM'",
+        "",
+        "[pairs.data]",
+        "input_csv = ''",
+        "",
+        "[pairs.tw_leg]",
+        "display = 'QFF'",
+        "venue = 'fubon'",
+        "product = 'QFF'",
+        "symbol = 'auto'",
+        "contract_multiplier = 100.0",
+        "",
+        "[pairs.us_leg]",
+        "display = 'TSM'",
+        "venue = 'binance'",
+        "symbol = 'TSM/USDT:USDT'",
+        "adr_share_ratio = 5.0",
+        "",
+        "[pairs.fx]",
+        "venue = 'bitopro'",
+        "symbol = 'USDT/TWD'",
+        "",
+        "[pairs.sizing]",
+        "mode = 'notional'",
+        "leg_notional_twd = 1000000.0",
+        "",
+        "[pairs.strategy]",
+        "",
+        "[pairs.fees]",
+    ]
 
 
 def test_load_config_defaults_live_freshness_and_clock_preflight(tmp_path) -> None:
@@ -451,7 +488,7 @@ def test_load_config_reads_live_execution_smoke_config(tmp_path) -> None:
             [
                 "[paths]",
                 "store_path = 'project_lux.sqlite3'",
-                "input_csv = ''",
+                *minimal_pair_config_lines(),
                 "",
                 "[live_execution_smoke]",
                 "enabled = true",
@@ -688,7 +725,7 @@ def seed_warmup_bars(config: AppConfig) -> None:
         )
         for index in range(config.strategy.zscore_window)
     ]
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         store.replace_warmup_bars(bars)
@@ -798,7 +835,7 @@ def test_live_dry_run_closed_calendar_skips_market_data_bars_and_margin_checks(
     assert "LIVE non-trading session next=06/22 08:45" in output
     assert "BAR" not in output
 
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         assert count_table(store, "market_ticks") == 0
@@ -948,7 +985,7 @@ def test_live_runtime_uses_cached_quote_after_transient_fetch_failure(tmp_path) 
 
     assert result.iterations == 2
     assert "WARN fetch_us_leg failed:RuntimeError" in terminal_output.getvalue()
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         assert count_table(store, "market_ticks") == 6
@@ -988,7 +1025,7 @@ def test_live_runtime_skips_iteration_when_fetch_fails_without_cached_quote(tmp_
     output = terminal_output.getvalue()
     assert "WARN fetch_us_leg failed:RuntimeError" in output
     assert "WARN market_data_fetch skip_iteration" in output
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         assert count_table(store, "market_ticks") == 0
@@ -1100,6 +1137,7 @@ def test_tw_leg_symbol_to_taifex_contract_month_accepts_fubon_code() -> None:
     assert (
         tw_leg_symbol_to_taifex_contract_month(
             "QFFG6",
+            product="QFF",
             reference_date=datetime.fromisoformat("2026-06-18T00:00:00+08:00").date(),
         )
         == "202607"
@@ -1441,6 +1479,7 @@ def test_taifex_tw_leg_trade_downloader_aggregates_tick_csv_to_1m(tmp_path) -> N
 
     frame = TaifexTwLegTradeDownloader(
         tmp_path / "cache",
+        product="QFF",
         http_get=http_get,
     ).fetch_1m(
         "QFFG6",
@@ -1953,7 +1992,7 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
     assert "shortSpread(spread=" in output
     assert "longSpread(spread=" in output
     assert "none" in output
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         summary = store.build_summary(config.strategy, config.fees)
@@ -2118,7 +2157,7 @@ def test_live_dry_run_records_simulated_entry_and_opens_position(tmp_path) -> No
     assert "EVENT entry_fill dry_run_filled" in output
     assert "EVENT dry_run execution_filled" in output
 
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         assert count_table(store, "execution_plans") == 1
@@ -2237,7 +2276,7 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
     assert "EVENT post_trade_reconciliation matched" in output
     assert "SHORT entry_fill" in output
 
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         assert count_table(store, "warmup_bars") == config.live.warmup_minutes
@@ -2408,7 +2447,7 @@ def test_live_execute_resume_keeps_open_when_broker_matches(
     )
 
     assert "resume_reconciliation matched" in output
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         state = store.load_resume_state()
@@ -2436,7 +2475,7 @@ def test_live_execute_resume_pauses_when_broker_lost_position(
     )
 
     assert "resume_reconciliation" in output
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         state = store.load_resume_state()
@@ -2479,7 +2518,7 @@ def test_live_execute_resume_keeps_position_when_broker_unreachable(
         ),
     )
 
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         state = store.load_resume_state()
@@ -2575,7 +2614,7 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
 
     assert second_result.plans_recorded == 0
 
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         assert count_table(store, "warmup_bars") == config.live.warmup_minutes
@@ -2687,7 +2726,7 @@ def test_live_dry_run_survives_contract_resolution_failure(tmp_path) -> None:
 
 
 def seed_strategy_state(config: AppConfig, state: StrategyRuntimeState) -> None:
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         store.save_state(
@@ -2786,7 +2825,7 @@ def test_live_dry_run_exit_pending_records_exit_intent(tmp_path) -> None:
     ).run(resume=True, max_iterations=3)
 
     assert result.plans_recorded == 1
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         plan = store.load_latest_execution_plan_payload()
@@ -2868,7 +2907,7 @@ def test_live_dry_run_force_exit_records_rollover_exit_intent(tmp_path) -> None:
     ).run(resume=True, max_iterations=3)
 
     assert result.plans_recorded == 1
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         plan = store.load_latest_execution_plan_payload()
@@ -2944,7 +2983,7 @@ def test_live_runtime_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
     assert "EVENT warmup_auto start" in output
     assert "EVENT warmup_auto done_3" in output
 
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         assert count_table(store, "warmup_bars") == 3
@@ -3036,7 +3075,7 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
     assert "EVENT warmup_auto start" in terminal_output.getvalue()
     assert "EVENT warmup_auto done_3" in terminal_output.getvalue()
 
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         refreshed = store.load_indicator_seed_bars(3, tw_leg_symbol="QFFG6")
@@ -3088,7 +3127,7 @@ def test_live_runtime_non_resume_refreshes_existing_seed_by_default(tmp_path) ->
     ).run(max_iterations=0)
 
     assert tw_leg.fetch_1m_calls
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         refreshed = store.load_indicator_seed_bars(3, tw_leg_symbol="QFFG6")
@@ -3271,7 +3310,7 @@ def test_warmup_runner_fixed_symbol_skips_front_month_selector_and_writes_seed_o
     assert tw_leg.select_calls == 0
     assert tw_leg.fetch_1m_calls[0][0] == "QFFG6"
 
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         assert count_table(store, "warmup_bars") == 3
@@ -3642,7 +3681,7 @@ def test_live_dry_run_weekend_force_exit_flattens_before_weekend(tmp_path) -> No
     ).run(resume=True, max_iterations=3)
 
     assert result.plans_recorded == 1
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         plan = store.load_latest_execution_plan_payload()

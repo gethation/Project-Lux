@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -9,12 +10,18 @@ from lux_trader.config import (
     BrokerReconciliationConfig,
     ContractPolicyConfig,
     FeeConfig,
+    FxConfig,
     LiveExecutionConfig,
     LiveExecutionSmokeConfig,
     LiveMarketDataConfig,
+    PairConfig,
+    PairDataConfig,
     SafetyConfig,
     StrategyConfig,
+    SizingConfig,
     TradingCalendarConfig,
+    TwLegConfig,
+    UsLegConfig,
 )
 
 
@@ -56,7 +63,7 @@ def fee_config() -> FeeConfig:
 
 
 def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> AppConfig:
-    return AppConfig(
+    config = AppConfig(
         input_csv=POC_CSV,
         store_path=tmp_path / "project_lux.sqlite3",
         tw_leg_ohlcv_csv=POC_QFF_OHLCV,
@@ -130,3 +137,35 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             tw_leg_expiry="202607",
         ),
     )
+    pair = PairConfig(
+        id="qff_tsm",
+        label="QFF/TSM",
+        tw_leg=TwLegConfig(
+            display="QFF",
+            venue="fubon",
+            product="QFF",
+            symbol="auto",
+            contract_multiplier=100.0,
+        ),
+        us_leg=UsLegConfig(
+            display="TSM",
+            venue="binance",
+            symbol="TSM/USDT:USDT",
+            adr_share_ratio=5.0,
+        ),
+        fx=FxConfig(venue="bitopro", symbol="USDT/TWD"),
+        sizing=SizingConfig(
+            mode="notional",
+            lots=1,
+            leg_notional_twd=1_000_000.0,
+        ),
+        strategy=config.strategy,
+        fees=config.fees,
+        data=PairDataConfig(
+            input_csv=config.input_csv,
+            tw_leg_ohlcv_csv=config.tw_leg_ohlcv_csv,
+            us_leg_ohlcv_csv=config.us_leg_ohlcv_csv,
+            fx_ohlcv_csv=config.usdttwd_ohlcv_csv,
+        ),
+    )
+    return replace(config, pairs=(pair,), active_pair_id=pair.id)

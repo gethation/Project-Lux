@@ -44,7 +44,7 @@ from lux_trader.market_data import (
     LiveMinuteBarBuilder,
     LiveQuoteSet,
     OhlcvProvider,
-    QFF_FORWARD_FILL_LOOKBACK,
+    TW_LEG_FORWARD_FILL_LOOKBACK,
     TwLegWarmupSourceReport,
     TwLegWarmupProvider,
     QuoteProvider,
@@ -78,8 +78,8 @@ from lux_trader.runtime.live.bootstrap import (
     run_live_startup_preflight,
 )
 from lux_trader.runtime.live.contracts import (
-    QFF_RECONNECT_GRACE_SECONDS,
-    QFF_WATCHDOG_SECONDS,
+    TW_LEG_RECONNECT_GRACE_SECONDS,
+    TW_LEG_WATCHDOG_SECONDS,
     TwLegContractResolution,
     cancel_entry_pending_for_contract_switch,
     mark_pending_contract_switch_if_needed,
@@ -167,7 +167,10 @@ class LiveRuntime:
                 self.reporter,
                 self.clock,
             )
-        store = SQLiteStore(self.config.store_path)
+        store = SQLiteStore(
+            self.config.store_path,
+            **self.config.store_identity(),
+        )
         live_run_id: int | None = None
         margin_monitor: MarginMonitor | None = None
         account_display: AccountDisplayProvider | None = None
@@ -349,7 +352,7 @@ class LiveRuntime:
                         last_restart_at=last_tw_leg_books_restart_at,
                     )
                     tw_leg_reconnecting_until = observed_at + timedelta(
-                        seconds=QFF_RECONNECT_GRACE_SECONDS
+                        seconds=TW_LEG_RECONNECT_GRACE_SECONDS
                     )
                     tw_leg_books_torn_down_for_non_trading = False
 
@@ -410,7 +413,7 @@ class LiveRuntime:
                 if tw_leg_book_is_fresh_for_signal(quote_set.tw_leg, observed_at, self.config):
                     tw_leg_reconnecting_until = None
                     tw_leg_reconnecting = False
-                elif tw_leg_book_age_seconds(quote_set.tw_leg, observed_at) > QFF_WATCHDOG_SECONDS:
+                elif tw_leg_book_age_seconds(quote_set.tw_leg, observed_at) > TW_LEG_WATCHDOG_SECONDS:
                     restarted_at = restart_tw_leg_books_if_supported(
                         tw_leg_provider,
                         tw_leg_symbol,
@@ -420,7 +423,7 @@ class LiveRuntime:
                     )
                     if restarted_at != last_tw_leg_books_restart_at:
                         tw_leg_reconnecting_until = observed_at + timedelta(
-                            seconds=QFF_RECONNECT_GRACE_SECONDS
+                            seconds=TW_LEG_RECONNECT_GRACE_SECONDS
                         )
                         tw_leg_reconnecting = True
                     last_tw_leg_books_restart_at = restarted_at
@@ -793,7 +796,7 @@ class LiveRuntime:
                 bar.row_index,
                 bar.timestamp,
                 "entry_cancel_contract_switch",
-                "pending entry canceled before QFF contract switch",
+                f"pending entry canceled before {tw_leg_symbol} contract switch",
                 {
                     "old_tw_leg_symbol": tw_leg_symbol,
                     "new_tw_leg_symbol": eligible_contract.symbol,
@@ -808,7 +811,9 @@ class LiveRuntime:
             bar.row_index,
             bar.timestamp,
             "contract_switch_detected",
-            "flat strategy switching to eligible QFF contract",
+            "flat strategy switching to eligible "
+            f"{self.config.active_pair.tw_leg.display} contract "
+            f"{eligible_contract.symbol}",
             {
                 "old_tw_leg_symbol": tw_leg_symbol,
                 "new_tw_leg_symbol": eligible_contract.symbol,
@@ -893,7 +898,8 @@ class LiveRuntime:
             bar.row_index,
             bar.timestamp,
             "contract_switch_completed",
-            "QFF contract switched after flat state",
+            f"{self.config.active_pair.tw_leg.display} contract "
+            f"switched to {tw_leg_symbol} after flat state",
             {"tw_leg_symbol": tw_leg_symbol},
         )
         self.reporter.event(bar.timestamp, "contract_switch_done", tw_leg_symbol)

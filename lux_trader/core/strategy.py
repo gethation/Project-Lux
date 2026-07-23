@@ -210,12 +210,14 @@ class PairStrategy:
         broker: Broker,
         state: StrategyRuntimeState | None = None,
         *,
-        us_leg_symbol: str = "TSM/USDT:USDT",
+        us_leg_symbol: str,
+        tw_leg_symbol: str,
     ) -> None:
         self.strategy = strategy
         self.fees = fees
         self.broker = broker
         self.us_leg_symbol = us_leg_symbol
+        self.tw_leg_symbol = tw_leg_symbol
         self.state = state or StrategyRuntimeState(
             running_max_equity=strategy.initial_capital_twd
         )
@@ -666,6 +668,7 @@ class PairStrategy:
         return build_pair_order_requests(
             bar=bar,
             us_leg_symbol=self.us_leg_symbol,
+            tw_leg_symbol=self.tw_leg_symbol,
             us_leg_units=us_leg_units,
             tw_leg_contracts=tw_leg_contracts,
             us_leg_price=entry_us_leg_price(bar),
@@ -683,6 +686,7 @@ class PairStrategy:
         return build_pair_order_requests(
             bar=bar,
             us_leg_symbol=self.us_leg_symbol,
+            tw_leg_symbol=self.tw_leg_symbol,
             us_leg_units=-self.state.us_leg_units,
             tw_leg_contracts=-self.state.tw_leg_contracts,
             us_leg_price=bar.us_leg_twd_fair,
@@ -755,6 +759,7 @@ def build_pair_order_requests(
     *,
     bar: MarketBar,
     us_leg_symbol: str,
+    tw_leg_symbol: str,
     us_leg_units: float,
     tw_leg_contracts: int,
     us_leg_price: float,
@@ -778,7 +783,7 @@ def build_pair_order_requests(
         ),
         OrderRequest(
             broker=BrokerName.FUBON,
-            symbol=bar.tw_leg_symbol or "QFF",
+            symbol=bar.tw_leg_symbol or tw_leg_symbol,
             side=OrderSide.BUY if tw_leg_contracts > 0 else OrderSide.SELL,
             quantity=abs(tw_leg_contracts),
             price=tw_leg_price,

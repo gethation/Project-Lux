@@ -43,7 +43,7 @@ from lux_trader.market_data import (
     LiveMinuteBarBuilder,
     LiveQuoteSet,
     OhlcvProvider,
-    QFF_FORWARD_FILL_LOOKBACK,
+    TW_LEG_FORWARD_FILL_LOOKBACK,
     TwLegWarmupSourceReport,
     TwLegWarmupProvider,
     QuoteProvider,
@@ -116,7 +116,10 @@ class WarmupRunner:
     ) -> WarmupResult:
         if self.config.safety.allow_live_order:
             raise RuntimeError("Refusing warmup-live with allow_live_order=true")
-        store = SQLiteStore(self.config.store_path)
+        store = SQLiteStore(
+            self.config.store_path,
+            **self.config.store_identity(),
+        )
         try:
             if reset_store:
                 store.reset()
@@ -127,7 +130,10 @@ class WarmupRunner:
             contract = resolve_tw_leg_contract(self.config, tw_leg_provider)
             fallback = self.tw_leg_fallback_provider
             if fallback is None and self.config.live.taifex_use_network:
-                fallback = TaifexTwLegTradeDownloader(self.config.live.taifex_cache_dir)
+                fallback = TaifexTwLegTradeDownloader(
+                    self.config.live.taifex_cache_dir,
+                    product=self.config.live.tw_leg_product,
+                )
             elif fallback is None and self.config.live.taifex_tw_leg_1m_csv is not None:
                 fallback = CsvTwLegWarmupProvider(self.config.live.taifex_tw_leg_1m_csv)
             us_leg_provider = self.us_leg_provider or BinanceMarketData()
@@ -209,9 +215,10 @@ class TwLegWarmupCheckRunner:
             end_minute = floor_minute(end or datetime.now().astimezone()) - timedelta(
                 minutes=1
             )
-            tw_leg_fetch_start = end_minute - QFF_FORWARD_FILL_LOOKBACK
+            tw_leg_fetch_start = end_minute - TW_LEG_FORWARD_FILL_LOOKBACK
             taifex_provider = self.taifex_provider or TaifexTwLegTradeDownloader(
-                self.config.live.taifex_cache_dir
+                self.config.live.taifex_cache_dir,
+                product=self.config.live.tw_leg_product,
             )
             taifex_frame = taifex_provider.fetch_1m(
                 contract.symbol, tw_leg_fetch_start, end_minute
@@ -220,9 +227,13 @@ class TwLegWarmupCheckRunner:
                 contract.symbol, tw_leg_fetch_start, end_minute
             )
             if taifex_frame.empty:
-                raise RuntimeError("TAIFEX QFF warmup data is empty")
+                raise RuntimeError(
+                    f"TAIFEX {self.config.active_pair.tw_leg.display} warmup data is empty"
+                )
             if fubon_frame.empty:
-                raise RuntimeError("Fubon QFF intraday candles are empty")
+                raise RuntimeError(
+                    f"Fubon {self.config.active_pair.tw_leg.display} intraday candles are empty"
+                )
             warmup_index, session_index = build_tw_leg_expected_warmup_index(
                 start=tw_leg_fetch_start,
                 end=end_minute,
@@ -241,12 +252,14 @@ class TwLegWarmupCheckRunner:
             )
             if len(report.frame) != self.config.live.warmup_minutes:
                 raise RuntimeError(
-                    f"QFF warmup report has {len(report.frame)} rows, "
+                    f"{self.config.active_pair.tw_leg.display} warmup report has "
+                    f"{len(report.frame)} rows, "
                     f"need {self.config.live.warmup_minutes}"
                 )
             if report.null_count:
                 raise RuntimeError(
-                    f"QFF warmup report has {report.null_count} null filled closes"
+                    f"{self.config.active_pair.tw_leg.display} warmup report has "
+                    f"{report.null_count} null filled closes"
                 )
             validate_tw_leg_warmup_report(
                 report,
@@ -256,6 +269,7 @@ class TwLegWarmupCheckRunner:
                 max_forward_fill_ratio=(
                     self.config.live.warmup_forward_fill_max_ratio
                 ),
+                tw_leg_display=self.config.active_pair.tw_leg.display,
             )
 
             resolved_output = self._resolve_output_csv(output_csv)
@@ -335,7 +349,10 @@ def load_or_build_live_indicator(
             )
         fallback: TwLegWarmupProvider | None
         if config.live.taifex_use_network:
-            fallback = TaifexTwLegTradeDownloader(config.live.taifex_cache_dir)
+            fallback = TaifexTwLegTradeDownloader(
+                config.live.taifex_cache_dir,
+                product=config.live.tw_leg_product,
+            )
         elif config.live.taifex_tw_leg_1m_csv is not None:
             fallback = CsvTwLegWarmupProvider(config.live.taifex_tw_leg_1m_csv)
         else:

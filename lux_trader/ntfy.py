@@ -16,6 +16,7 @@ import requests
 from .config import NtfyConfig
 from .core.time import ensure_taipei
 from .execution.outcome import ExecutionOutcomeStatus
+from .presentation import direction_text, instrument_text
 from .terminal_ui import (
     format_float,
     format_money,
@@ -89,7 +90,7 @@ class NtfyStatusBar:
 def load_recent_status_bars(
     store_path: Path,
     *,
-    pair_id: str = "qff_tsm",
+    pair_id: str,
     limit: int = STATUS_BAR_COUNT,
 ) -> tuple[NtfyStatusBar, ...]:
     """Load committed BARs without touching the live writer connection."""
@@ -139,19 +140,32 @@ def load_recent_status_bars(
     )
 
 
-def format_status_state(state: str, position: str) -> str:
+def format_status_state(
+    state: str,
+    position: str,
+    *,
+    tw_leg_display: str,
+    us_leg_display: str,
+) -> str:
     state_text = str(state).upper()
     if state_text != "OPEN":
         return state_text
     position_text = str(position).lower()
-    if position_text == "long_us_short_tw":
-        return "LONG"
-    if position_text == "short_us_long_tw":
-        return "SHORT"
+    if position_text in {"long_us_short_tw", "short_us_long_tw"}:
+        return direction_text(
+            position_text,
+            tw_leg_display=tw_leg_display,
+            us_leg_display=us_leg_display,
+        )
     return state_text
 
 
-def format_status_bars(bars: tuple[NtfyStatusBar, ...]) -> str:
+def format_status_bars(
+    bars: tuple[NtfyStatusBar, ...],
+    *,
+    tw_leg_display: str,
+    us_leg_display: str,
+) -> str:
     blocks = []
     for bar in bars:
         blocks.append(
@@ -161,7 +175,8 @@ def format_status_bars(bars: tuple[NtfyStatusBar, ...]) -> str:
                     f"mid={format_float(bar.mid_spread, digits=2)} "
                     f"zS={format_float(bar.short_zscore, digits=2)} "
                     f"zL={format_float(bar.long_zscore, digits=2)}",
-                    f"state={format_status_state(bar.state, bar.position)} "
+                    "state="
+                    f"{format_status_state(bar.state, bar.position, tw_leg_display=tw_leg_display, us_leg_display=us_leg_display)} "
                     f"PnL={format_money(bar.unrealized_pnl)} TWD",
                 )
             )
@@ -179,7 +194,9 @@ class NtfyStatusCommandSubscriber:
         store_path: Path,
         mode_label: str,
         publisher: Any,
-        pair_id: str = "qff_tsm",
+        pair_id: str,
+        tw_leg_display: str,
+        us_leg_display: str,
         transport: Callable[..., Any] | None = None,
         error_stream: TextIO | None = None,
     ) -> None:
@@ -188,6 +205,8 @@ class NtfyStatusCommandSubscriber:
         self.mode_label = mode_label
         self.publisher = publisher
         self.pair_id = pair_id
+        self.tw_leg_display = tw_leg_display
+        self.us_leg_display = us_leg_display
         self._session = requests.Session() if transport is None else None
         self._transport = transport or self._session.get
         self._error_stream = error_stream or sys.stderr
@@ -284,7 +303,11 @@ class NtfyStatusCommandSubscriber:
             title = (
                 f"[{self.mode_label}] {session_label}Latest {len(bars)} BARs"
             )
-            body = format_status_bars(bars)
+            body = format_status_bars(
+                bars,
+                tw_leg_display=self.tw_leg_display,
+                us_leg_display=self.us_leg_display,
+            )
         self.publisher.publish(
             NtfyMessage(
                 topic=self.config.status_topic,
@@ -522,6 +545,9 @@ class NtfyLiveReporter:
         config: NtfyConfig,
         *,
         mode: str,
+        pair_id: str = "default_pair",
+        tw_leg_display: str = "TW instrument",
+        us_leg_display: str = "US instrument",
         publisher: NtfyPublisher | None = None,
         store_path: Path | None = None,
         command_subscriber: NtfyStatusCommandSubscriber | None = None,
@@ -530,6 +556,9 @@ class NtfyLiveReporter:
         self.config = config
         self.mode = mode
         self.mode_label = "LIVE" if mode == "live-execute" else "DRY-RUN"
+        self.pair_id = pair_id
+        self.tw_leg_display = tw_leg_display
+        self.us_leg_display = us_leg_display
         self.publisher = publisher or NtfyPublisher(config)
         self._is_trading_session: bool | None = None
         self._pnl_pending_notified = False
@@ -540,6 +569,9 @@ class NtfyLiveReporter:
                 store_path=store_path,
                 mode_label=self.mode_label,
                 publisher=self.publisher,
+                pair_id=self.pair_id,
+                tw_leg_display=self.tw_leg_display,
+                us_leg_display=self.us_leg_display,
             )
         if self.command_subscriber is not None:
             self.command_subscriber.start()
@@ -656,7 +688,7 @@ class NtfyLiveReporter:
         plan_type = str(getattr(getattr(plan, "plan_type", None), "value", "trade"))
         status = str(getattr(getattr(outcome, "status", None), "value", "unknown"))
         if fills:
-            fill_lines = [format_fill(fill) for fill in fills]
+            fill_lines = [self._present(format_fill(fill)) for fill in fills]
             pnl_summary = trade_pnl_from_execution(plan, outcome, result)
             if pnl_summary is not None:
                 pnl_values = format_trade_pnl_values(pnl_summary)
@@ -672,8 +704,10 @@ class NtfyLiveReporter:
                     message="\n".join(
                         [
                             f"{format_timestamp(timestamp)} mode={self.mode_label}",
-                            f"direction={getattr(getattr(plan, 'direction', None), 'value', '-')}",
-                            f"reason={getattr(result, 'reason', '')}",
+                            "direction="
+                            f"{direction_text(getattr(plan, 'direction', '-'), tw_leg_display=self.tw_leg_display, us_leg_display=self.us_leg_display)}",
+                            "reason="
+                            f"{self._present(getattr(result, 'reason', ''))}",
                             *fill_lines,
                         ]
                     ),
@@ -696,9 +730,12 @@ class NtfyLiveReporter:
 
     @ntfy_best_effort
     def notify_error(self, timestamp: Any, code: str, detail: str = "") -> None:
-        body = f"{format_timestamp(timestamp)} mode={self.mode_label} code={code}"
+        body = (
+            f"{format_timestamp(timestamp)} mode={self.mode_label} "
+            f"code={self._present(code)}"
+        )
         if detail:
-            body = f"{body}\n{detail}"
+            body = f"{body}\n{self._present(detail)}"
         self.publisher.publish(
             NtfyMessage(
                 topic=self.config.errors_topic,
@@ -707,6 +744,13 @@ class NtfyLiveReporter:
                 priority=ALERT_PRIORITY,
                 tags=("warning",),
             )
+        )
+
+    def _present(self, value: Any) -> str:
+        return instrument_text(
+            value,
+            tw_leg_display=self.tw_leg_display,
+            us_leg_display=self.us_leg_display,
         )
 
     def finish(self) -> None:

@@ -6,6 +6,7 @@ from typing import Any, Callable, TextIO
 
 from .core.time import ensure_taipei
 from .core.tradable_spread import TradableSpreadSnapshot
+from .presentation import instrument_text
 from .trade_pnl import format_trade_pnl_values, format_twd, trade_pnl_from_execution
 
 
@@ -79,11 +80,15 @@ class LiveTerminalReporter:
         self,
         stream: TextIO | None = None,
         *,
+        tw_leg_display: str = "TW instrument",
+        us_leg_display: str = "US instrument",
         color: bool | None = None,
         interactive: bool | None = None,
         terminal_width: Callable[[], int | None] | None = None,
     ) -> None:
         self.stream = stream or sys.stdout
+        self.tw_leg_display = tw_leg_display
+        self.us_leg_display = us_leg_display
         is_tty = bool(getattr(self.stream, "isatty", lambda: False)())
         if color is None:
             color = is_tty and os.getenv("NO_COLOR") is None
@@ -221,7 +226,7 @@ class LiveTerminalReporter:
         mid_text = f"mid={format_float(spread_snapshot.mid_spread, digits=2)}"
         mid_z_text = f"z={format_float(spread_snapshot.mid_zscore, digits=2)}"
         state_text = state_value(strategy_state)
-        action_text = compact_action(action, reason)
+        action_text = self._present(compact_action(action, reason))
         pnl_text = f"pnl={account_pnl_text(account_display)}"
         pnl_status_text = (
             " realized_pnl=PENDING"
@@ -261,13 +266,13 @@ class LiveTerminalReporter:
         self._write_permanent(plain, colored)
 
     def warn(self, timestamp: Any, code: str, detail: str = "") -> None:
-        self._write_short(timestamp, "WARN", code, detail, "yellow")
+        self._write_short(timestamp, "WARN", self._present(code), self._present(detail), "yellow")
 
     def event(self, timestamp: Any, code: str, detail: str = "") -> None:
-        self._write_short(timestamp, "EVENT", code, detail, "magenta")
+        self._write_short(timestamp, "EVENT", self._present(code), self._present(detail), "magenta")
 
     def error(self, timestamp: Any, message: str) -> None:
-        self._write_short(timestamp, "ERR", message, "", "red")
+        self._write_short(timestamp, "ERR", self._present(message), "", "red")
 
     def execution(
         self,
@@ -439,6 +444,13 @@ class LiveTerminalReporter:
         z_text = f"z={format_float(zscore, digits=2)}"
         return f"{name}(spread={spread_text},{self._paint_z(z_text, zscore)})"
 
+    def _present(self, value: Any) -> str:
+        return instrument_text(
+            value,
+            tw_leg_display=self.tw_leg_display,
+            us_leg_display=self.us_leg_display,
+        )
+
 
 def compact_warning_code(kind: str | None, payload: dict[str, Any] | None) -> str:
     payload = payload or {}
@@ -450,7 +462,7 @@ def compact_warning_code(kind: str | None, payload: dict[str, Any] | None) -> st
     if kind == "missing_required_quote":
         return "missing_quote"
     if kind == "missing_tw_leg_forward_fill":
-        return "missing_tw_leg"
+        return "missing_forward_fill"
     return str(kind or "warning")
 
 

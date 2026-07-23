@@ -74,6 +74,9 @@ def reporter(*, mode: str = "live-execute") -> tuple[NtfyLiveReporter, FakePubli
             FakeBaseReporter(),
             config(),
             mode=mode,
+            pair_id="qff_tsm",
+            tw_leg_display="QFF",
+            us_leg_display="TSM",
             publisher=publisher,
         ),
         publisher,
@@ -190,6 +193,7 @@ def test_dry_run_filled_execution_is_clearly_labeled_and_lists_both_fills() -> N
     assert message.priority == ALERT_PRIORITY
     assert "[DRY-RUN]" in message.title
     assert "mode=DRY-RUN" in message.message
+    assert "direction=Short TSM / Long QFF" in message.message
     assert "BINANCE TSM/USDT:USDT sell qty=2.5 price=105.25" in message.message
     assert "FUBON QFFQ6 buy qty=1 price=842" in message.message
     assert "trade_pnl_twd" not in message.message
@@ -404,6 +408,9 @@ def command_subscriber(path, publisher, *, error_stream=None):
         store_path=path,
         mode_label="LIVE",
         publisher=publisher,
+        pair_id="qff_tsm",
+        tw_leg_display="QFF",
+        us_leg_display="TSM",
         transport=lambda *args, **kwargs: None,
         error_stream=error_stream,
     )
@@ -438,7 +445,9 @@ def test_status_command_replies_with_latest_ten_committed_bars(tmp_path) -> None
     blocks = message.message.split("\n\n")
     assert len(blocks) == 10
     assert blocks[0].startswith("07-14 09:14\nmid=10.20 zS=1.20 zL=1.70")
-    assert blocks[-1].endswith("state=LONG PnL=11,000 TWD")
+    assert blocks[-1].endswith(
+        "state=Long TSM / Short QFF PnL=11,000 TWD"
+    )
 
 
 def test_status_command_reports_available_count_and_empty_store(tmp_path) -> None:
@@ -542,6 +551,9 @@ def test_cached_bootstrap_message_is_not_replayed(tmp_path) -> None:
         store_path=store_path,
         mode_label="LIVE",
         publisher=publisher,
+        pair_id="qff_tsm",
+        tw_leg_display="QFF",
+        us_leg_display="TSM",
         transport=lambda *args, **kwargs: CachedResponse(),
     )
 
@@ -564,6 +576,9 @@ def test_command_subscriber_network_failure_is_logged_without_raising(tmp_path) 
         store_path=tmp_path / "live.sqlite3",
         mode_label="LIVE",
         publisher=FakePublisher(),
+        pair_id="qff_tsm",
+        tw_leg_display="QFF",
+        us_leg_display="TSM",
         transport=offline,
         error_stream=errors,
     )
@@ -614,6 +629,9 @@ def test_command_subscriber_reconnects_after_429(monkeypatch, tmp_path) -> None:
         store_path=store_path,
         mode_label="LIVE",
         publisher=publisher,
+        pair_id="qff_tsm",
+        tw_leg_display="QFF",
+        us_leg_display="TSM",
         transport=transport,
         error_stream=io.StringIO(),
     )
@@ -664,18 +682,36 @@ def test_quiet_ui_still_wraps_reporter_with_ntfy(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
     class FakeNtfyReporter:
-        def __init__(self, base, ntfy_config, *, mode, store_path):
+        def __init__(
+            self,
+            base,
+            ntfy_config,
+            *,
+            mode,
+            store_path,
+            pair_id,
+            tw_leg_display,
+            us_leg_display,
+        ):
             captured.update(
                 base=base,
                 config=ntfy_config,
                 mode=mode,
                 store_path=store_path,
+                pair_id=pair_id,
+                tw_leg_display=tw_leg_display,
+                us_leg_display=us_leg_display,
             )
 
     monkeypatch.setattr(commands_live, "NtfyLiveReporter", FakeNtfyReporter)
     app_config = SimpleNamespace(
         ntfy=config(),
         store_path=tmp_path / "live.sqlite3",
+        active_pair=SimpleNamespace(
+            id="qff_tsm",
+            tw_leg=SimpleNamespace(display="QFF"),
+            us_leg=SimpleNamespace(display="TSM"),
+        ),
     )
 
     wrapped = commands_live.build_live_reporter(

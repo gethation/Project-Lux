@@ -46,7 +46,15 @@ def column_names(connection: sqlite3.Connection, table: str) -> set[str]:
 
 def test_schema_scopes_pair_and_account_tables_exactly(tmp_path) -> None:
     path = tmp_path / "pair-scoped.sqlite3"
-    store = SQLiteStore(path)
+    store = SQLiteStore(
+        path,
+        pair_id="qff_tsm",
+        pair_label="QFF/TSM",
+        tw_leg_display="QFF",
+        us_leg_display="TSM",
+        tw_leg_venue="fubon",
+        us_leg_venue="binance",
+    )
     try:
         store.initialize()
         pair = store.connection.execute(

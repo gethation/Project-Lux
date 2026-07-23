@@ -494,7 +494,7 @@ def test_margin_check_cli_red_line_exits_nonzero(
     config_path = write_config(tmp_path)
     # seed an OPEN position so the red line applies
     config = load_config(config_path)
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         store.save_state(

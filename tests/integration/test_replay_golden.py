@@ -39,7 +39,7 @@ def test_fixture_replay_matches_golden_summary(tmp_path) -> None:
     config = make_app_config(tmp_path)
     result = SystemRunner(config).replay(reset_store=True)
 
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         actual = store.build_summary(config.strategy, config.fees)

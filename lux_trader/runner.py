@@ -29,7 +29,10 @@ class SystemRunner:
         resume: bool = False,
         reset_store: bool = False,
     ) -> ReplayResult:
-        store = SQLiteStore(self.config.store_path)
+        store = SQLiteStore(
+            self.config.store_path,
+            **self.config.store_identity(),
+        )
         try:
             if reset_store:
                 store.reset()
@@ -69,6 +72,7 @@ class SystemRunner:
                 broker,
                 state=strategy_state,
                 us_leg_symbol=self.config.live.binance_symbol,
+                tw_leg_symbol=self.config.active_pair.tw_leg.product,
             )
 
             rows_processed = 0

@@ -4,9 +4,6 @@ import argparse
 from pathlib import Path
 
 
-PAIR_ID = "tw_leg_us_leg"
-
-
 def add_ui_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ui",
@@ -33,9 +30,7 @@ def add_config_argument(parser: argparse.ArgumentParser) -> None:
 def add_pair_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--pair",
-        choices=(PAIR_ID,),
-        default=PAIR_ID,
-        help=f"Strategy pair id (Phase 0 supports only {PAIR_ID})",
+        help="Strategy pair id (defaults to the sole configured pair)",
     )
 
 

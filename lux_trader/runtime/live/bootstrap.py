@@ -45,7 +45,7 @@ from lux_trader.market_data import (
     LiveMinuteBarBuilder,
     LiveQuoteSet,
     OhlcvProvider,
-    QFF_FORWARD_FILL_LOOKBACK,
+    TW_LEG_FORWARD_FILL_LOOKBACK,
     TwLegWarmupSourceReport,
     TwLegWarmupProvider,
     QuoteProvider,
@@ -157,6 +157,7 @@ def build_live_strategy(
         PaperBroker(),
         state=strategy_state,
         us_leg_symbol=config.live.binance_symbol,
+        tw_leg_symbol=config.active_pair.tw_leg.product,
     )
 
 

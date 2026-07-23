@@ -36,23 +36,26 @@ def position_sizing_from_fills(
         symbol=tw_leg_symbol,
     )
     if not us_leg_fills:
-        raise ExecutedPositionError("missing Binance TSM fill")
+        raise ExecutedPositionError(f"missing Binance {us_leg_symbol} fill")
     if not tw_leg_fills:
-        raise ExecutedPositionError("missing Fubon QFF fill")
+        raise ExecutedPositionError(f"missing Fubon {tw_leg_symbol} fill")
 
     us_leg_units = _signed_quantity(us_leg_fills)
     raw_tw_leg_contracts = _signed_quantity(tw_leg_fills)
     rounded_tw_leg_contracts = round(raw_tw_leg_contracts)
     if not isclose(raw_tw_leg_contracts, rounded_tw_leg_contracts, abs_tol=1e-9):
         raise ExecutedPositionError(
-            f"Fubon QFF fill quantity must be integer lots: {raw_tw_leg_contracts}"
+            f"Fubon {tw_leg_symbol} fill quantity must be integer lots: "
+            f"{raw_tw_leg_contracts}"
         )
     tw_leg_contracts = int(rounded_tw_leg_contracts)
 
     _validate_direction(direction, us_leg_units, tw_leg_contracts)
     multiplier = float(tw_leg_contract_multiplier)
     if not isfinite(multiplier) or multiplier <= 0:
-        raise ExecutedPositionError("QFF contract multiplier must be positive")
+        raise ExecutedPositionError(
+            f"{tw_leg_symbol} contract multiplier must be positive"
+        )
 
     tw_leg_vwap = _volume_weighted_price(tw_leg_fills)
     return PositionSizing(

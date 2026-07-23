@@ -592,6 +592,7 @@ def entry_pending_strategy(tmp_path) -> PairStrategy:
         PaperBroker(),
         state=state,
         us_leg_symbol=SYMBOL_TSM,
+        tw_leg_symbol=SYMBOL_QFF,
     )
 
 
@@ -743,7 +744,7 @@ def test_live_entry_breach_pauses_without_creating_strategy_position(tmp_path) -
 
 def test_live_execute_post_trade_reconciliation_match_keeps_open_state(tmp_path) -> None:
     config = make_app_config(tmp_path)
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     strategy = entry_pending_strategy(tmp_path)
     strategy.state.trading_tw_leg_symbol = SYMBOL_QFF
     handler = LiveExecuteModeHandler(
@@ -859,7 +860,7 @@ def test_live_execute_query_failure_closes_entry_gate_without_pausing(tmp_path) 
             return None
 
     config = make_app_config(tmp_path)
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     strategy = entry_pending_strategy(tmp_path)
     strategy.state.trading_tw_leg_symbol = SYMBOL_QFF
     handler = LiveExecuteModeHandler(
@@ -907,7 +908,7 @@ def test_live_execute_post_trade_reconciliation_mismatch_pauses_strategy(
     tmp_path,
 ) -> None:
     config = make_app_config(tmp_path)
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     strategy = entry_pending_strategy(tmp_path)
     strategy.state.trading_tw_leg_symbol = SYMBOL_QFF
     handler = LiveExecuteModeHandler(

@@ -19,6 +19,7 @@ from lux_trader.core.models import StrategyState
 from lux_trader.core.time import ensure_taipei
 from lux_trader.dashboard_ui import DashboardReporter
 from lux_trader.ntfy import NtfyLiveReporter
+from lux_trader.presentation import direction_text, metric_label
 from lux_trader.reconciliation import (
     BrokerReconciler,
     ReadOnlyBroker,
@@ -38,6 +39,9 @@ def with_ntfy(reporter: object, config: object, *, mode: str):
             config.ntfy,
             mode=mode,
             store_path=config.store_path,
+            pair_id=config.active_pair.id,
+            tw_leg_display=config.active_pair.tw_leg.display,
+            us_leg_display=config.active_pair.us_leg.display,
         )
     return reporter
 
@@ -55,7 +59,15 @@ def build_live_reporter(args: argparse.Namespace, config: object, *, mode: str):
         )
         ui = "compact"
     if ui == "compact":
-        return with_ntfy(LiveTerminalReporter(color=color), config, mode=mode)
+        return with_ntfy(
+            LiveTerminalReporter(
+                color=color,
+                tw_leg_display=config.active_pair.tw_leg.display,
+                us_leg_display=config.active_pair.us_leg.display,
+            ),
+            config,
+            mode=mode,
+        )
     gate_text = (
         "allow_live_order=false · simulated adapter (DRYRUN-*)"
         if mode == "live-dry-run"
@@ -64,6 +76,8 @@ def build_live_reporter(args: argparse.Namespace, config: object, *, mode: str):
     return with_ntfy(
         DashboardReporter(
             mode=mode,
+            tw_leg_display=config.active_pair.tw_leg.display,
+            us_leg_display=config.active_pair.us_leg.display,
             tw_leg_symbol=config.live.tw_leg_symbol,
             binance_symbol=config.live.binance_symbol,
             bitopro_symbol=config.live.bitopro_symbol,
@@ -76,7 +90,7 @@ def build_live_reporter(args: argparse.Namespace, config: object, *, mode: str):
 
 
 def command_live_dry_run(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     assert_live_lease_available(config.store_path)
     if config.safety.allow_live_order:
         raise SystemExit("allow_live_order must remain false for live-dry-run")
@@ -95,13 +109,14 @@ def command_live_dry_run(args: argparse.Namespace) -> int:
         raise
     finally:
         reporter.finish()
+    tw_symbol_label = metric_label(config.active_pair.tw_leg.display, "symbol")
     print(
         "Live dry-run stopped: "
         f"iterations={result.iterations}, "
         f"bars_processed={result.bars_processed}, "
         f"skipped_minutes={result.skipped_minutes}, "
         f"plans_recorded={result.plans_recorded}, "
-        f"tw_leg_symbol={result.tw_leg_symbol}"
+        f"{tw_symbol_label}={result.tw_leg_symbol}"
     )
     return 0
 
@@ -109,8 +124,8 @@ def command_live_dry_run(args: argparse.Namespace) -> int:
 def command_live_status(args: argparse.Namespace) -> int:
     """Read-only operator snapshot: persisted strategy state, position, and
     latest reconciliation. Sends no orders and touches no external API."""
-    config = load_config(args.config)
-    store = SQLiteStore(config.store_path)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         resume_state = store.load_resume_state()
@@ -125,16 +140,27 @@ def command_live_status(args: argparse.Namespace) -> int:
     else:
         state = resume_state.strategy
         direction = (
-            state.position_direction.value if state.position_direction else "none"
+            direction_text(
+                state.position_direction,
+                tw_leg_display=config.active_pair.tw_leg.display,
+                us_leg_display=config.active_pair.us_leg.display,
+            )
+            if state.position_direction
+            else "none"
         )
         print(f"- strategy_state: {state.state.value}")
         print(f"- row_index: {resume_state.row_index}")
+        us_units_label = metric_label(config.active_pair.us_leg.display, "units")
+        tw_contracts_label = metric_label(
+            config.active_pair.tw_leg.display, "contracts"
+        )
+        tw_symbol_label = metric_label(config.active_pair.tw_leg.display, "symbol")
         print(
             "- position: "
             f"direction={direction}, "
-            f"us_leg_units={state.us_leg_units}, "
-            f"tw_leg_contracts={state.tw_leg_contracts}, "
-            f"tw_leg_symbol={state.trading_tw_leg_symbol or '-'}"
+            f"{us_units_label}={state.us_leg_units}, "
+            f"{tw_contracts_label}={state.tw_leg_contracts}, "
+            f"{tw_symbol_label}={state.trading_tw_leg_symbol or '-'}"
         )
         print(f"- realized_pnl_twd: {state.realized_pnl}")
         if state.pnl_status != "complete":
@@ -178,9 +204,9 @@ def command_live_status(args: argparse.Namespace) -> int:
 
 
 def command_reconcile_brokers(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     assert_live_lease_available(config.store_path)
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         run_id, report = reconcile_brokers_to_store(
@@ -252,9 +278,9 @@ def reconcile_brokers_to_store(
 def command_clear_pause(args: argparse.Namespace) -> int:
     """Guarded recovery: re-run read-only reconciliation and only clear a PAUSED
     strategy back to OPEN/FLAT when broker and store agree. Sends no orders."""
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     assert_live_lease_available(config.store_path)
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     brokers: tuple[ReadOnlyBroker, ...] = ()
     target: StrategyState | None = None
     try:
@@ -362,7 +388,7 @@ def command_margin_check(args: argparse.Namespace) -> int:
     Same policy as the in-loop daily 10:00 check; suitable for running from a
     Windows scheduled task when no live session is up.
     """
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     assert_live_lease_available(config.store_path)
     if not config.margin_management.enabled:
         raise SystemExit("Set [margin_management] enabled=true to run margin-check")
@@ -375,7 +401,7 @@ def command_margin_check(args: argparse.Namespace) -> int:
         resolve_margin_leg_notional_twd,
     )
 
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     brokers: tuple[ReadOnlyBroker, ...] = ()
     try:
         store.initialize()
@@ -438,13 +464,14 @@ def fetch_usdttwd_rate(config: object) -> float | None:
 
 
 def command_warmup_live(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     assert_live_lease_available(config.store_path)
     result = WarmupRunner(config).run(reset_store=args.reset_store)
+    tw_symbol_label = metric_label(config.active_pair.tw_leg.display, "symbol")
     print(
         "Warmup complete: "
         f"bars_written={result.bars_written}, "
-        f"tw_leg_symbol={result.tw_leg_symbol}, "
+        f"{tw_symbol_label}={result.tw_leg_symbol}, "
         f"start={result.start}, "
         f"end={result.end}"
     )
@@ -465,18 +492,21 @@ def tw_leg_book_diagnostic_lines(
     tw_leg_quote: object,
     observed_at: datetime,
     stale_seconds: float,
+    *,
+    tw_leg_display: str,
 ) -> list[str]:
     quote_timestamp = ensure_taipei(getattr(tw_leg_quote, "timestamp"))
     age_sec = max((ensure_taipei(observed_at) - quote_timestamp).total_seconds(), 0.0)
     stale = age_sec > stale_seconds
+    book_label = metric_label(tw_leg_display, "book")
     lines = [
-        f"tw_leg_book_timestamp={quote_timestamp.isoformat()}",
-        f"tw_leg_book_age_sec={age_sec:.3f}",
-        f"tw_leg_book_stale={str(stale).lower()}",
+        f"{book_label}_timestamp={quote_timestamp.isoformat()}",
+        f"{book_label}_age_sec={age_sec:.3f}",
+        f"{book_label}_stale={str(stale).lower()}",
     ]
     if stale:
         lines.append(
-            f"WARN stale_tw_leg_book age_sec={age_sec:.3f} threshold={stale_seconds}"
+            f"WARN stale_{book_label} age_sec={age_sec:.3f} threshold={stale_seconds}"
         )
     return lines
 
@@ -499,11 +529,13 @@ def run_live_doctor_checks(config: object) -> list[str]:
         config.trading_calendar.closed_dates,
     )
 
+    tw_display = config.active_pair.tw_leg.display
+    tw_symbol_label = metric_label(tw_display, "symbol")
     checks = [
         f"store_path={config.store_path}",
         f"polling_seconds={config.live.polling_seconds}",
         f"warmup_minutes={config.live.warmup_minutes}",
-        f"tw_leg_symbol={config.live.tw_leg_symbol}",
+        f"{tw_symbol_label}={config.live.tw_leg_symbol}",
         f"binance_symbol={config.live.binance_symbol}",
         f"bitopro_symbol={config.live.bitopro_symbol}",
         f"live_session={live_session_label(session_status)}",
@@ -520,25 +552,31 @@ def run_live_doctor_checks(config: object) -> list[str]:
         tw_leg = FubonTwLegMarketData(config.live.fubon_env_path)
         try:
             tw_leg_contract = resolve_tw_leg_contract(config, tw_leg)
-            checks.append(f"tw_leg_active_symbol={tw_leg_contract.symbol}")
-            checks.append(f"tw_leg_active_expiry={tw_leg_contract.expiry}")
-            checks.append(f"tw_leg_contract_policy={tw_leg_contract.policy_state}")
+            checks.append(
+                f"{metric_label(tw_display, 'active_symbol')}={tw_leg_contract.symbol}"
+            )
+            checks.append(
+                f"{metric_label(tw_display, 'active_expiry')}={tw_leg_contract.expiry}"
+            )
+            checks.append(
+                f"{metric_label(tw_display, 'contract_policy')}={tw_leg_contract.policy_state}"
+            )
             session_counts = getattr(tw_leg, "last_candidate_session_counts", {})
             if session_counts:
                 checks.append(
-                    "tw_leg_candidate_session_counts="
+                    f"{metric_label(tw_display, 'candidate_session_counts')}="
                     f"{json.dumps(session_counts, sort_keys=True)}"
                 )
             if tw_leg_contract.selection is not None:
                 checks.append(
-                    "tw_leg_business_days_to_expiry="
+                    f"{metric_label(tw_display, 'business_days_to_expiry')}="
                     f"{tw_leg_contract.selection.business_days_to_expiry}"
                 )
             try:
                 tw_leg.ensure_books_subscription(tw_leg_contract.symbol)
                 tw_leg_quote = tw_leg.fetch_quote(tw_leg_contract.symbol)
                 checks.append(
-                    "tw_leg_book="
+                    f"{metric_label(tw_display, 'book')}="
                     f"price={tw_leg_quote.price} bid={tw_leg_quote.bid} ask={tw_leg_quote.ask} "
                     f"bid_size={tw_leg_quote.bid_size} ask_size={tw_leg_quote.ask_size}"
                 )
@@ -547,11 +585,12 @@ def run_live_doctor_checks(config: object) -> list[str]:
                         tw_leg_quote,
                         observed_at,
                         config.live.tw_leg_book_stale_seconds,
+                        tw_leg_display=tw_display,
                     )
                 )
             except Exception as exc:
                 checks.append(
-                    "WARN tw_leg_book_unavailable "
+                    f"WARN {metric_label(tw_display, 'book_unavailable')} "
                     f"{type(exc).__name__}: {exc}"
                 )
             binance_quote = BinanceMarketData().fetch_quote(

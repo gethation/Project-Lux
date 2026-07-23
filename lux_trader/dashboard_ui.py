@@ -26,6 +26,7 @@ from rich.text import Text
 
 from .core.time import ensure_taipei
 from .core.tradable_spread import TradableSpreadSnapshot
+from .presentation import direction_text, instrument_text, metric_label
 from .terminal_ui import (
     account_pnl_text,
     compact_action,
@@ -100,6 +101,8 @@ class DashboardReporter:
         self,
         *,
         mode: str,
+        tw_leg_display: str = "TW instrument",
+        us_leg_display: str = "US instrument",
         tw_leg_symbol: str | None = None,
         binance_symbol: str | None = None,
         bitopro_symbol: str | None = None,
@@ -108,6 +111,8 @@ class DashboardReporter:
         color: bool | None = None,
         refresh_per_second: float = 4.0,
     ) -> None:
+        self.tw_leg_display = tw_leg_display
+        self.us_leg_display = us_leg_display
         self.state = DashboardState(
             mode=mode,
             tw_leg_symbol=tw_leg_symbol,
@@ -184,17 +189,21 @@ class DashboardReporter:
         self._refresh()
 
     def warn(self, timestamp: Any, code: str, detail: str = "") -> None:
+        code = self._present(code)
+        detail = self._present(detail)
         self._log("WARN", timestamp, code, detail, "yellow")
         self._absorb_status_event(timestamp, code, detail)
         self._refresh()
 
     def event(self, timestamp: Any, code: str, detail: str = "") -> None:
+        code = self._present(code)
+        detail = self._present(detail)
         self._log("EVENT", timestamp, code, detail, "magenta")
         self._absorb_status_event(timestamp, code, detail)
         self._refresh()
 
     def error(self, timestamp: Any, message: str) -> None:
-        self._log("ERR", timestamp, message, "", "bold red")
+        self._log("ERR", timestamp, self._present(message), "", "bold red")
         self._refresh()
 
     def execution(
@@ -231,7 +240,15 @@ class DashboardReporter:
     def _absorb_strategy_state(self, strategy_state: Any) -> None:
         self.state.state_text = state_value(strategy_state)
         direction = getattr(strategy_state, "position_direction", None)
-        self.state.position_direction = getattr(direction, "value", direction)
+        self.state.position_direction = (
+            direction_text(
+                direction,
+                tw_leg_display=self.tw_leg_display,
+                us_leg_display=self.us_leg_display,
+            )
+            if direction is not None
+            else None
+        )
         self.state.us_leg_units = float(getattr(strategy_state, "us_leg_units", 0.0) or 0.0)
         self.state.tw_leg_contracts = int(
             getattr(strategy_state, "tw_leg_contracts", 0) or 0
@@ -393,8 +410,8 @@ class DashboardReporter:
         if self.state.position_direction:
             position = (
                 f"{self.state.position_direction}  "
-                f"us_leg_units={self.state.us_leg_units:g}  "
-                f"tw_leg_contracts={self.state.tw_leg_contracts}"
+                f"{metric_label(self.us_leg_display, 'units')}={self.state.us_leg_units:g}  "
+                f"{metric_label(self.tw_leg_display, 'contracts')}={self.state.tw_leg_contracts}"
             )
             if self.state.entry_zscore is not None:
                 position += f"  entry_z={format_float(self.state.entry_zscore, digits=2)}"
@@ -415,6 +432,13 @@ class DashboardReporter:
         table.add_row("uPnL (TWD)", f"{upnl}{stale_suffix}")
         table.add_row("Margin bina/fubon", f"{binance_ratio} / {fubon_ratio}")
         return Panel(table, title="Strategy", border_style="green")
+
+    def _present(self, value: Any) -> str:
+        return instrument_text(
+            value,
+            tw_leg_display=self.tw_leg_display,
+            us_leg_display=self.us_leg_display,
+        )
 
     def _margin_panel(self) -> Panel:
         style_by_level = {

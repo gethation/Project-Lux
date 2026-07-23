@@ -50,7 +50,13 @@ def make_snapshot(bar: MarketBar, zscore: float) -> IndicatorSnapshot:
 
 
 def test_strategy_entry_open_exit_cycle(strategy_config, fee_config) -> None:
-    strategy = PairStrategy(strategy_config, fee_config, PaperBroker())
+    strategy = PairStrategy(
+        strategy_config,
+        fee_config,
+        PaperBroker(),
+        us_leg_symbol="TSM/USDT:USDT",
+        tw_leg_symbol="QFF",
+    )
     bar0 = make_bar(0, "2026-06-08T08:45:00+08:00")
     bar1 = make_bar(1, "2026-06-08T08:46:00+08:00")
     bar2 = make_bar(2, "2026-06-08T08:47:00+08:00")
@@ -75,7 +81,13 @@ def test_strategy_entry_open_exit_cycle(strategy_config, fee_config) -> None:
 
 
 def test_entry_delay_exceeded_cancels_pending(strategy_config, fee_config) -> None:
-    strategy = PairStrategy(strategy_config, fee_config, PaperBroker())
+    strategy = PairStrategy(
+        strategy_config,
+        fee_config,
+        PaperBroker(),
+        us_leg_symbol="TSM/USDT:USDT",
+        tw_leg_symbol="QFF",
+    )
     day_close = make_bar(0, "2026-06-08T13:45:00+08:00")
     night_open = make_bar(1, "2026-06-08T17:25:00+08:00")
 
@@ -96,6 +108,7 @@ def test_strategy_builds_entry_order_requests_without_submitting(
         fee_config,
         PaperBroker(),
         us_leg_symbol="CUSTOM/USDT:USDT",
+        tw_leg_symbol="QFF",
     )
     bar = make_bar(10, "2026-06-08T08:55:00+08:00")
 
@@ -136,7 +149,14 @@ def test_strategy_builds_exit_order_requests_from_open_state(
         us_leg_units=-125.5,
         tw_leg_contracts=3,
     )
-    strategy = PairStrategy(strategy_config, fee_config, PaperBroker(), state=state)
+    strategy = PairStrategy(
+        strategy_config,
+        fee_config,
+        PaperBroker(),
+        state=state,
+        us_leg_symbol="TSM/USDT:USDT",
+        tw_leg_symbol="QFF",
+    )
     bar = make_bar(11, "2026-06-08T08:56:00+08:00")
 
     requests = strategy.build_exit_order_requests(

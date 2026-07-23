@@ -12,7 +12,7 @@ from ..core.time import TAIPEI_TZ, ensure_taipei
 from .normalization import close_series
 from .parsing import parse_optional_float
 from .session import (
-    QFF_FORWARD_FILL_LOOKBACK,
+    TW_LEG_FORWARD_FILL_LOOKBACK,
     build_tw_leg_expected_warmup_index,
     floor_minute,
     prioritized_tw_leg_close_frame,
@@ -35,7 +35,9 @@ class CsvTwLegWarmupProvider:
         end: datetime,
     ) -> pd.DataFrame:
         if not self.path.exists():
-            raise FileNotFoundError(f"TAIFEX QFF CSV does not exist: {self.path}")
+            raise FileNotFoundError(
+                f"TAIFEX {symbol} CSV does not exist: {self.path}"
+            )
         frame = pd.read_csv(self.path)
         required = {"timestamp", "close"}
         missing = required.difference(frame.columns)
@@ -85,7 +87,7 @@ class WarmupBuilder:
         end_minute = floor_minute(
             end or datetime.now(TAIPEI_TZ)
         ) - timedelta(minutes=1)
-        tw_leg_fetch_start = end_minute - QFF_FORWARD_FILL_LOOKBACK
+        tw_leg_fetch_start = end_minute - TW_LEG_FORWARD_FILL_LOOKBACK
 
         # Prefer the live Fubon candle API.  TAIFEX/CSV is a true fallback:
         # do not pay its latency or let it block startup when Fubon alone can
@@ -116,13 +118,14 @@ class WarmupBuilder:
             )
             fallback_loaded = True
         if not tw_leg_parts:
-            raise RuntimeError("No QFF warmup providers configured")
+            raise RuntimeError(f"No {tw_leg_symbol} warmup providers configured")
 
         try:
             index, tw_leg_report = self._prepare_tw_leg_seed(
                 tw_leg_parts,
                 end_minute=end_minute,
                 tw_leg_fetch_start=tw_leg_fetch_start,
+                tw_leg_display=tw_leg_symbol,
             )
         except RuntimeError:
             if self.tw_leg_fallback_provider is None or fallback_loaded:
@@ -142,6 +145,7 @@ class WarmupBuilder:
                 tw_leg_parts,
                 end_minute=end_minute,
                 tw_leg_fetch_start=tw_leg_fetch_start,
+                tw_leg_display=tw_leg_symbol,
             )
 
         tw_leg = pd.Series(
@@ -173,7 +177,8 @@ class WarmupBuilder:
         missing = us_leg[us_leg.isna()].index.union(usd[usd.isna()].index)
         if len(missing):
             raise RuntimeError(
-                f"TSM/USDT-TWD warmup has missing minutes from {missing[0]}"
+                f"{self.live_config.binance_symbol}/TWD warmup has missing "
+                f"minutes from {missing[0]}"
             )
 
         us_leg_twd_fair = us_leg * usd / 5.0
@@ -207,6 +212,7 @@ class WarmupBuilder:
         *,
         end_minute: datetime,
         tw_leg_fetch_start: datetime,
+        tw_leg_display: str,
     ) -> tuple[pd.DatetimeIndex, TwLegWarmupSourceReport]:
         index, session_index = build_tw_leg_expected_warmup_index(
             start=tw_leg_fetch_start,
@@ -229,6 +235,7 @@ class WarmupBuilder:
                 self.live_config.warmup_tw_leg_max_trailing_fill_minutes
             ),
             max_forward_fill_ratio=self.live_config.warmup_forward_fill_max_ratio,
+            tw_leg_display=tw_leg_display,
         )
         return index, tw_leg_report
 
@@ -238,20 +245,23 @@ def validate_tw_leg_warmup_report(
     *,
     max_trailing_fill_minutes: int,
     max_forward_fill_ratio: float,
+    tw_leg_display: str,
 ) -> None:
-    """Fail closed when an expected QFF warmup window is missing or stale."""
+    """Fail closed when an expected futures warmup window is missing or stale."""
     if tw_leg_report.null_count:
         first_missing = tw_leg_report.frame.loc[
             tw_leg_report.frame["tw_leg_close_filled"].isna(),
             "timestamp",
         ].iloc[0]
-        raise RuntimeError(f"QFF warmup cannot forward-fill from {first_missing}")
+        raise RuntimeError(
+            f"{tw_leg_display} warmup cannot forward-fill from {first_missing}"
+        )
 
     actual_tw_leg = tw_leg_report.frame["merged_tw_leg_close"].notna()
     if not actual_tw_leg.any():
         raise RuntimeError(
-            "QFF warmup latest actual bar is stale: "
-            "no actual QFF bar exists in the expected warmup window"
+            f"{tw_leg_display} warmup latest actual bar is stale: "
+            f"no actual {tw_leg_display} bar exists in the expected warmup window"
         )
     last_actual_position = int(actual_tw_leg[actual_tw_leg].index[-1])
     trailing_filled = len(tw_leg_report.frame) - last_actual_position - 1
@@ -262,13 +272,13 @@ def validate_tw_leg_warmup_report(
         ]
         expected_end = tw_leg_report.frame.iloc[-1]["timestamp"]
         raise RuntimeError(
-            "QFF warmup latest actual bar is stale: "
+            f"{tw_leg_display} warmup latest actual bar is stale: "
             f"last={last_actual_timestamp}, expected_end={expected_end}, "
             f"trailing_fill={trailing_filled} minutes exceeds max "
             f"{max_trailing_fill_minutes}"
         )
 
-    # Data-quality gate: too many forward-filled QFF minutes means the feed
+    # Data-quality gate: too many forward-filled futures minutes means the feed
     # was mostly dead during warmup, so the rolling z-score is unreliable.
     total_minutes = len(tw_leg_report.frame)
     forward_filled = int(tw_leg_report.source_used_counts.get("forward_fill", 0))
@@ -276,7 +286,7 @@ def validate_tw_leg_warmup_report(
         forward_fill_ratio = forward_filled / total_minutes
         if forward_fill_ratio > max_forward_fill_ratio:
             raise RuntimeError(
-                "QFF warmup forward-fill ratio "
+                f"{tw_leg_display} warmup forward-fill ratio "
                 f"{forward_fill_ratio:.3f} exceeds max "
                 f"{max_forward_fill_ratio:.3f} "
                 f"({forward_filled}/{total_minutes} minutes); refusing to "

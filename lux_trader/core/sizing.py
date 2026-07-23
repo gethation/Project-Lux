@@ -56,5 +56,7 @@ def size_position_for_direction(
 def us_leg_contract_twd_price(us_leg_twd_fair: float, fees: FeeConfig) -> float:
     multiplier = float(fees.us_leg_contract_multiplier)
     if multiplier <= 0:
-        raise ValueError(f"Expected a positive TSM contract multiplier, got {multiplier}")
+        raise ValueError(
+            f"Expected a positive USD-leg contract multiplier, got {multiplier}"
+        )
     return us_leg_twd_fair * multiplier

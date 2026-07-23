@@ -1,24 +1,48 @@
 [paths]
-input_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff_tsm_spread_zscore_1m_taipei_qff_session_w500.csv'
 store_path = 'data\project_lux.sqlite3'
+
+[[pairs]]
+id = 'qff_tsm'
+label = 'QFF/TSM'
+
+[pairs.data]
+input_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff_tsm_spread_zscore_1m_taipei_qff_session_w500.csv'
 tw_leg_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
 us_leg_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\binance_tsmusdtp_1m_taipei.csv'
-usdttwd_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\bitopro_usdttwd_1m_taipei.csv'
+fx_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\bitopro_usdttwd_1m_taipei.csv'
 
-[strategy]
+[pairs.tw_leg]
+display = 'QFF'
+venue = 'fubon'
+product = 'QFF'
+symbol = 'auto'
+contract_multiplier = 100.0
+
+[pairs.us_leg]
+display = 'TSM'
+venue = 'binance'
+symbol = 'TSM/USDT:USDT'
+adr_share_ratio = 5.0
+
+[pairs.fx]
+venue = 'bitopro'
+symbol = 'USDT/TWD'
+
+[pairs.sizing]
+mode = 'notional'
+leg_notional_twd = 1000000.0
+
+[pairs.strategy]
 entry_z = 2.0
 exit_z = 1.0
-leg_notional_twd = 1000000.0
 initial_capital_twd = 2000000.0
 max_entry_delay_minutes = 15
 zscore_window = 500
 
-[fees]
+[pairs.fees]
 us_leg_fee_bps = 5.0
 tw_leg_fee_per_contract_twd = 5.0
 tw_leg_tax_rate = 0.00002
-tw_leg_contract_multiplier = 100.0
-us_leg_contract_multiplier = 5.0
 
 [safety]
 allow_live_order = false

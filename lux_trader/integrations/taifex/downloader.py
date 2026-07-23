@@ -36,11 +36,13 @@ class TaifexTwLegTradeDownloader:
         self,
         cache_dir: Path,
         *,
+        product: str,
         page_url: str = TAIFEX_PREVIOUS_30_URL,
         timeout_seconds: float = 30.0,
         http_get: Callable[[str], bytes] | None = None,
     ) -> None:
         self.cache_dir = cache_dir
+        self.product = product.strip().upper()
         self.page_url = page_url
         self.timeout_seconds = timeout_seconds
         self.http_get = http_get or self._http_get
@@ -50,6 +52,7 @@ class TaifexTwLegTradeDownloader:
         end = ensure_taipei(end)
         contract_month = tw_leg_symbol_to_taifex_contract_month(
             symbol,
+            product=self.product,
             reference_date=end.date(),
         )
         entries = self.entries_by_date()
@@ -94,7 +97,13 @@ class TaifexTwLegTradeDownloader:
                 raise RuntimeError(f"TAIFEX ZIP has no CSV: {entry.csv_url}")
             for csv_name in csv_names:
                 with zip_file.open(csv_name) as csv_file:
-                    rows.extend(parse_taifex_tw_leg_tick_csv(csv_file, contract_month))
+                    rows.extend(
+                        parse_taifex_tw_leg_tick_csv(
+                            csv_file,
+                            contract_month,
+                            product=self.product,
+                        )
+                    )
 
         if not rows:
             return pd.DataFrame(columns=["timestamp", "close"])
@@ -154,6 +163,8 @@ def parse_taifex_download_entries(
 def parse_taifex_tw_leg_tick_csv(
     csv_file: Any,
     contract_month: str,
+    *,
+    product: str,
 ) -> list[pd.DataFrame]:
     chunks: list[pd.DataFrame] = []
     for chunk in pd.read_csv(
@@ -175,7 +186,7 @@ def parse_taifex_tw_leg_tick_csv(
             raise RuntimeError(f"TAIFEX tick CSV missing columns: {sorted(missing)}")
 
         filtered = chunk.loc[
-            (chunk["商品代號"].astype(str).str.strip() == "QFF")
+            (chunk["商品代號"].astype(str).str.strip() == product.strip().upper())
             & (chunk["到期月份(週別)"].astype(str).str.strip() == contract_month)
         ].copy()
         if filtered.empty:

@@ -8,6 +8,7 @@ import hashlib
 from lux_trader.cli import helpers
 from lux_trader.config import load_config
 from lux_trader.core.models import StrategyState
+from lux_trader.presentation import metric_label
 from lux_trader.reconciliation import BrokerReconciler, ReadOnlyBroker, ReconciliationStatus
 from lux_trader.runtime.live.lease import assert_live_lease_available
 from lux_trader.store import SQLiteStore
@@ -17,9 +18,9 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
     """Record an externally manual-closed pair without inventing fill prices."""
     if bool(args.apply) and not str(args.reason or "").strip():
         raise SystemExit("--reason is required with --apply")
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     assert_live_lease_available(config.store_path)
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     brokers: tuple[ReadOnlyBroker, ...] = ()
     try:
         store.initialize()
@@ -91,11 +92,17 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
             tw_leg_contracts=state.tw_leg_contracts,
             tw_leg_symbol=tw_leg_symbol,
         )
+        us_adjustment_label = metric_label(
+            config.active_pair.us_leg.display, "adjustment"
+        )
+        tw_adjustment_label = metric_label(
+            config.active_pair.tw_leg.display, "adjustment"
+        )
         print(
             "Manual-flat recovery verified: "
             f"recovery_id={recovery_id}, "
-            f"binance_adjustment={-state.us_leg_units:g}, "
-            f"fubon_adjustment={-state.tw_leg_contracts:g}, "
+            f"{us_adjustment_label}={-state.us_leg_units:g}, "
+            f"{tw_adjustment_label}={-state.tw_leg_contracts:g}, "
             "brokers=flat, open_orders=0, pnl_status=pending"
         )
         if not args.apply:

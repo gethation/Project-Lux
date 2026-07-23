@@ -45,7 +45,7 @@ def seed_state(
     with_position: bool,
 ) -> None:
     config = load_config(config_path)
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         runtime = StrategyRuntimeState(state=state)
@@ -62,7 +62,7 @@ def seed_state(
 
 def load_persisted_state(config_path: Path) -> StrategyRuntimeState:
     config = load_config(config_path)
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         resume = store.load_resume_state()
@@ -74,7 +74,7 @@ def load_persisted_state(config_path: Path) -> StrategyRuntimeState:
 
 def seed_recorded_exposure(config_path: Path) -> None:
     config = load_config(config_path)
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         for order_id, broker, symbol, side, quantity in (
@@ -161,8 +161,8 @@ def test_live_status_reports_paused_position(tmp_path: Path, capsys) -> None:
 
     output = capsys.readouterr().out
     assert "strategy_state: paused" in output
-    assert "direction=short_us_long_tw" in output
-    assert "tw_leg_contracts=2" in output
+    assert "direction=Short TSM / Long QFF" in output
+    assert "qff_contracts=2" in output
     assert "ACTION: strategy is PAUSED" in output
 
 
@@ -210,7 +210,7 @@ def test_recover_manual_flat_apply_offsets_ledger_and_remains_paused(
     assert command_recover_manual_flat(args) == 0
 
     config = load_config(config_path)
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         resume = store.load_resume_state()

@@ -29,6 +29,8 @@ def make_reporter() -> tuple[DashboardReporter, io.StringIO]:
     stream = io.StringIO()
     reporter = DashboardReporter(
         mode="live-dry-run",
+        tw_leg_display="QFF",
+        us_leg_display="TSM",
         tw_leg_symbol="auto",
         binance_symbol="TSM/USDT:USDT",
         bitopro_symbol="USDT/TWD",
@@ -70,7 +72,7 @@ def test_dashboard_absorbs_live_quote_bar_and_position() -> None:
     state = reporter.state
     assert state.session == "trading"
     assert state.state_text == "SHORT"
-    assert state.position_direction == "short_us_long_tw"
+    assert state.position_direction == "Short TSM / Long QFF"
     assert state.us_leg_units == -100.0
     assert state.tw_leg_contracts == 2
     # Trading symbol comes from strategy state, replacing the 'auto' placeholder.
@@ -212,7 +214,7 @@ def test_dashboard_renders_all_acceptance_fields_to_output() -> None:
         "State",
         "SHORT",
         "Position",
-        "short_us_long_tw",
+        "Short TSM / Long QFF",
         "Decision",
         "Activity",
     ):

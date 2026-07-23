@@ -48,6 +48,7 @@ from lux_trader.integrations.fubon.execution import (
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.integrations.fubon.execution_process import FubonFutureExecutionProcess
 from lux_trader.reconciliation import ReadOnlyBroker
+from lux_trader.presentation import metric_label
 from lux_trader.runtime.live import LiveExecuteRunner
 from lux_trader.runtime.live.lease import (
     LiveProcessLease,
@@ -71,7 +72,7 @@ def build_live_execution_gate_report(config: object, store: SQLiteStore):
 
 
 def run_order_doctor_checks(config: object) -> tuple[bool, list[str]]:
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         report = build_live_execution_gate_report(config, store)
@@ -80,7 +81,8 @@ def run_order_doctor_checks(config: object) -> tuple[bool, list[str]]:
 
     lines = [
         f"store_path={config.store_path}",
-        "execution=real_two_leg_coordinator (tw_leg_first)",
+        "execution=real_two_instrument_coordinator "
+        f"({config.active_pair.tw_leg.display}_first)",
     ]
     for check in report.checks:
         status = "PASS" if check.passed else "FAIL"
@@ -94,14 +96,14 @@ def command_live_execute(args: argparse.Namespace) -> int:
         reconcile_brokers_to_store,
     )
 
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     reporter = build_live_reporter(args, config, mode="live-execute")
     lease = LiveProcessLease(config.store_path)
     shared_fubon: FubonFutureExecutionProcess | None = None
     shared_brokers: tuple[ReadOnlyBroker, ...] | None = None
     try:
         lease.acquire(metadata={"mode": "live-execute"})
-        store = SQLiteStore(config.store_path)
+        store = SQLiteStore(config.store_path, **config.store_identity())
         try:
             if args.reset_store:
                 store.reset()
@@ -194,7 +196,7 @@ def build_live_execution_brokers(
 
 def command_exec_smoke(args: argparse.Namespace) -> int:
     if args.venue == "fubon":
-        config = load_config(args.config)
+        config = load_config(args.config, pair_id=getattr(args, "pair", None))
         assert_live_lease_available(config.store_path)
     if args.venue == "binance":
         if args.quantity is None:
@@ -208,7 +210,7 @@ def command_exec_smoke(args: argparse.Namespace) -> int:
 
 
 def binance_exec_smoke(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     require_binance_exec_smoke_ready(config, args)
 
     adapter = BinanceUsLegExecutionAdapter(
@@ -289,7 +291,7 @@ def binance_exec_smoke(args: argparse.Namespace) -> int:
 
 
 def fubon_exec_smoke(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     require_fubon_exec_smoke_ready(config, args)
 
     symbol = str(args.symbol).strip()
@@ -410,7 +412,7 @@ def fubon_exec_smoke(args: argparse.Namespace) -> int:
 
 def command_manual_close(args: argparse.Namespace) -> int:
     if args.venue == "fubon":
-        config = load_config(args.config)
+        config = load_config(args.config, pair_id=getattr(args, "pair", None))
         assert_live_lease_available(config.store_path)
     if args.venue == "binance":
         if args.quantity is None:
@@ -422,10 +424,10 @@ def command_manual_close(args: argparse.Namespace) -> int:
 
 
 def binance_manual_close(args: argparse.Namespace) -> int:
-    """Emergency-close a Binance TSM position with a market order. Mirrors the
+    """Emergency-close a Binance position with a market order. Mirrors the
     Fubon path so either stranded leg from a single-leg PAUSE can be flattened
     by hand before clear-pause."""
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     require_binance_manual_close_ready(config, args)
 
     symbol = str(args.symbol).strip()
@@ -487,7 +489,7 @@ def binance_manual_close(args: argparse.Namespace) -> int:
 
 
 def fubon_manual_close(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     require_fubon_manual_close_ready(config, args)
 
     symbol = str(args.symbol).strip()
@@ -563,7 +565,7 @@ def fubon_manual_close(args: argparse.Namespace) -> int:
 
 
 def command_broker_status(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config = load_config(args.config, pair_id=getattr(args, "pair", None))
     assert_live_lease_available(config.store_path)
     if config.safety.allow_live_order and not (args.funds or args.orders):
         raise SystemExit("allow_live_order must remain false for broker-status")
@@ -581,8 +583,10 @@ def command_broker_status(args: argparse.Namespace) -> int:
         f"store_path={config.store_path}",
         f"reconciliation_enabled={config.broker_reconciliation.enabled}",
         f"fail_on_mismatch={config.broker_reconciliation.fail_on_mismatch}",
-        f"us_leg_units_tolerance={config.broker_reconciliation.us_leg_units_tolerance}",
-        f"tw_leg_contract_tolerance={config.broker_reconciliation.tw_leg_contract_tolerance}",
+        f"{metric_label(config.active_pair.us_leg.display, 'units_tolerance')}="
+        f"{config.broker_reconciliation.us_leg_units_tolerance}",
+        f"{metric_label(config.active_pair.tw_leg.display, 'contract_tolerance')}="
+        f"{config.broker_reconciliation.tw_leg_contract_tolerance}",
         "private_api=disabled",
     ]
     brokers: tuple[ReadOnlyBroker, ...] = ()

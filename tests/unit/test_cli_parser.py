@@ -6,10 +6,11 @@ from pathlib import Path
 import pytest
 
 import lux_trader.cli.dispatch as dispatch
-from lux_trader.cli.parser import PAIR_ID, build_parser
+from lux_trader.cli.parser import build_parser
 
 
 CONFIG = "config.toml"
+PAIR_ID = "qff_tsm"
 
 
 CLI_CASES = (
@@ -282,6 +283,14 @@ def test_top_level_surface_is_exactly_seven_commands() -> None:
         "warmup",
         "admin",
     )
+
+
+def test_pair_id_is_resolved_from_config_instead_of_parser_choices() -> None:
+    args = build_parser().parse_args(
+        ["replay", "--config", CONFIG, "--pair", "configured_pair"]
+    )
+
+    assert args.pair == "configured_pair"
 
 
 @pytest.mark.parametrize(

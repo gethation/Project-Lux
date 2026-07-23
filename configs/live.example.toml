@@ -1,21 +1,46 @@
 [paths]
 store_path = 'data\project_lux_live.sqlite3'
+
+[[pairs]]
+id = 'qff_tsm'
+label = 'QFF/TSM'
+
+[pairs.data]
 input_csv = ''
 
-[strategy]
+[pairs.tw_leg]
+display = 'QFF'
+venue = 'fubon'
+product = 'QFF'
+symbol = 'auto'
+contract_multiplier = 100.0
+taifex_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
+
+[pairs.us_leg]
+display = 'TSM'
+venue = 'binance'
+symbol = 'TSM/USDT:USDT'
+adr_share_ratio = 5.0
+
+[pairs.fx]
+venue = 'bitopro'
+symbol = 'USDT/TWD'
+
+[pairs.sizing]
+mode = 'notional'
+leg_notional_twd = 1000000.0
+
+[pairs.strategy]
 entry_z = 2.0
 exit_z = 1.0
-leg_notional_twd = 1000000.0
 initial_capital_twd = 2000000.0
 max_entry_delay_minutes = 15
 zscore_window = 500
 
-[fees]
+[pairs.fees]
 us_leg_fee_bps = 5.0
 tw_leg_fee_per_contract_twd = 88.0
 tw_leg_tax_rate = 0.00002
-tw_leg_contract_multiplier = 100.0
-us_leg_contract_multiplier = 5.0
 
 [safety]
 allow_live_order = false
@@ -63,15 +88,10 @@ clock_skew_fail_seconds = 60.0
 windows_time_sync_timeout_seconds = 15.0
 max_leg_timestamp_skew_seconds = 10.0
 warmup_minutes = 500
-warmup_qff_max_trailing_fill_minutes = 5
-tw_leg_product = 'QFF'
-tw_leg_symbol = 'auto'
-binance_symbol = 'TSM/USDT:USDT'
-bitopro_symbol = 'USDT/TWD'
+warmup_tw_leg_max_trailing_fill_minutes = 5
 fubon_env_path = '.env'
 taifex_use_network = true
 taifex_cache_dir = 'data\taifex_cache'
-taifex_qff_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
 
 [broker_reconciliation]
 enabled = false

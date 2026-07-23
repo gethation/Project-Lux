@@ -4,7 +4,7 @@ from .minute_bar import LiveMinuteBarBuilder
 from .parsing import parse_optional_float, parse_timestamp
 from .replay import CsvReplayMarketData
 from .session import (
-    QFF_FORWARD_FILL_LOOKBACK,
+    TW_LEG_FORWARD_FILL_LOOKBACK,
     build_tw_leg_expected_session_index,
     build_tw_leg_expected_warmup_index,
     build_tw_leg_session_index,
@@ -39,7 +39,7 @@ __all__ = [
     "LiveQuoteSet",
     "MinuteBuildResult",
     "OhlcvProvider",
-    "QFF_FORWARD_FILL_LOOKBACK",
+    "TW_LEG_FORWARD_FILL_LOOKBACK",
     "build_tw_leg_expected_session_index",
     "build_tw_leg_expected_warmup_index",
     "TwLegContractCandidate",

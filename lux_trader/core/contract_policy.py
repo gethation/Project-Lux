@@ -58,7 +58,7 @@ class ExpiryBufferContractPolicy:
 
         if not parsed:
             raise RuntimeError(
-                "Unable to select QFF active contract with expiry buffer. "
+                f"Unable to select {product} active contract with expiry buffer. "
                 f"Rejected candidates: {rejected[:10]}"
             )
         return sorted(parsed, key=lambda item: (item.expiry, item.symbol))[0]

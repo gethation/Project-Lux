@@ -44,7 +44,7 @@ from lux_trader.market_data import (
     LiveMinuteBarBuilder,
     LiveQuoteSet,
     OhlcvProvider,
-    QFF_FORWARD_FILL_LOOKBACK,
+    TW_LEG_FORWARD_FILL_LOOKBACK,
     TwLegWarmupSourceReport,
     TwLegWarmupProvider,
     QuoteProvider,
@@ -89,11 +89,16 @@ def force_exit_report_detail(reason: str) -> str:
     return "weekend" if reason == "weekend_force_exit" else "expiry_buffer"
 
 
-def force_exit_event_message(reason: str, *, mode_prefix: str = "") -> str:
+def force_exit_event_message(
+    reason: str,
+    *,
+    tw_leg_display: str,
+    mode_prefix: str = "",
+) -> str:
     tail = (
         "forced exit before weekend market break"
         if reason == "weekend_force_exit"
-        else "forced exit before QFF expiry"
+        else f"forced exit before {tw_leg_display} expiry"
     )
     return f"{mode_prefix}{tail}" if mode_prefix else tail
 
@@ -268,7 +273,11 @@ class DryRunLiveModeHandler(LiveModeHandler):
                 bar.row_index,
                 bar.timestamp,
                 force_exit_reason,
-                force_exit_event_message(force_exit_reason, mode_prefix="dry-run "),
+                force_exit_event_message(
+                    force_exit_reason,
+                    tw_leg_display=self.config.active_pair.tw_leg.display,
+                    mode_prefix="dry-run ",
+                ),
                 {"tw_leg_symbol": tw_leg_symbol, "tw_leg_expiry": tw_leg_expiry},
             )
         elif strategy.state.state == StrategyState.ENTRY_PENDING:
@@ -644,7 +653,11 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 bar.row_index,
                 bar.timestamp,
                 force_exit_reason,
-                force_exit_event_message(force_exit_reason, mode_prefix="live-execute "),
+                force_exit_event_message(
+                    force_exit_reason,
+                    tw_leg_display=self.config.active_pair.tw_leg.display,
+                    mode_prefix="live-execute ",
+                ),
                 {"tw_leg_symbol": tw_leg_symbol, "tw_leg_expiry": tw_leg_expiry},
             )
         elif strategy.state.state == StrategyState.ENTRY_PENDING:
@@ -1195,7 +1208,7 @@ def execute_live_entry(
                 state.candidate_direction,
                 outcome.fills,
                 us_leg_symbol=strategy.us_leg_symbol,
-                tw_leg_symbol=bar.tw_leg_symbol or "QFF",
+                tw_leg_symbol=bar.tw_leg_symbol or strategy.tw_leg_symbol,
                 tw_leg_contract_multiplier=strategy.fees.tw_leg_contract_multiplier,
             )
         except ExecutedPositionError:

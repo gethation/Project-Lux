@@ -12,7 +12,7 @@ pytestmark = pytest.mark.skipif(not POC_CSV.exists(), reason="PoC CSV is unavail
 
 
 def build_summary(config):
-    store = SQLiteStore(config.store_path)
+    store = SQLiteStore(config.store_path, **config.store_identity())
     try:
         store.initialize()
         return store.build_summary(config.strategy, config.fees)

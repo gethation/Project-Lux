@@ -179,9 +179,40 @@ def write_test_config(
     cache_dir = (tmp_path / "taifex_cache").as_posix()
     lines = [
         "[paths]",
-        "input_csv = ''",
         f"store_path = '{store_path}'",
+        "",
+        "[[pairs]]",
+        "id = 'qff_tsm'",
+        "label = 'QFF/TSM'",
+        "",
+        "[pairs.data]",
+        "input_csv = ''",
+        "",
+        "[pairs.tw_leg]",
+        "display = 'QFF'",
+        "venue = 'fubon'",
+        "product = 'QFF'",
+        f"symbol = '{tw_leg_symbol}'",
+        "contract_multiplier = 100.0",
+        "",
+        "[pairs.us_leg]",
+        "display = 'TSM'",
+        "venue = 'binance'",
+        "symbol = 'TSM/USDT:USDT'",
+        "adr_share_ratio = 5.0",
+        "",
+        "[pairs.fx]",
+        "venue = 'bitopro'",
+        "symbol = 'USDT/TWD'",
+        "",
+        "[pairs.sizing]",
+        f"mode = '{'fixed_lots' if tw_leg_lots is not None else 'notional'}'",
     ]
+    if tw_leg_lots is None:
+        lines.append("leg_notional_twd = 1000000.0")
+    else:
+        lines.append(f"lots = {tw_leg_lots}")
+    lines.extend(["", "[pairs.strategy]", "", "[pairs.fees]"])
     if allow_live_order is not None:
         lines.extend(
             [
@@ -190,14 +221,10 @@ def write_test_config(
                 f"allow_live_order = {str(allow_live_order).lower()}",
             ]
         )
-    if tw_leg_lots is not None:
-        lines.extend(["", "[strategy]", f"tw_leg_lots = {tw_leg_lots}"])
     lines.extend(
         [
             "",
             "[live_market_data]",
-            f"tw_leg_symbol = '{tw_leg_symbol}'",
-            "binance_symbol = 'TSM/USDT:USDT'",
             f"taifex_cache_dir = '{cache_dir}'",
         ]
     )
@@ -244,16 +271,44 @@ def write_execution_test_config(
     config_path = tmp_path / config_name
     lines = [
         "[paths]",
-        "input_csv = ''",
         f"store_path = '{(tmp_path / store_name).as_posix()}'",
+        "",
+        "[[pairs]]",
+        "id = 'qff_tsm'",
+        "label = 'QFF/TSM'",
+        "",
+        "[pairs.data]",
+        "input_csv = ''",
+        "",
+        "[pairs.tw_leg]",
+        "display = 'QFF'",
+        "venue = 'fubon'",
+        "product = 'QFF'",
+        "symbol = 'QFFG6'",
+        "contract_multiplier = 100.0",
+        "",
+        "[pairs.us_leg]",
+        "display = 'TSM'",
+        "venue = 'binance'",
+        "symbol = 'TSM/USDT:USDT'",
+        "adr_share_ratio = 5.0",
+        "",
+        "[pairs.fx]",
+        "venue = 'bitopro'",
+        "symbol = 'USDT/TWD'",
+        "",
+        "[pairs.sizing]",
+        "mode = 'notional'",
+        "leg_notional_twd = 1000000.0",
+        "",
+        "[pairs.strategy]",
+        "",
+        "[pairs.fees]",
         "",
         "[safety]",
         f"allow_live_order = {str(allow_live_order).lower()}",
         "",
         "[live_market_data]",
-        "tw_leg_symbol = 'QFFG6'",
-        "binance_symbol = 'TSM/USDT:USDT'",
-        "bitopro_symbol = 'USDT/TWD'",
     ]
     if fubon_env_path is not None:
         lines.append(f"fubon_env_path = '{fubon_env_path}'")
