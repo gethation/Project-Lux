@@ -1,5 +1,6 @@
 # Local live dry-run config aligned to the PoC w500 / entry 2 / exit 1 run.
-# This file is gitignored by configs/*.local.toml.
+# NOTE: this file IS tracked by git despite its name. Credentials live in .env,
+# never here. Editing it on a live machine will conflict on the next pull.
 
 [paths]
 store_path = 'data\project_lux_live_dryrun.sqlite3'

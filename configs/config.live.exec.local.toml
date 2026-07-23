@@ -1,5 +1,6 @@
 # Local live --mode execute config aligned to config.live.exec.dryrun.local.toml.
-# This file is gitignored by configs/*.local.toml.
+# NOTE: this file IS tracked by git despite its name. Credentials live in .env,
+# never here. Editing it on a live machine will conflict on the next pull.
 # WARNING: live --mode execute can place real orders when runtime env gates are set.
 
 [paths]
