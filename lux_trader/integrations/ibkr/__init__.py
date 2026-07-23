@@ -14,6 +14,7 @@ from .diagnostic import (
     IbkrDiagnosticResult,
     run_connectivity_diagnostic,
 )
+from .market_data import IbkrUmcQuoteProvider
 
 __all__ = [
     "DEFAULT_CLIENT_ID",
@@ -25,6 +26,7 @@ __all__ = [
     "IbkrDiagnosticConfig",
     "IbkrDiagnosticResult",
     "IbkrGatewayUnavailable",
+    "IbkrUmcQuoteProvider",
     "IbkrWorkerError",
     "IbkrWorkerTimeout",
     "run_connectivity_diagnostic",

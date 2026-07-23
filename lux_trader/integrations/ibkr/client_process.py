@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import traceback
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from multiprocessing.connection import Connection
@@ -79,6 +80,7 @@ class _IbkrWorkerClient:
         self._last_error_message: str | None = None
         self._last_event_at: datetime | None = None
         self._data_lost = False
+        self._umc_detail: Any | None = None
         self._register_events()
 
     def _register_events(self) -> None:
@@ -211,14 +213,7 @@ class _IbkrWorkerClient:
 
     def resolve_umc_contract(self) -> IbkrContractDetails:
         self._ensure_connected()
-        requested = Stock("UMC", "SMART", "USD", primaryExchange="NYSE")
-        matches = list(self.ib.reqContractDetails(requested))
-        if len(matches) != 1:
-            raise IbkrWorkerError(
-                "UMC contract resolution must return exactly one match; "
-                f"received {len(matches)}"
-            )
-        detail = matches[0]
+        detail = self._resolve_umc_detail()
         contract = detail.contract
         return IbkrContractDetails(
             con_id=int(contract.conId),
@@ -231,6 +226,70 @@ class _IbkrWorkerClient:
             trading_hours=str(detail.tradingHours),
             liquid_hours=str(detail.liquidHours),
         )
+
+    def _resolve_umc_detail(self) -> Any:
+        if self._umc_detail is None:
+            requested = Stock("UMC", "SMART", "USD", primaryExchange="NYSE")
+            matches = list(self.ib.reqContractDetails(requested))
+            if len(matches) != 1:
+                raise IbkrWorkerError(
+                    "UMC contract resolution must return exactly one match; "
+                    f"received {len(matches)}"
+                )
+            self._umc_detail = matches[0]
+        return self._umc_detail
+
+    def fetch_umc_quote(
+        self,
+        *,
+        quote_wait_timeout_seconds: float,
+    ) -> dict[str, Any]:
+        if quote_wait_timeout_seconds <= 0:
+            raise ValueError("quote_wait_timeout_seconds must be positive")
+        self._ensure_connected()
+        contract = self._resolve_umc_detail().contract
+        self.ib.reqMarketDataType(3)
+        ticker = self.ib.reqMktData(
+            contract,
+            genericTickList="",
+            snapshot=False,
+            regulatorySnapshot=False,
+        )
+        remaining = float(quote_wait_timeout_seconds)
+        try:
+            while remaining > 0:
+                tier = getattr(ticker, "marketDataType", None)
+                values = (
+                    getattr(ticker, "last", None),
+                    getattr(ticker, "close", None),
+                    getattr(ticker, "bid", None),
+                    getattr(ticker, "ask", None),
+                )
+                if tier is not None and any(_is_finite(value) for value in values):
+                    break
+                wait_slice = min(0.2, remaining)
+                self.ib.sleep(wait_slice)
+                remaining -= wait_slice
+            return {
+                "con_id": int(contract.conId),
+                "market_data_tier": getattr(ticker, "marketDataType", None),
+                "last": getattr(ticker, "last", None),
+                "close": getattr(ticker, "close", None),
+                "bid": getattr(ticker, "bid", None),
+                "ask": getattr(ticker, "ask", None),
+                "bid_size": getattr(ticker, "bidSize", None),
+                "ask_size": getattr(ticker, "askSize", None),
+                "ticker_time": getattr(ticker, "time", None),
+                "last_timestamp": getattr(ticker, "lastTimestamp", None),
+                "delayed_last_timestamp": getattr(
+                    ticker,
+                    "delayedLastTimestamp",
+                    None,
+                ),
+                "observed_at": self.clock(),
+            }
+        finally:
+            self.ib.cancelMktData(contract)
 
     def close(self) -> None:
         if self.ib.isConnected():
@@ -327,6 +386,18 @@ class IbkrClientProcess:
             )
         return result
 
+    def fetch_umc_quote(
+        self,
+        *,
+        quote_wait_timeout_seconds: float,
+    ) -> dict[str, Any]:
+        return dict(
+            self._request_guarded(
+                "fetch_umc_quote",
+                quote_wait_timeout_seconds=quote_wait_timeout_seconds,
+            )
+        )
+
     def session_health(self) -> dict[str, Any]:
         health = dict(self._request_guarded("session_health"))
         health["worker_pid"] = self.worker_pid
@@ -363,6 +434,13 @@ class IbkrClientProcess:
 
     def __exit__(self, *_args: Any) -> None:
         self.close()
+
+
+def _is_finite(value: Any) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 __all__ = [

@@ -70,6 +70,29 @@ class FakeIb:
             )
         ]
 
+    def reqMarketDataType(self, _tier: int) -> None:
+        return None
+
+    def reqMktData(self, *_args: object, **_kwargs: object) -> object:
+        return SimpleNamespace(
+            marketDataType=3,
+            last=21.39,
+            close=21.29,
+            bid=21.38,
+            ask=21.40,
+            bidSize=10,
+            askSize=12,
+            time=fixed_clock(),
+            lastTimestamp=None,
+            delayedLastTimestamp=1_753_292_700,
+        )
+
+    def sleep(self, _seconds: float) -> None:
+        return None
+
+    def cancelMktData(self, _contract: object) -> None:
+        return None
+
     def disconnect(self) -> None:
         self.connected = False
         self.disconnectedEvent.emit()
@@ -89,6 +112,7 @@ def test_worker_tracks_connectivity_codes_and_contract_resolution() -> None:
 
     health = worker.connect()
     details = worker.resolve_umc_contract()
+    quote = worker.fetch_umc_quote(quote_wait_timeout_seconds=1.0)
     fake.errorEvent.emit(-1, 1100, "Connectivity between IB and TWS has been lost", None)
     lost = worker.session_health(reconnect=False)
     fake.errorEvent.emit(-1, 1101, "Connectivity restored - data lost", None)
@@ -101,6 +125,8 @@ def test_worker_tracks_connectivity_codes_and_contract_resolution() -> None:
     assert health["accounts"] == ["U1234567"]
     assert details.con_id == 46_613_372
     assert details.time_zone_id == "US/Eastern"
+    assert quote["market_data_tier"] == 3
+    assert quote["last"] == 21.39
     assert lost["status"] == "connectivity_lost"
     assert lost["data_lost"] is True
     assert restored_lost["status"] == "restored_data_lost"

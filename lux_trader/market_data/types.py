@@ -20,6 +20,8 @@ class LiveQuote:
     bid_size: float | None = None
     ask_size: float | None = None
     raw: dict[str, Any] | None = None
+    market_data_tier: int | None = None
+    is_delayed: bool = False
 
 
 @dataclass(frozen=True)
