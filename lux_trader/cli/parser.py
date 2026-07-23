@@ -144,10 +144,29 @@ def build_parser() -> argparse.ArgumentParser:
     add_config_argument(status_doctor)
     status_doctor.add_argument(
         "--mode",
-        choices=("replay", "live", "order"),
+        choices=("replay", "live", "order", "ibkr"),
         default="replay",
         help="Which checks to run (live touches real market data only with "
-        "LUX_LIVE_MARKETDATA=1; order prints the live execution gate report)",
+        "LUX_LIVE_MARKETDATA=1; order prints the live execution gate report; "
+        "ibkr runs the read-only UMC data probe)",
+    )
+    status_doctor.add_argument("--ibkr-host", default="127.0.0.1")
+    status_doctor.add_argument("--ibkr-port", type=int, default=4001)
+    status_doctor.add_argument("--ibkr-client-id", type=int, default=17_001)
+    status_doctor.add_argument(
+        "--ibkr-connect-timeout-seconds",
+        type=float,
+        default=8.0,
+    )
+    status_doctor.add_argument(
+        "--ibkr-quote-timeout-seconds",
+        type=float,
+        default=10.0,
+    )
+    status_doctor.add_argument(
+        "--ibkr-history-timeout-seconds",
+        type=float,
+        default=60.0,
     )
     status_doctor.set_defaults(route="status.doctor")
 

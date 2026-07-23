@@ -66,6 +66,29 @@ def command_summary(args: argparse.Namespace) -> int:
 def command_doctor(args: argparse.Namespace) -> int:
     config = load_config(args.config, pair_id=getattr(args, "pair", None))
     mode = getattr(args, "mode", "replay")
+    if mode == "ibkr":
+        from lux_trader.integrations.ibkr import (
+            IbkrDiagnosticConfig,
+            run_connectivity_diagnostic,
+        )
+
+        result = run_connectivity_diagnostic(
+            IbkrDiagnosticConfig(
+                host=args.ibkr_host,
+                port=args.ibkr_port,
+                client_id=args.ibkr_client_id,
+                connect_timeout_seconds=args.ibkr_connect_timeout_seconds,
+                quote_wait_timeout_seconds=args.ibkr_quote_timeout_seconds,
+                historical_timeout_seconds=args.ibkr_history_timeout_seconds,
+            )
+        )
+        payload = result.to_dict()
+        if result.market_data_tier in {3, 4}:
+            print("=" * 72)
+            print("WARNING: DELAYED MARKET DATA - NOT LIVE")
+            print("=" * 72)
+        print(json.dumps(payload, indent=2))
+        return 0
     if mode == "live":
         from .commands_live import run_live_doctor_checks
 
