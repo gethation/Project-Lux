@@ -189,7 +189,23 @@ recover (--clear-pause|--manual-flat) · warmup · summary
 >   warmup 歷史來源，單一 Gateway 連線
 > - **延遲行情**：`us_leg.stale_seconds`（per-pair，可選）承認 IBKR 延遲
 >   timestamps；設定後該腿同時退出 skew 檢查（延遲 timestamp 對 skew 的失敗
->   與對新鮮度完全同構）。訂閱 NYSE 後移除該設定即恢復嚴格門檻
+>   與對新鮮度完全同構），且 **warmup 視窗結尾同步往回退**（實測 2026-07-25
+>   盤中：IBKR 歷史只到 15.9 分鐘前，視窗若收在 now−1min 就是向 feed 要
+>   不可能存在的 bar）。訂閱 NYSE 後移除該設定，三者一併恢復嚴格
+>
+> ### ⚠️ 訂閱 NYSE 前，CCF/UMC 不會產生任何交易訊號（已定案，2026-07-25）
+>
+> 實測：延遲 tier（`marketDataType=3`）**不提供 bid/ask** —— 此 IBKR 帳戶
+> 無盤口權限（與歷史資料 `MIDPOINT` 觸發 error 162 同源）。
+> `estimate_directional_spread` 需要 us_leg 的盤口才能估可執行價差，因此
+> CCF/UMC 每根 bar 都會 `missing_book skip_signal`。
+>
+> **這是正確行為，不是缺陷。** 曾評估「無盤口時兩側改用 last 價」（與 FX 的
+> 處理同構），**經使用者定案否決**：UMC 的買賣價差是真實的執行成本，用 last
+> 價估會系統性低估它。寧可在訂閱前完全不出訊號，也不要出一個低估成本的訊號。
+>
+> 訂閱前**可**驗證：warmup、bar 生成、時段交集、快取、多 pair 共存、對帳。
+> 訂閱前**不可**驗證：進出場、部位管理、`--qff-lots` 實際尺度回測對照。
 > - **per-pair warmup**：`pairs.warmup_minutes`（與 zscore_window 獨立，
 >   使用者定案）；未設則沿用帳戶層級值
 > - **欄位遷移**：runtime 讀 pair 的 product/symbol/fx symbol；

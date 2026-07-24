@@ -99,7 +99,15 @@ symbol = 'UMC'
 adr_share_ratio = 5.0
 # Delayed-feed admission (no NYSE subscription yet): IBKR stamps quotes with the
 # honest ~15-minute-delayed source time. REMOVE this line once the real-time
-# subscription is active so the strict global budget applies again.
+# subscription is active so the strict global budget applies again -- it also
+# pulls the warmup window end back by the same amount, because the feed cannot
+# serve bars fresher than it is.
+#
+# Measured 2026-07-25 mid-session: the delayed tier serves NO bid/ask (this
+# account has no book permission), so every CCF/UMC bar reports
+# missing_book skip_signal and the pair produces no entries at all until the
+# subscription is live. That is the intended trade-off -- see the plan's Phase 2
+# section: pricing both sides at last would understate UMC's real crossing cost.
 stale_seconds = 1200.0
 
 [pairs.fx]

@@ -75,6 +75,7 @@ class WarmupBuilder:
         warmup_minutes: int | None = None,
         session_minute_filter: Callable[[pd.DatetimeIndex], pd.DatetimeIndex]
         | None = None,
+        us_leg_lag_seconds: float | None = None,
     ) -> None:
         self.live_config = live_config
         self.tw_leg_intraday_provider = tw_leg_intraday_provider
@@ -93,6 +94,16 @@ class WarmupBuilder:
         # RTH-limited pairs (us_leg on IBKR) warm up on the intersection of the
         # TAIFEX session index and NYSE RTH; None keeps the full TAIFEX index.
         self.session_minute_filter = session_minute_filter
+        # How far behind the wall clock the US leg's history can be. A pair that
+        # declares us_leg.stale_seconds is stating its feed is delayed by up to
+        # that much, so asking warmup for the minute that just closed asks for
+        # bars that cannot exist yet: IBKR's delayed feed was measured 15.9
+        # minutes behind mid-session on 2026-07-25. The window ends that far
+        # back instead. None (QFF/TSM, or CCF/UMC once the NYSE subscription is
+        # live) keeps the window ending one minute ago, exactly as before.
+        self.us_leg_lag_seconds = (
+            None if us_leg_lag_seconds is None else float(us_leg_lag_seconds)
+        )
 
     def build(
         self,
@@ -105,6 +116,10 @@ class WarmupBuilder:
         end_minute = floor_minute(
             end or datetime.now(TAIPEI_TZ)
         ) - timedelta(minutes=1)
+        if self.us_leg_lag_seconds:
+            end_minute = floor_minute(
+                end_minute - timedelta(seconds=self.us_leg_lag_seconds)
+            )
         tw_leg_fetch_start = end_minute - TW_LEG_FORWARD_FILL_LOOKBACK
 
         # Prefer the live Fubon candle API.  TAIFEX/CSV is a true fallback:

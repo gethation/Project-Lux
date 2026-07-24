@@ -167,6 +167,7 @@ class WarmupRunner:
                     if pair_trades_us_rth_only(self.config)
                     else None
                 ),
+                us_leg_lag_seconds=self.config.active_pair.us_leg.stale_seconds,
             )
             bars = builder.build(
                 tw_leg_symbol=contract.symbol,
@@ -399,6 +400,7 @@ def load_or_build_live_indicator(
             session_minute_filter=(
                 filter_umc_rth_minutes if pair_trades_us_rth_only(config) else None
             ),
+            us_leg_lag_seconds=config.active_pair.us_leg.stale_seconds,
         )
         seed_bars = builder.build(
             tw_leg_symbol=tw_leg_symbol,

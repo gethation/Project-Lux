@@ -141,3 +141,98 @@ def test_decision_path_honours_the_us_budget() -> None:
     assert with_budget.short_spread != pytest.approx(with_budget.long_spread)
     assert without.short_spread is None
     assert without.missing_reason == "stale_us_leg"
+
+
+# ---------------------------------------------------------------------------
+# Warmup window end. Measured 2026-07-25 mid-session: IBKR's delayed history
+# reached 00:36 while the wall clock said 00:52, so a window ending one minute
+# ago asked for twelve minutes of bars that did not exist yet and the merge
+# failed. A pair that declares us_leg.stale_seconds is stating how far behind
+# its feed can be; the window respects that same declaration.
+# ---------------------------------------------------------------------------
+
+from lux_trader.config import LiveMarketDataConfig
+from lux_trader.market_data.warmup import WarmupBuilder
+
+
+def live_config(tmp_path) -> LiveMarketDataConfig:
+    return LiveMarketDataConfig(
+        polling_seconds=1.0,
+        minute_finalize_delay_seconds=1.0,
+        stale_seconds=10.0,
+        tw_leg_book_stale_seconds=55.0,
+        sync_windows_time_on_startup=False,
+        clock_skew_fail_seconds=60.0,
+        windows_time_sync_timeout_seconds=15.0,
+        max_leg_timestamp_skew_seconds=10.0,
+        warmup_minutes=10,
+        tw_leg_product="CCF",
+        tw_leg_symbol="auto",
+        binance_symbol="TSM/USDT:USDT",
+        bitopro_symbol="USDT/TWD",
+        fubon_env_path=None,
+        taifex_tw_leg_1m_csv=None,
+        taifex_use_network=False,
+        taifex_cache_dir=tmp_path / "cache",
+    )
+
+
+class NullProvider:
+    def fetch_1m(self, symbol, start, end):
+        raise AssertionError("not reached in these tests")
+
+    def fetch_ohlcv_1m(self, symbol, start, end):
+        raise AssertionError("not reached in these tests")
+
+
+def builder_with_lag(tmp_path, lag_seconds):
+    return WarmupBuilder(
+        live_config=live_config(tmp_path),
+        tw_leg_intraday_provider=NullProvider(),
+        tw_leg_fallback_provider=None,
+        us_leg_provider=NullProvider(),
+        usdttwd_provider=NullProvider(),
+        us_leg_lag_seconds=lag_seconds,
+    )
+
+
+def captured_end_minute(builder, requested_end):
+    """Run build() far enough to see the window end it computed."""
+    seen = {}
+
+    def spy(symbol, start, end):
+        seen["end"] = end
+        raise RuntimeError("stop here")
+
+    builder.tw_leg_intraday_provider.fetch_1m = spy
+    try:
+        builder.build(tw_leg_symbol="CCFH6", end=requested_end)
+    except RuntimeError:
+        pass
+    return seen["end"]
+
+
+def test_declared_lag_moves_the_window_end_back(tmp_path) -> None:
+    requested = datetime(2026, 7, 25, 0, 52, tzinfo=TAIPEI_TZ)
+
+    end_minute = captured_end_minute(builder_with_lag(tmp_path, 1200.0), requested)
+
+    # 00:52 -> 00:51 (last closed minute) -> minus 20 minutes of declared lag.
+    assert end_minute == datetime(2026, 7, 25, 0, 31, tzinfo=TAIPEI_TZ)
+
+
+def test_no_declared_lag_keeps_the_previous_minute(tmp_path) -> None:
+    requested = datetime(2026, 7, 25, 0, 52, tzinfo=TAIPEI_TZ)
+
+    end_minute = captured_end_minute(builder_with_lag(tmp_path, None), requested)
+
+    assert end_minute == datetime(2026, 7, 25, 0, 51, tzinfo=TAIPEI_TZ)
+
+
+def test_the_measured_gap_is_covered(tmp_path) -> None:
+    """The live failure: history reached 00:36, window wanted 00:48."""
+    requested = datetime(2026, 7, 25, 0, 49, tzinfo=TAIPEI_TZ)
+
+    end_minute = captured_end_minute(builder_with_lag(tmp_path, 1200.0), requested)
+
+    assert end_minute <= datetime(2026, 7, 25, 0, 36, tzinfo=TAIPEI_TZ)
