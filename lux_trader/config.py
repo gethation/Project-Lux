@@ -67,6 +67,18 @@ class FxConfig:
     # serves indefinitely; a value turns a prolonged outage into a hard error
     # rather than a silently frozen rate.
     max_serve_seconds: float | None = None
+    # Setting this reclassifies the FX quote from a co-timed leg to a slow
+    # reference rate: it gets this staleness budget instead of the global
+    # live.stale_seconds, and it stops participating in the leg-timestamp skew
+    # check. Those are one decision, not two, which is why they share a knob --
+    # a budget without the skew exemption still fails every bar.
+    #
+    # QFF/TSM leaves this None. All three of its legs are 1Hz tick sources, so
+    # the global thresholds are asking the right question: are the legs looking
+    # at the same instant? CCF/UMC's FX is a conversion factor that moves about
+    # 0.005% a minute, and §8.2 measured a mere 0.95% signal difference between
+    # 1m and hourly FX, so co-timing it to the second is meaningless.
+    stale_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -587,6 +599,10 @@ def load_pair_config(raw: object, root: Path, index: int) -> PairConfig:
             max_serve_seconds=optional_positive_float(
                 fx_raw.get("max_serve_seconds"),
                 f"{prefix}.fx.max_serve_seconds",
+            ),
+            stale_seconds=optional_positive_float(
+                fx_raw.get("stale_seconds"),
+                f"{prefix}.fx.stale_seconds",
             ),
         ),
         sizing=sizing,

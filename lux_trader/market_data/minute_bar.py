@@ -22,11 +22,19 @@ class LiveMinuteBarBuilder:
         max_leg_timestamp_skew_seconds: float,
         closed_dates: Iterable[date] = (),
         weekend_policy: str = WEEKEND_POLICY_FLAT,
+        fx_stale_seconds: float | None = None,
     ) -> None:
         self.stale_seconds = stale_seconds
         self.max_leg_timestamp_skew_seconds = max_leg_timestamp_skew_seconds
         self.closed_dates = tuple(closed_dates)
         self.weekend_policy = validate_weekend_policy(weekend_policy)
+        # None keeps the FX quote a co-timed leg: global staleness budget, and it
+        # counts towards the leg-skew check. A value reclassifies it as a slow
+        # reference rate with its own budget and no skew participation. See
+        # FxConfig.stale_seconds for why those two go together.
+        self.fx_stale_seconds = (
+            None if fx_stale_seconds is None else float(fx_stale_seconds)
+        )
         self.current_minute: datetime | None = None
         self.current_quotes: dict[str, LiveQuote] = {}
         self.last_tw_leg_close: float | None = None
@@ -82,13 +90,19 @@ class LiveMinuteBarBuilder:
         )
 
         close_time = self.current_minute + timedelta(minutes=1)
-        for name, quote in (("us_leg", us_leg), ("usdttwd", usdttwd)):
+        fx_budget = (
+            self.stale_seconds if self.fx_stale_seconds is None else self.fx_stale_seconds
+        )
+        for name, quote, budget in (
+            ("us_leg", us_leg, self.stale_seconds),
+            ("usdttwd", usdttwd, fx_budget),
+        ):
             age = abs((close_time - ensure_taipei(quote.timestamp)).total_seconds())
-            if age > self.stale_seconds:
+            if age > budget:
                 return MinuteBuildResult(
                     None,
                     "market_data_stale",
-                    {"source": name, "age_seconds": age},
+                    {"source": name, "age_seconds": age, "budget_seconds": budget},
                     quote_set,
                 )
 
@@ -99,7 +113,11 @@ class LiveMinuteBarBuilder:
             )
             tw_leg_is_fresh = tw_leg_age <= self.stale_seconds
 
-        skew_quotes = [us_leg, usdttwd]
+        # A slow reference rate is always the oldest timestamp present, so leaving
+        # it in would turn this check into a restatement of its own staleness
+        # budget and stop it detecting what it exists for: two tick legs drifting
+        # apart.
+        skew_quotes = [us_leg] if self.fx_stale_seconds is not None else [us_leg, usdttwd]
         if tw_leg is not None and tw_leg_is_fresh:
             skew_quotes.append(tw_leg)
         timestamps = [ensure_taipei(quote.timestamp) for quote in skew_quotes]

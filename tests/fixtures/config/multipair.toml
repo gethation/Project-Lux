@@ -77,6 +77,8 @@ adr_share_ratio = 5.0
 [pairs.fx]
 venue = 'twelvedata'
 symbol = 'USD/TWD'
+# Worst case measured 2026-07-24: 300s cache + ~35s publish lag = ~335s.
+stale_seconds = 600.0
 
 [pairs.sizing]
 mode = 'fixed_lots'
