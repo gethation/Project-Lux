@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, TextIO
 
 import pandas as pd
@@ -152,8 +152,11 @@ class IbkrUmcQuoteProvider:
                 f"fetch_ohlcv_1m spans {span_days} days; use "
                 "integrations.ibkr.historical for backfills"
             )
+        # IBKR's endDateTime bounds bars by their CLOSE: a 1m bar labelled T
+        # spans T..T+1min, so requesting end=T would exclude the bar labelled T
+        # itself. Ask one minute past the window and filter on labels below.
         rows = self.client.fetch_umc_historical_1m(
-            end_date_time=_format_end(end_tpe),
+            end_date_time=_format_end(end_tpe + timedelta(minutes=1)),
             duration=f"{span_days} D",
             use_rth=True,
         )

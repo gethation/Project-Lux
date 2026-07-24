@@ -25,9 +25,9 @@ def build_us_leg_provider(config: AppConfig) -> QuoteProvider:
     if venue == "binance":
         return BinanceMarketData()
     if venue == "ibkr":
-        from lux_trader.integrations.ibkr.market_data import IbkrUmcMarketData
+        from lux_trader.integrations.ibkr.market_data import IbkrUmcQuoteProvider
 
-        return IbkrUmcMarketData()
+        return IbkrUmcQuoteProvider()
     raise RuntimeError(
         f"Pair {config.active_pair.id!r} names an unknown us_leg venue {venue!r}; "
         "supported: binance, ibkr"
