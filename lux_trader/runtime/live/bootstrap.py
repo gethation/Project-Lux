@@ -202,6 +202,7 @@ def build_live_minute_builder(
         closed_dates=config.trading_calendar.closed_dates,
         weekend_policy=config.active_pair.weekend_policy,
         fx_stale_seconds=config.active_pair.fx.stale_seconds,
+        adr_share_ratio=config.active_pair.us_leg.adr_share_ratio,
     )
     builder.last_tw_leg_close = seed_bars[-1].tw_leg_close_filled
     return builder

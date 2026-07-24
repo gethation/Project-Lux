@@ -468,6 +468,7 @@ def test_tradable_spread_uses_bid_ask_and_does_not_mutate_indicator() -> None:
         indicator,
         stale_seconds=10.0,
         tw_leg_book_stale_seconds=55.0,
+        adr_share_ratio=5.0,
         last_tw_leg_close=100.0,
     )
 
@@ -496,6 +497,7 @@ def test_tradable_spread_uses_tw_leg_specific_stale_threshold() -> None:
         indicator,
         stale_seconds=10.0,
         tw_leg_book_stale_seconds=55.0,
+        adr_share_ratio=5.0,
         last_tw_leg_close=100.0,
     )
     stale_tw_leg = estimate_tradable_spreads(
@@ -508,6 +510,7 @@ def test_tradable_spread_uses_tw_leg_specific_stale_threshold() -> None:
         indicator,
         stale_seconds=10.0,
         tw_leg_book_stale_seconds=55.0,
+        adr_share_ratio=5.0,
         last_tw_leg_close=100.0,
     )
 
@@ -534,6 +537,7 @@ def test_tradable_spread_keeps_us_leg_and_usdttwd_at_global_stale_threshold() ->
         indicator,
         stale_seconds=10.0,
         tw_leg_book_stale_seconds=55.0,
+        adr_share_ratio=5.0,
         last_tw_leg_close=100.0,
     )
     stale_usd = estimate_tradable_spreads(
@@ -546,6 +550,7 @@ def test_tradable_spread_keeps_us_leg_and_usdttwd_at_global_stale_threshold() ->
         indicator,
         stale_seconds=10.0,
         tw_leg_book_stale_seconds=55.0,
+        adr_share_ratio=5.0,
         last_tw_leg_close=100.0,
     )
 
@@ -570,6 +575,7 @@ def test_tradable_spread_requires_bid_ask_but_mid_can_forward_fill_tw_leg() -> N
         indicator,
         stale_seconds=10.0,
         tw_leg_book_stale_seconds=55.0,
+        adr_share_ratio=5.0,
         last_tw_leg_close=100.0,
     )
 
@@ -588,6 +594,7 @@ def test_tradable_spread_requires_bid_ask_but_mid_can_forward_fill_tw_leg() -> N
         indicator,
         stale_seconds=10.0,
         tw_leg_book_stale_seconds=55.0,
+        adr_share_ratio=5.0,
         last_tw_leg_close=100.0,
     )
     assert missing_snapshot.short_spread is not None
@@ -618,6 +625,7 @@ def test_tradable_spread_treats_tw_leg_diagnostic_quote_as_stale_tw_leg() -> Non
         indicator,
         stale_seconds=10.0,
         tw_leg_book_stale_seconds=55.0,
+        adr_share_ratio=5.0,
         last_tw_leg_close=100.0,
     )
 

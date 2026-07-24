@@ -52,6 +52,7 @@ class SystemRunner:
                 us_leg_ohlcv_path=self.config.us_leg_ohlcv_csv,
                 usdttwd_ohlcv_path=self.config.usdttwd_ohlcv_csv,
                 weekend_policy=self.config.active_pair.weekend_policy,
+                adr_share_ratio=self.config.active_pair.us_leg.adr_share_ratio,
             ).load()
             if resume_state is None:
                 indicator = IndicatorEngine(window=self.config.strategy.zscore_window)

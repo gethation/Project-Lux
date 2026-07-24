@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 
+from ..core.tradable_spread import us_leg_twd_fair_price
 from ..core.calendar import (
     WEEKEND_POLICY_FLAT,
     annotate_live_bar_with_closed_dates,
@@ -23,6 +24,7 @@ class LiveMinuteBarBuilder:
         closed_dates: Iterable[date] = (),
         weekend_policy: str = WEEKEND_POLICY_FLAT,
         fx_stale_seconds: float | None = None,
+        adr_share_ratio: float = 5.0,
     ) -> None:
         self.stale_seconds = stale_seconds
         self.max_leg_timestamp_skew_seconds = max_leg_timestamp_skew_seconds
@@ -35,6 +37,7 @@ class LiveMinuteBarBuilder:
         self.fx_stale_seconds = (
             None if fx_stale_seconds is None else float(fx_stale_seconds)
         )
+        self.adr_share_ratio = float(adr_share_ratio)
         self.current_minute: datetime | None = None
         self.current_quotes: dict[str, LiveQuote] = {}
         self.last_tw_leg_close: float | None = None
@@ -140,7 +143,11 @@ class LiveMinuteBarBuilder:
                 quote_set=quote_set,
             )
 
-        us_leg_twd_fair = us_leg.price * usdttwd.price / 5.0
+        us_leg_twd_fair = us_leg_twd_fair_price(
+            us_leg.price,
+            usdttwd.price,
+            self.adr_share_ratio,
+        )
         spread = (
             (us_leg_twd_fair - self.last_tw_leg_close)
             / (us_leg_twd_fair + self.last_tw_leg_close)

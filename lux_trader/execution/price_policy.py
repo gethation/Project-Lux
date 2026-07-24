@@ -9,6 +9,7 @@ from .intent import (
 )
 from ..market_data.types import LiveQuote, LiveQuoteSet
 from ..core.models import BrokerName, OrderSide
+from ..core.tradable_spread import us_leg_twd_fair_price
 
 
 LIVE_TOUCH_MARKET_PRICE_POLICY = "live_touch_market"
@@ -21,6 +22,7 @@ def apply_live_touch_market_price_policy(
     max_plan_age_seconds: int | None = None,
     plan_age_seconds: float = 0.0,
     us_leg_contract_multiplier: float,
+    adr_share_ratio: float,
 ) -> PairExecutionPlan:
     return replace(
         plan,
@@ -29,6 +31,7 @@ def apply_live_touch_market_price_policy(
                 leg,
                 quote_set,
                 us_leg_contract_multiplier=us_leg_contract_multiplier,
+                adr_share_ratio=adr_share_ratio,
             )
             for leg in plan.legs
         ),
@@ -44,12 +47,14 @@ def _apply_leg_price_policy(
     quote_set: LiveQuoteSet,
     *,
     us_leg_contract_multiplier: float,
+    adr_share_ratio: float,
 ) -> ExecutionLeg:
     if leg.broker == BrokerName.BINANCE:
         return _apply_binance_us_leg_price_policy(
             leg,
             quote_set,
             us_leg_contract_multiplier=us_leg_contract_multiplier,
+            adr_share_ratio=adr_share_ratio,
         )
     if leg.broker == BrokerName.FUBON:
         return _apply_tw_leg_price_policy(leg, quote_set.tw_leg)
@@ -61,21 +66,25 @@ def _apply_binance_us_leg_price_policy(
     quote_set: LiveQuoteSet,
     *,
     us_leg_contract_multiplier: float,
+    adr_share_ratio: float,
 ) -> ExecutionLeg:
     trigger_bid = _combined_us_leg_contract_twd_price(
         quote_set.us_leg.bid,
         quote_set.usdttwd.bid,
         us_leg_contract_multiplier,
+        adr_share_ratio,
     )
     trigger_ask = _combined_us_leg_contract_twd_price(
         quote_set.us_leg.ask,
         quote_set.usdttwd.ask,
         us_leg_contract_multiplier,
+        adr_share_ratio,
     )
     trigger_mid = _combined_us_leg_contract_twd_price(
         quote_set.us_leg.price,
         quote_set.usdttwd.price,
         us_leg_contract_multiplier,
+        adr_share_ratio,
     )
     expected = _side_expected_price(
         leg.side,
@@ -153,18 +162,24 @@ def _side_expected_price(
 def _combined_us_leg_twd_price(
     us_leg_price: float | None,
     usdttwd_price: float | None,
+    adr_share_ratio: float,
 ) -> float | None:
     if us_leg_price is None or usdttwd_price is None:
         return None
-    return us_leg_price * usdttwd_price / 5.0
+    return us_leg_twd_fair_price(us_leg_price, usdttwd_price, adr_share_ratio)
 
 
 def _combined_us_leg_contract_twd_price(
     us_leg_price: float | None,
     usdttwd_price: float | None,
     multiplier: float,
+    adr_share_ratio: float,
 ) -> float | None:
-    us_leg_twd_price = _combined_us_leg_twd_price(us_leg_price, usdttwd_price)
+    us_leg_twd_price = _combined_us_leg_twd_price(
+        us_leg_price,
+        usdttwd_price,
+        adr_share_ratio,
+    )
     if us_leg_twd_price is None:
         return None
     return us_leg_twd_price * float(multiplier)

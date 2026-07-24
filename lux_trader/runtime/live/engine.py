@@ -434,6 +434,7 @@ class LiveRuntime:
                     stale_seconds=self.config.live.stale_seconds,
                     tw_leg_book_stale_seconds=self.config.live.tw_leg_book_stale_seconds,
                     last_tw_leg_close=builder.last_tw_leg_close,
+                    adr_share_ratio=self.config.active_pair.us_leg.adr_share_ratio,
                 )
                 if tw_leg_reconnecting and (
                     live_spread_snapshot.short_spread is None
@@ -1080,6 +1081,7 @@ def build_tradable_snapshot_for_bar(
         stale_seconds=config.live.stale_seconds,
         tw_leg_book_stale_seconds=config.live.tw_leg_book_stale_seconds,
         last_tw_leg_close=bar.tw_leg_close_filled,
+        adr_share_ratio=config.active_pair.us_leg.adr_share_ratio,
     )
     return replace(
         tradable_snapshot,

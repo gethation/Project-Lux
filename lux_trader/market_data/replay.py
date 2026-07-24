@@ -37,12 +37,14 @@ class CsvReplayMarketData:
         us_leg_ohlcv_path: Path | None = None,
         usdttwd_ohlcv_path: Path | None = None,
         weekend_policy: str = WEEKEND_POLICY_FLAT,
+        adr_share_ratio: float = 5.0,
     ) -> None:
         self.csv_path = csv_path
         self.calendar = calendar or TaifexSessionCalendar(weekend_policy)
         self.tw_leg_ohlcv_path = tw_leg_ohlcv_path
         self.us_leg_ohlcv_path = us_leg_ohlcv_path
         self.usdttwd_ohlcv_path = usdttwd_ohlcv_path
+        self.adr_share_ratio = float(adr_share_ratio)
 
     def load(self) -> list[MarketBar]:
         if not self.csv_path.exists():
@@ -97,7 +99,7 @@ class CsvReplayMarketData:
             )
             tw_leg_entry_open = tw_leg_open.fillna(tw_leg_filled)
             tw_leg_entry_open_was_filled = tw_leg_open.isna()
-            us_leg_twd_fair_open = us_leg_open * usd_open / 5.0
+            us_leg_twd_fair_open = us_leg_open * usd_open / self.adr_share_ratio
 
         bars: list[MarketBar] = []
         for row_index, row in frame.iterrows():

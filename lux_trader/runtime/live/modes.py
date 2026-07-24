@@ -1016,6 +1016,7 @@ def execute_dry_run_entry(
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
             us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
+            adr_share_ratio=strategy.adr_share_ratio,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:
@@ -1093,6 +1094,7 @@ def execute_dry_run_exit(
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
             us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
+            adr_share_ratio=strategy.adr_share_ratio,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:
@@ -1218,6 +1220,7 @@ def execute_live_entry(
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
             us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
+            adr_share_ratio=strategy.adr_share_ratio,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:
@@ -1324,6 +1327,7 @@ def execute_live_exit(
             max_plan_age_seconds=max_plan_age_seconds,
             plan_age_seconds=0.0,
             us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
+            adr_share_ratio=strategy.adr_share_ratio,
         )
     plan, outcome = coordinator.execute(plan)
     if outcome.filled:

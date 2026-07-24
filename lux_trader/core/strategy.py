@@ -214,6 +214,7 @@ class PairStrategy:
         tw_leg_symbol: str,
         tw_leg_contract_multiplier: float,
         us_leg_contract_multiplier: float,
+        adr_share_ratio: float | None = None,
     ) -> None:
         self.strategy = strategy
         self.fees = fees
@@ -222,6 +223,15 @@ class PairStrategy:
         self.tw_leg_symbol = tw_leg_symbol
         self.tw_leg_contract_multiplier = float(tw_leg_contract_multiplier)
         self.us_leg_contract_multiplier = float(us_leg_contract_multiplier)
+        # Ordinary shares per ADR, used to convert the US leg's foreign price into
+        # a TWD per-share price. For an ADR pair this equals the contract
+        # multiplier -- one US-leg unit *is* one ADR -- so it defaults to it
+        # rather than being a second number to keep in sync. It is named
+        # separately because the two answer different questions, and the price
+        # conversion divides by this one while sizing multiplies by the other.
+        self.adr_share_ratio = float(
+            us_leg_contract_multiplier if adr_share_ratio is None else adr_share_ratio
+        )
         self.state = state or StrategyRuntimeState(
             running_max_equity=strategy.initial_capital_twd
         )

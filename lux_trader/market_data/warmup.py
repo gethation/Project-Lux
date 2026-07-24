@@ -68,6 +68,7 @@ class WarmupBuilder:
         us_leg_provider: OhlcvProvider,
         usdttwd_provider: OhlcvProvider,
         closed_dates: Iterable[date] = (),
+        adr_share_ratio: float = 5.0,
     ) -> None:
         self.live_config = live_config
         self.tw_leg_intraday_provider = tw_leg_intraday_provider
@@ -75,6 +76,7 @@ class WarmupBuilder:
         self.us_leg_provider = us_leg_provider
         self.usdttwd_provider = usdttwd_provider
         self.closed_dates = tuple(closed_dates)
+        self.adr_share_ratio = float(adr_share_ratio)
 
     def build(
         self,
@@ -181,7 +183,7 @@ class WarmupBuilder:
                 f"minutes from {missing[0]}"
             )
 
-        us_leg_twd_fair = us_leg * usd / 5.0
+        us_leg_twd_fair = us_leg * usd / self.adr_share_ratio
         spread = (
             (us_leg_twd_fair - tw_leg_filled)
             / (us_leg_twd_fair + tw_leg_filled)

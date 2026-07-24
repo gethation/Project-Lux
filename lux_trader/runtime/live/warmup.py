@@ -145,6 +145,7 @@ class WarmupRunner:
                 us_leg_provider=us_leg_provider,
                 usdttwd_provider=usdttwd_provider,
                 closed_dates=self.config.trading_calendar.closed_dates,
+                adr_share_ratio=self.config.active_pair.us_leg.adr_share_ratio,
             )
             bars = builder.build(
                 tw_leg_symbol=contract.symbol,
@@ -364,6 +365,7 @@ def load_or_build_live_indicator(
             us_leg_provider=us_leg_provider,
             usdttwd_provider=usdttwd_provider,
             closed_dates=config.trading_calendar.closed_dates,
+            adr_share_ratio=config.active_pair.us_leg.adr_share_ratio,
         )
         seed_bars = builder.build(
             tw_leg_symbol=tw_leg_symbol,

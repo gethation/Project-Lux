@@ -42,12 +42,14 @@ def estimate_tradable_spreads(
     stale_seconds: float,
     tw_leg_book_stale_seconds: float,
     last_tw_leg_close: float | None,
+    adr_share_ratio: float,
 ) -> TradableSpreadSnapshot:
     mid_spread = estimate_mid_spread(
         quote_set,
         observed_at,
         stale_seconds=stale_seconds,
         last_tw_leg_close=last_tw_leg_close,
+        adr_share_ratio=adr_share_ratio,
     )
     short_spread, short_missing = estimate_directional_spread(
         quote_set,
@@ -57,6 +59,7 @@ def estimate_tradable_spreads(
         us_leg_side="bid",
         usdttwd_side="bid",
         tw_leg_side="ask",
+        adr_share_ratio=adr_share_ratio,
     )
     long_spread, long_missing = estimate_directional_spread(
         quote_set,
@@ -66,6 +69,7 @@ def estimate_tradable_spreads(
         us_leg_side="ask",
         usdttwd_side="ask",
         tw_leg_side="bid",
+        adr_share_ratio=adr_share_ratio,
     )
     missing_reason = short_missing or long_missing
     return TradableSpreadSnapshot(
@@ -85,6 +89,7 @@ def estimate_mid_spread(
     *,
     stale_seconds: float,
     last_tw_leg_close: float | None,
+    adr_share_ratio: float,
 ) -> float | None:
     observed = ensure_taipei(observed_at)
     if not quote_is_fresh(quote_set.us_leg, observed, stale_seconds):
@@ -98,7 +103,11 @@ def estimate_mid_spread(
     if tw_leg_price is None:
         return None
 
-    us_leg_twd_fair = quote_set.us_leg.price * quote_set.usdttwd.price / 5.0
+    us_leg_twd_fair = us_leg_twd_fair_price(
+        quote_set.us_leg.price,
+        quote_set.usdttwd.price,
+        adr_share_ratio,
+    )
     return spread_from_prices(us_leg_twd_fair, tw_leg_price)
 
 
@@ -111,6 +120,7 @@ def estimate_directional_spread(
     us_leg_side: str,
     usdttwd_side: str,
     tw_leg_side: str,
+    adr_share_ratio: float,
 ) -> tuple[float | None, str | None]:
     observed = ensure_taipei(observed_at)
     for name, quote in (
@@ -130,7 +140,11 @@ def estimate_directional_spread(
     if us_leg_price is None or usdttwd_price is None or tw_leg_price is None:
         return None, "missing_book"
 
-    us_leg_twd_fair = us_leg_price * usdttwd_price / 5.0
+    us_leg_twd_fair = us_leg_twd_fair_price(
+        us_leg_price,
+        usdttwd_price,
+        adr_share_ratio,
+    )
     return spread_from_prices(us_leg_twd_fair, tw_leg_price), None
 
 
@@ -162,6 +176,26 @@ def book_price(quote: QuoteLike, side: str) -> float | None:
     if side == "ask":
         return quote.ask
     raise ValueError(f"Unsupported book side: {side}")
+
+
+def us_leg_twd_fair_price(
+    us_leg_price: float,
+    usdttwd_price: float,
+    adr_share_ratio: float,
+) -> float:
+    """Convert one ADR's foreign price into the TWD price of one ordinary share.
+
+    ``adr_share_ratio`` is how many ordinary shares one ADR represents, so it is
+    what makes the US leg comparable to a futures contract on the local stock.
+    It is a per-pair fact and belongs to UsLegConfig; this function exists so the
+    conversion has exactly one home. It previously appeared as a literal 5.0 in
+    six places while position sizing read the configured value, which was correct
+    only for as long as every pair happened to use 5.0 -- the same split-brain
+    the plan's §10 warns about for contract_multiplier.
+    """
+    if adr_share_ratio <= 0:
+        raise ValueError(f"adr_share_ratio must be positive, got {adr_share_ratio!r}")
+    return us_leg_price * usdttwd_price / adr_share_ratio
 
 
 def spread_from_prices(us_leg_twd_fair: float, tw_leg_price: float) -> float:
