@@ -43,13 +43,25 @@ def estimate_tradable_spreads(
     tw_leg_book_stale_seconds: float,
     last_tw_leg_close: float | None,
     adr_share_ratio: float,
+    fx_stale_seconds: float | None = None,
 ) -> TradableSpreadSnapshot:
+    """Estimate mid and directional spreads from live quotes.
+
+    ``fx_stale_seconds`` is the same reclassification knob as on the minute-bar
+    builder (see FxConfig.stale_seconds): None keeps the FX quote a co-timed leg
+    with the global budget and book-side pricing; a value gives it its own budget
+    and prices it at its single reference rate for both directions -- a metered
+    REST source has no book, and the executable-cost information the directional
+    estimate exists for lives in the two equity/futures books, not in a 1-2bp FX
+    spread.
+    """
     mid_spread = estimate_mid_spread(
         quote_set,
         observed_at,
         stale_seconds=stale_seconds,
         last_tw_leg_close=last_tw_leg_close,
         adr_share_ratio=adr_share_ratio,
+        fx_stale_seconds=fx_stale_seconds,
     )
     short_spread, short_missing = estimate_directional_spread(
         quote_set,
@@ -60,6 +72,7 @@ def estimate_tradable_spreads(
         usdttwd_side="bid",
         tw_leg_side="ask",
         adr_share_ratio=adr_share_ratio,
+        fx_stale_seconds=fx_stale_seconds,
     )
     long_spread, long_missing = estimate_directional_spread(
         quote_set,
@@ -70,6 +83,7 @@ def estimate_tradable_spreads(
         usdttwd_side="ask",
         tw_leg_side="bid",
         adr_share_ratio=adr_share_ratio,
+        fx_stale_seconds=fx_stale_seconds,
     )
     missing_reason = short_missing or long_missing
     return TradableSpreadSnapshot(
@@ -90,11 +104,13 @@ def estimate_mid_spread(
     stale_seconds: float,
     last_tw_leg_close: float | None,
     adr_share_ratio: float,
+    fx_stale_seconds: float | None = None,
 ) -> float | None:
     observed = ensure_taipei(observed_at)
+    fx_budget = stale_seconds if fx_stale_seconds is None else fx_stale_seconds
     if not quote_is_fresh(quote_set.us_leg, observed, stale_seconds):
         return None
-    if not quote_is_fresh(quote_set.usdttwd, observed, stale_seconds):
+    if not quote_is_fresh(quote_set.usdttwd, observed, fx_budget):
         return None
 
     tw_leg_price = last_tw_leg_close
@@ -121,13 +137,15 @@ def estimate_directional_spread(
     usdttwd_side: str,
     tw_leg_side: str,
     adr_share_ratio: float,
+    fx_stale_seconds: float | None = None,
 ) -> tuple[float | None, str | None]:
     observed = ensure_taipei(observed_at)
-    for name, quote in (
-        ("us_leg", quote_set.us_leg),
-        ("usdttwd", quote_set.usdttwd),
+    fx_budget = stale_seconds if fx_stale_seconds is None else fx_stale_seconds
+    for name, quote, budget in (
+        ("us_leg", quote_set.us_leg, stale_seconds),
+        ("usdttwd", quote_set.usdttwd, fx_budget),
     ):
-        if not quote_is_fresh(quote, observed, stale_seconds):
+        if not quote_is_fresh(quote, observed, budget):
             return None, f"stale_{name}"
     if tw_leg_book_quote_missing(quote_set.tw_leg):
         return None, "stale_tw_leg"
@@ -135,7 +153,13 @@ def estimate_directional_spread(
         return None, "stale_tw_leg"
 
     us_leg_price = book_price(quote_set.us_leg, us_leg_side)
-    usdttwd_price = book_price(quote_set.usdttwd, usdttwd_side)
+    # A reclassified FX quote is a single reference rate: no book exists, so both
+    # directions price it at that rate rather than failing on the absent bid/ask.
+    usdttwd_price = (
+        quote_set.usdttwd.price
+        if fx_stale_seconds is not None
+        else book_price(quote_set.usdttwd, usdttwd_side)
+    )
     tw_leg_price = book_price(quote_set.tw_leg, tw_leg_side)
     if us_leg_price is None or usdttwd_price is None or tw_leg_price is None:
         return None, "missing_book"

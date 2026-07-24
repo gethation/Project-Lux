@@ -135,3 +135,132 @@ def test_the_whole_admitted_range_builds_a_bar(fx_age: float) -> None:
     result = finalize(build(600.0), fx_age=fx_age)
 
     assert result.bar is not None, f"{fx_age}s: {result.skipped_reason}"
+
+
+# ---------------------------------------------------------------------------
+# The decision path. The minute-bar fix alone left a silent failure mode: bars
+# built, but estimate_tradable_spreads still judged the cached FX stale (and its
+# absent bid/ask as missing_book), so build_live_decision_snapshot blocked every
+# entry. A dry-run in that state looks alive while producing no signals.
+# ---------------------------------------------------------------------------
+
+from lux_trader.core.indicator import IndicatorEngine
+from lux_trader.core.tradable_spread import (
+    estimate_mid_spread,
+    estimate_tradable_spreads,
+)
+
+
+def reference_fx_quote(*, age_seconds: float) -> LiveQuote:
+    """A Twelve Data-shaped quote: single price, no book."""
+    return LiveQuote(
+        source="twelvedata",
+        symbol="USD/TWD",
+        timestamp=CLOSE - timedelta(seconds=age_seconds),
+        price=32.3,
+    )
+
+
+class DecisionQuotes:
+    def __init__(self, fx: LiveQuote) -> None:
+        self.tw_leg = LiveQuote(
+            source="fubon", symbol="CCF", timestamp=CLOSE, price=150.0,
+            bid=149.9, ask=150.1,
+        )
+        self.us_leg = LiveQuote(
+            source="ibkr", symbol="UMC", timestamp=CLOSE, price=20.0,
+            bid=19.99, ask=20.01,
+        )
+        self.usdttwd = fx
+
+
+def warm_indicator() -> IndicatorEngine:
+    return IndicatorEngine(window=5)
+
+
+def test_mid_spread_honours_the_fx_budget() -> None:
+    quotes = DecisionQuotes(reference_fx_quote(age_seconds=335.0))
+
+    without = estimate_mid_spread(
+        quotes, CLOSE, stale_seconds=10.0, last_tw_leg_close=150.0,
+        adr_share_ratio=5.0,
+    )
+    with_budget = estimate_mid_spread(
+        quotes, CLOSE, stale_seconds=10.0, last_tw_leg_close=150.0,
+        adr_share_ratio=5.0, fx_stale_seconds=600.0,
+    )
+
+    assert without is None
+    assert with_budget is not None
+
+
+def test_directional_spreads_survive_a_cached_bookless_fx() -> None:
+    quotes = DecisionQuotes(reference_fx_quote(age_seconds=335.0))
+
+    snapshot = estimate_tradable_spreads(
+        quotes, CLOSE, warm_indicator(),
+        stale_seconds=10.0, tw_leg_book_stale_seconds=55.0,
+        last_tw_leg_close=150.0, adr_share_ratio=5.0,
+        fx_stale_seconds=600.0,
+    )
+
+    assert snapshot.short_spread is not None
+    assert snapshot.long_spread is not None
+    assert snapshot.missing_reason is None
+    # Both directions price FX at the single reference rate, so the directional
+    # difference comes only from the two real books.
+    assert snapshot.short_spread != snapshot.long_spread
+
+
+def test_without_the_budget_the_decision_path_is_dead() -> None:
+    """Pins the defect this file exists for: stale_usdttwd blocks everything."""
+    quotes = DecisionQuotes(reference_fx_quote(age_seconds=335.0))
+
+    snapshot = estimate_tradable_spreads(
+        quotes, CLOSE, warm_indicator(),
+        stale_seconds=10.0, tw_leg_book_stale_seconds=55.0,
+        last_tw_leg_close=150.0, adr_share_ratio=5.0,
+    )
+
+    assert snapshot.short_spread is None
+    assert snapshot.missing_reason == "stale_usdttwd"
+
+
+def test_fx_budget_is_still_enforced_on_the_decision_path() -> None:
+    quotes = DecisionQuotes(reference_fx_quote(age_seconds=601.0))
+
+    snapshot = estimate_tradable_spreads(
+        quotes, CLOSE, warm_indicator(),
+        stale_seconds=10.0, tw_leg_book_stale_seconds=55.0,
+        last_tw_leg_close=150.0, adr_share_ratio=5.0,
+        fx_stale_seconds=600.0,
+    )
+
+    assert snapshot.short_spread is None
+    assert snapshot.missing_reason == "stale_usdttwd"
+
+
+def test_qff_tsm_directional_semantics_are_untouched() -> None:
+    """Unset budget: FX book sides are used, and a bookless FX is missing_book."""
+    fx_with_book = LiveQuote(
+        source="bitopro", symbol="USDT/TWD", timestamp=CLOSE, price=32.3,
+        bid=32.29, ask=32.31,
+    )
+    quotes = DecisionQuotes(fx_with_book)
+    snapshot = estimate_tradable_spreads(
+        quotes, CLOSE, warm_indicator(),
+        stale_seconds=10.0, tw_leg_book_stale_seconds=55.0,
+        last_tw_leg_close=150.0, adr_share_ratio=5.0,
+    )
+    assert snapshot.short_spread is not None
+
+    bookless = DecisionQuotes(
+        LiveQuote(source="bitopro", symbol="USDT/TWD", timestamp=CLOSE, price=32.3)
+    )
+    snapshot = estimate_tradable_spreads(
+        bookless, CLOSE, warm_indicator(),
+        stale_seconds=10.0, tw_leg_book_stale_seconds=55.0,
+        last_tw_leg_close=150.0, adr_share_ratio=5.0,
+    )
+    assert snapshot.short_spread is None
+    assert snapshot.missing_reason == "missing_book"
