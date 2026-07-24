@@ -430,7 +430,30 @@ def test_pair_suffix_overrides_the_global_mode(
     assert calls[0].mode == "dry-run"
 
 
-def test_selecting_two_pairs_is_refused_until_the_runtime_supports_it(
+def test_all_dry_run_multi_pair_selection_routes_with_pairs_multi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = capture_route(monkeypatch, "live.dry-run")
+
+    assert (
+        dispatch.main(
+            [
+                "live",
+                "--mode",
+                "dry-run",
+                "--config",
+                MULTIPAIR_CONFIG,
+            ]
+        )
+        == 17
+    )
+
+    assert len(calls) == 1
+    assert calls[0].pairs_multi == ["qff_tsm", "ccf_umc"]
+    assert calls[0].pair == "qff_tsm"
+
+
+def test_execute_among_multiple_selections_is_still_refused(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit):
@@ -446,4 +469,19 @@ def test_selecting_two_pairs_is_refused_until_the_runtime_supports_it(
             ]
         )
 
-    assert "not implemented yet" in capsys.readouterr().err
+    assert "execute among" in capsys.readouterr().err
+
+
+def test_single_pair_selection_has_no_pairs_multi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = capture_route(monkeypatch, "live.dry-run")
+
+    assert (
+        dispatch.main(
+            ["live", "--config", FIXTURE_CONFIG, "--pair", "qff_tsm:dry-run"]
+        )
+        == 17
+    )
+
+    assert calls[0].pairs_multi is None

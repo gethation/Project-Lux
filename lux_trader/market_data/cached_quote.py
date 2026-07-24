@@ -87,6 +87,16 @@ class CachedQuoteProvider:
         self._fetched_at = now
         return quote
 
+    def fetch_ohlcv_1m(self, symbol: str, start, end):
+        """Historical bars pass straight through to the upstream provider.
+
+        The cache exists to protect a per-request quota from the live loop's
+        once-a-second quote polling; warmup history is a handful of calls at
+        startup and needs no throttling. Delegating keeps one provider object
+        usable for both roles, as BitoPro and Binance already are.
+        """
+        return self.inner.fetch_ohlcv_1m(symbol, start, end)
+
     def stats(self) -> dict[str, float | int | None]:
         return {
             "hits": self.hits,

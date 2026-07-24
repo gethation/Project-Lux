@@ -5,10 +5,13 @@ import sys
 from datetime import UTC, datetime
 from typing import Any, TextIO
 
+import pandas as pd
+
 from ...core.time import TAIPEI_TZ, ensure_taipei
 from ...market_data.types import LiveQuote
 from .client_process import IbkrClientProcess, IbkrWorkerError
 from .diagnostic import market_data_tier_label
+from .historical import _format_end, bars_to_frame
 
 
 DEFAULT_QUOTE_WAIT_TIMEOUT_SECONDS = 10.0
@@ -123,6 +126,42 @@ class IbkrUmcQuoteProvider:
             market_data_tier=tier,
             is_delayed=delayed,
         )
+
+    def fetch_ohlcv_1m(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+    ) -> pd.DataFrame:
+        """1m RTH closes for the warmup window, as one historical request.
+
+        A single IBKR chunk covers up to two months, and a warmup window is a
+        handful of sessions, so no backwards walk is needed. Longer ranges are
+        refused rather than silently truncated -- backfills belong to the
+        dedicated historical module with its pacing rules.
+        """
+        if symbol.upper() != "UMC":
+            raise ValueError(f"IBKR UMC provider does not serve symbol {symbol!r}")
+        start_tpe = ensure_taipei(start)
+        end_tpe = ensure_taipei(end)
+        if start_tpe > end_tpe:
+            raise ValueError("start must not be after end")
+        span_days = (end_tpe - start_tpe).days + 2
+        if span_days > 60:
+            raise ValueError(
+                f"fetch_ohlcv_1m spans {span_days} days; use "
+                "integrations.ibkr.historical for backfills"
+            )
+        rows = self.client.fetch_umc_historical_1m(
+            end_date_time=_format_end(end_tpe),
+            duration=f"{span_days} D",
+            use_rth=True,
+        )
+        frame = bars_to_frame(rows)
+        if frame.empty:
+            return frame[["timestamp", "close"]]
+        mask = (frame["timestamp"] >= start_tpe) & (frame["timestamp"] <= end_tpe)
+        return frame.loc[mask, ["timestamp", "close"]].reset_index(drop=True)
 
     def market_data_status(self) -> dict[str, Any]:
         tier = self.last_market_data_tier

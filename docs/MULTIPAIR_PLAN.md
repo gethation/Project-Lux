@@ -178,8 +178,29 @@ recover (--clear-pause|--manual-flat) · warmup · summary
 > **第 2 項（execution worker symbol-agnostic）刻意未動**：`self.identity`
 > 貫穿回報比對與 recall 偵測路徑（15 處），且 slice 1 沒有任何路徑會用到第二個
 > symbol。設計分岔（adapter 逐呼叫帶 symbol vs worker 內 per-symbol adapter 共用
-> session）待與使用者確認後獨立成片。第 4 項（Dashboard 多 panel）同樣留給
-> CCF/UMC 接線那一片。
+> session）待與使用者確認後獨立成片。
+>
+> **slice 2「CCF/UMC 接線」已完成（2026-07-24）**：
+> - **時段模型**：`us_leg.venue == 'ibkr'` 自動採 TAIFEX ∩ UMC RTH 交集
+>   （`runtime/live/pair_session.py`，DST-safe，經冬夏兩側測試釘住）；warmup
+>   index 同樣取交集（fill index 維持完整 TAIFEX 時段供 CCF forward-fill）
+> - **venue 分派**：us_leg（binance/ibkr）與 fx（bitopro/twelvedata）皆依
+>   config 分派（`runtime/live/providers.py`）；IBKR provider 兼作報價與
+>   warmup 歷史來源，單一 Gateway 連線
+> - **延遲行情**：`us_leg.stale_seconds`（per-pair，可選）承認 IBKR 延遲
+>   timestamps；設定後該腿同時退出 skew 檢查（延遲 timestamp 對 skew 的失敗
+>   與對新鮮度完全同構）。訂閱 NYSE 後移除該設定即恢復嚴格門檻
+> - **per-pair warmup**：`pairs.warmup_minutes`（與 zscore_window 獨立，
+>   使用者定案）；未設則沿用帳戶層級值
+> - **欄位遷移**：runtime 讀 pair 的 product/symbol/fx symbol；
+>   `[live_market_data]` 同名欄位保留相容但 runtime 不再讀取
+> - **CLI**：全 dry-run 多 pair 解鎖（共用一個 Fubon 行情行程）；execute
+>   混雜的多選擇仍拒絕（allow_live_order 閘重設留待混合模式片）
+> - **config**：`configs/config.multipair.dryrun.local.toml`（CCF 手續費
+>   88 TWD 為佔位，未決事項 #2）
+> - 驗收：572 測試、replay fixture 逐字對齊
+>
+> 第 4 項（Dashboard 多 panel）仍未動，留給混合模式片。
 
 1. `LiveRuntime` 改持有 `list[PairContext]`，主迴圈依序推進各 pair
 2. **Fubon execution worker 改為 symbol-agnostic** —— symbol 從建構參數改為每次呼叫傳入

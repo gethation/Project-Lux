@@ -52,6 +52,13 @@ class UsLegConfig:
     venue: str
     symbol: str
     adr_share_ratio: float
+    # Same reclassification idea as FxConfig.stale_seconds, for a different
+    # reason: an IBKR feed without the NYSE subscription serves delayed data
+    # whose timestamps are honestly ~15 minutes old, so the global 10s budget
+    # rejects every bar. Setting this admits delayed quotes while the provider's
+    # delayed-data banner keeps saying the signals are not to be trusted.
+    # Unset (QFF/TSM, or once the subscription is live) keeps the strict budget.
+    stale_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +113,11 @@ class PairConfig:
     # See lux_trader.core.calendar for what each policy does and why QFF/TSM and
     # CCF/UMC need different ones. Defaults to the historical behaviour.
     weekend_policy: str = WEEKEND_POLICY_FLAT
+    # Per-pair warmup window, in session minutes. Kept separate from
+    # strategy.zscore_window by decision (2026-07-24): the two are settable
+    # independently per pair. None falls back to the account-level
+    # live_market_data.warmup_minutes, which is what every QFF/TSM config uses.
+    warmup_minutes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -255,6 +267,11 @@ class AppConfig:
             if pair.id == self.active_pair_id:
                 return pair
         raise RuntimeError("No active pair is configured")
+
+    def effective_warmup_minutes(self) -> int:
+        """The active pair's warmup window, falling back to the account level."""
+        pair_minutes = self.active_pair.warmup_minutes
+        return pair_minutes if pair_minutes is not None else self.live.warmup_minutes
 
     def store_identity(self) -> dict[str, str]:
         pair = self.active_pair
@@ -561,6 +578,10 @@ def load_pair_config(raw: object, root: Path, index: int) -> PairConfig:
         venue=required_text(us_raw.get("venue"), f"{prefix}.us_leg.venue").lower(),
         symbol=required_text(us_raw.get("symbol"), f"{prefix}.us_leg.symbol"),
         adr_share_ratio=adr_share_ratio,
+        stale_seconds=optional_positive_float(
+            us_raw.get("stale_seconds"),
+            f"{prefix}.us_leg.stale_seconds",
+        ),
     )
     strategy = StrategyConfig(
         entry_z=float(strategy_raw.get("entry_z", 2.0)),
@@ -587,6 +608,10 @@ def load_pair_config(raw: object, root: Path, index: int) -> PairConfig:
         label=label,
         enabled=enabled,
         weekend_policy=weekend_policy,
+        warmup_minutes=optional_positive_int(
+            raw.get("warmup_minutes"),
+            f"{prefix}.warmup_minutes",
+        ),
         tw_leg=tw_leg,
         us_leg=us_leg,
         fx=FxConfig(

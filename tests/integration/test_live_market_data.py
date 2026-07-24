@@ -2982,7 +2982,8 @@ def test_live_runtime_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
     assert tw_leg.fetch_1m_calls
     output = terminal_output.getvalue()
     assert "EVENT startup store_ready" in output
-    assert "EVENT startup init_binance" in output
+    # The startup label now names the venue the us leg was dispatched to.
+    assert "EVENT startup init_us_binance" in output
     assert "EVENT startup live_loop" in output
     assert "EVENT warmup_auto start" in output
     assert "EVENT warmup_auto done_3" in output

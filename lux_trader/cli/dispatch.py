@@ -55,14 +55,24 @@ def resolve_live_route(args: argparse.Namespace) -> str:
         default_mode=args.mode,
     )
     if len(selections) > 1:
+        if all(s.mode == "dry-run" for s in selections):
+            # All-dry-run runs many pairs in one process. The primary pair id
+            # stays on args.pair for the code paths that want one; the full
+            # list rides on args.pairs_multi for the multi-pair command path.
+            args.pair = selections[0].pair_id
+            args.pairs_multi = [s.pair_id for s in selections]
+            args.mode = "dry-run"
+            return "live.dry-run"
         chosen = ", ".join(f"{s.pair_id}:{s.mode}" for s in selections)
         raise PairSelectionError(
-            f"Selected {len(selections)} pairs ({chosen}) but the live runtime "
-            "still drives one pair per process. The multi-pair runtime is "
-            "Phase 2 of docs/MULTIPAIR_PLAN.md and is not implemented yet."
+            f"Selected {len(selections)} pairs ({chosen}) with execute among "
+            "them. Mixed execute+dry-run in one process needs the "
+            "allow_live_order gate rework and is its own upcoming slice; "
+            "for now execute runs one pair per process."
         )
     selection = selections[0]
     args.pair = selection.pair_id
+    args.pairs_multi = None
     args.mode = selection.mode
     return f"live.{selection.mode}"
 

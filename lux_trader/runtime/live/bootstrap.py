@@ -79,6 +79,10 @@ from lux_trader.runtime.live.contracts import (
     resolve_tw_leg_contract,
     subscribe_tw_leg_books_if_supported,
 )
+from lux_trader.runtime.live.providers import (
+    build_fx_provider,
+    build_us_leg_provider,
+)
 from lux_trader.runtime.live.warmup import load_or_build_live_indicator
 
 
@@ -112,30 +116,6 @@ class LiveRuntimeContext:
     next_row_index: int
 
 
-def build_fx_provider(config: AppConfig) -> QuoteProvider:
-    """Pick the FX source this pair's config names.
-
-    QFF/TSM prices its US leg in USDT, so BitoPro's USDT/TWD is the correct rate
-    for it. CCF/UMC prices UMC in dollars and needs real USD/TWD -- §8.2 measures
-    BitoPro's Taiwan-local crypto premium at 77% of that spread's own standard
-    deviation, which a rolling z-score does not absorb.
-    """
-    fx = config.active_pair.fx
-    if fx.venue == "bitopro":
-        # A tick source, not metered, so it is used unwrapped.
-        return BitoProMarketData()
-    if fx.venue == "twelvedata":
-        return CachedQuoteProvider(
-            TwelveDataMarketData(),
-            ttl_seconds=fx.cache_ttl_seconds,
-            max_serve_seconds=fx.max_serve_seconds,
-        )
-    raise RuntimeError(
-        f"Pair {config.active_pair.id!r} names an unknown fx venue {fx.venue!r}; "
-        "supported: bitopro, twelvedata"
-    )
-
-
 def open_live_quote_providers(
     config: AppConfig,
     *,
@@ -147,8 +127,9 @@ def open_live_quote_providers(
 ) -> LiveProviderSet:
     reporter.event(started_at, "startup", "init_fubon")
     tw_leg = tw_leg_provider or FubonTwLegMarketDataProcess(config.live.fubon_env_path)
-    reporter.event(started_at, "startup", "init_binance")
-    us_leg = us_leg_provider or BinanceMarketData()
+    us_venue = config.active_pair.us_leg.venue
+    reporter.event(started_at, "startup", f"init_us_{us_venue}")
+    us_leg = us_leg_provider or build_us_leg_provider(config)
     fx_venue = config.active_pair.fx.venue
     reporter.event(started_at, "startup", f"init_fx_{fx_venue}")
     usdttwd = usdttwd_provider or build_fx_provider(config)
@@ -183,7 +164,7 @@ def build_live_strategy(
         config.fees,
         PaperBroker(),
         state=strategy_state,
-        us_leg_symbol=config.live.binance_symbol,
+        us_leg_symbol=config.active_pair.us_leg.symbol,
         tw_leg_symbol=config.active_pair.tw_leg.product,
         tw_leg_contract_multiplier=config.active_pair.tw_leg.contract_multiplier,
         us_leg_contract_multiplier=config.active_pair.us_leg.adr_share_ratio,
@@ -203,6 +184,7 @@ def build_live_minute_builder(
         closed_dates=config.trading_calendar.closed_dates,
         weekend_policy=config.active_pair.weekend_policy,
         fx_stale_seconds=config.active_pair.fx.stale_seconds,
+        us_stale_seconds=config.active_pair.us_leg.stale_seconds,
         adr_share_ratio=config.active_pair.us_leg.adr_share_ratio,
     )
     builder.last_tw_leg_close = seed_bars[-1].tw_leg_close_filled

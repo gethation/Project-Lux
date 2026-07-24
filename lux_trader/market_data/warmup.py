@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -12,6 +12,7 @@ from ..core.time import TAIPEI_TZ, ensure_taipei
 from .normalization import close_series
 from .parsing import parse_optional_float
 from .session import (
+    build_tw_leg_expected_session_index,
     TW_LEG_FORWARD_FILL_LOOKBACK,
     build_tw_leg_expected_warmup_index,
     floor_minute,
@@ -69,6 +70,11 @@ class WarmupBuilder:
         usdttwd_provider: OhlcvProvider,
         closed_dates: Iterable[date] = (),
         adr_share_ratio: float = 5.0,
+        us_leg_symbol: str | None = None,
+        fx_symbol: str | None = None,
+        warmup_minutes: int | None = None,
+        session_minute_filter: Callable[[pd.DatetimeIndex], pd.DatetimeIndex]
+        | None = None,
     ) -> None:
         self.live_config = live_config
         self.tw_leg_intraday_provider = tw_leg_intraday_provider
@@ -77,6 +83,16 @@ class WarmupBuilder:
         self.usdttwd_provider = usdttwd_provider
         self.closed_dates = tuple(closed_dates)
         self.adr_share_ratio = float(adr_share_ratio)
+        # Per-pair overrides; None falls back to the account-level live config,
+        # which is exactly what every QFF/TSM config provides.
+        self.us_leg_symbol = us_leg_symbol or live_config.binance_symbol
+        self.fx_symbol = fx_symbol or live_config.bitopro_symbol
+        self.warmup_minutes = (
+            warmup_minutes if warmup_minutes is not None else live_config.warmup_minutes
+        )
+        # RTH-limited pairs (us_leg on IBKR) warm up on the intersection of the
+        # TAIFEX session index and NYSE RTH; None keeps the full TAIFEX index.
+        self.session_minute_filter = session_minute_filter
 
     def build(
         self,
@@ -162,7 +178,7 @@ class WarmupBuilder:
         last_timestamp = index[-1].to_pydatetime()
         us_leg = close_series(
             self.us_leg_provider.fetch_ohlcv_1m(
-                self.live_config.binance_symbol,
+                self.us_leg_symbol,
                 start_minute,
                 last_timestamp,
             ),
@@ -170,7 +186,7 @@ class WarmupBuilder:
         ).reindex(index)
         usd = close_series(
             self.usdttwd_provider.fetch_ohlcv_1m(
-                self.live_config.bitopro_symbol,
+                self.fx_symbol,
                 start_minute,
                 last_timestamp,
             ),
@@ -216,12 +232,29 @@ class WarmupBuilder:
         tw_leg_fetch_start: datetime,
         tw_leg_display: str,
     ) -> tuple[pd.DatetimeIndex, TwLegWarmupSourceReport]:
-        index, session_index = build_tw_leg_expected_warmup_index(
-            start=tw_leg_fetch_start,
-            end=end_minute,
-            count=self.live_config.warmup_minutes,
-            closed_dates=self.closed_dates,
-        )
+        if self.session_minute_filter is None:
+            index, session_index = build_tw_leg_expected_warmup_index(
+                start=tw_leg_fetch_start,
+                end=end_minute,
+                count=self.warmup_minutes,
+                closed_dates=self.closed_dates,
+            )
+        else:
+            # The fill index stays the full TAIFEX session grid (the futures leg
+            # trades and forward-fills across all of it); only the warmup window
+            # itself is restricted to this pair's minutes.
+            session_index = build_tw_leg_expected_session_index(
+                start=tw_leg_fetch_start,
+                end=end_minute,
+                closed_dates=self.closed_dates,
+            )
+            pair_minutes = self.session_minute_filter(session_index)
+            if len(pair_minutes) < self.warmup_minutes:
+                raise RuntimeError(
+                    "pair-session warmup has only "
+                    f"{len(pair_minutes)} bars, need {self.warmup_minutes}"
+                )
+            index = pd.DatetimeIndex(pair_minutes[-self.warmup_minutes:])
         start_minute = index[0].to_pydatetime()
         tw_leg_report = build_tw_leg_warmup_source_report(
             tw_leg_parts,

@@ -102,6 +102,7 @@ from lux_trader.runtime.live.modes import (
     LiveModeHandler,
     LiveRuntimeStats,
 )
+from lux_trader.runtime.live.pair_session import pair_session_status
 from lux_trader.runtime.live.bootstrap import build_live_minute_builder
 
 
@@ -352,7 +353,7 @@ class LiveRuntime:
             def _usdttwd_rate() -> float | None:
                 return getattr(
                     primary.usdttwd_provider.fetch_quote(
-                        primary.config.live.bitopro_symbol
+                        primary.config.active_pair.fx.symbol
                     ),
                     "price",
                     None,
@@ -390,13 +391,7 @@ class LiveRuntime:
             while max_iterations is None or primary.stats.iterations < max_iterations:
                 observed_at = ensure_taipei(self.clock())
                 statuses = [
-                    (
-                        ctx,
-                        live_session_status(
-                            observed_at,
-                            ctx.config.trading_calendar.closed_dates,
-                        ),
-                    )
+                    (ctx, pair_session_status(ctx.config, observed_at))
                     for ctx in contexts
                 ]
                 trading_contexts = [
@@ -576,7 +571,7 @@ class LiveRuntime:
         )
         us_leg_quote = fetch_quote_or_cached(
             ctx.us_leg_provider,
-            ctx.config.live.binance_symbol,
+            ctx.config.active_pair.us_leg.symbol,
             "us_leg",
             ctx.last_quotes,
             self.reporter,
@@ -585,7 +580,7 @@ class LiveRuntime:
         )
         usdttwd_quote = fetch_quote_or_cached(
             ctx.usdttwd_provider,
-            ctx.config.live.bitopro_symbol,
+            ctx.config.active_pair.fx.symbol,
             "usdttwd",
             ctx.last_quotes,
             self.reporter,
@@ -643,6 +638,7 @@ class LiveRuntime:
             last_tw_leg_close=ctx.builder.last_tw_leg_close,
             adr_share_ratio=ctx.config.active_pair.us_leg.adr_share_ratio,
             fx_stale_seconds=ctx.config.active_pair.fx.stale_seconds,
+            us_stale_seconds=ctx.config.active_pair.us_leg.stale_seconds,
         )
         if tw_leg_reconnecting and (
             live_spread_snapshot.short_spread is None
@@ -1155,6 +1151,7 @@ def build_tradable_snapshot_for_bar(
         last_tw_leg_close=bar.tw_leg_close_filled,
         adr_share_ratio=config.active_pair.us_leg.adr_share_ratio,
         fx_stale_seconds=config.active_pair.fx.stale_seconds,
+        us_stale_seconds=config.active_pair.us_leg.stale_seconds,
     )
     return replace(
         tradable_snapshot,

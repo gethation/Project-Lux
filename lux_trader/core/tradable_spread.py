@@ -44,6 +44,7 @@ def estimate_tradable_spreads(
     last_tw_leg_close: float | None,
     adr_share_ratio: float,
     fx_stale_seconds: float | None = None,
+    us_stale_seconds: float | None = None,
 ) -> TradableSpreadSnapshot:
     """Estimate mid and directional spreads from live quotes.
 
@@ -62,6 +63,7 @@ def estimate_tradable_spreads(
         last_tw_leg_close=last_tw_leg_close,
         adr_share_ratio=adr_share_ratio,
         fx_stale_seconds=fx_stale_seconds,
+        us_stale_seconds=us_stale_seconds,
     )
     short_spread, short_missing = estimate_directional_spread(
         quote_set,
@@ -73,6 +75,7 @@ def estimate_tradable_spreads(
         tw_leg_side="ask",
         adr_share_ratio=adr_share_ratio,
         fx_stale_seconds=fx_stale_seconds,
+        us_stale_seconds=us_stale_seconds,
     )
     long_spread, long_missing = estimate_directional_spread(
         quote_set,
@@ -84,6 +87,7 @@ def estimate_tradable_spreads(
         tw_leg_side="bid",
         adr_share_ratio=adr_share_ratio,
         fx_stale_seconds=fx_stale_seconds,
+        us_stale_seconds=us_stale_seconds,
     )
     missing_reason = short_missing or long_missing
     return TradableSpreadSnapshot(
@@ -105,10 +109,12 @@ def estimate_mid_spread(
     last_tw_leg_close: float | None,
     adr_share_ratio: float,
     fx_stale_seconds: float | None = None,
+    us_stale_seconds: float | None = None,
 ) -> float | None:
     observed = ensure_taipei(observed_at)
     fx_budget = stale_seconds if fx_stale_seconds is None else fx_stale_seconds
-    if not quote_is_fresh(quote_set.us_leg, observed, stale_seconds):
+    us_budget = stale_seconds if us_stale_seconds is None else us_stale_seconds
+    if not quote_is_fresh(quote_set.us_leg, observed, us_budget):
         return None
     if not quote_is_fresh(quote_set.usdttwd, observed, fx_budget):
         return None
@@ -138,11 +144,13 @@ def estimate_directional_spread(
     tw_leg_side: str,
     adr_share_ratio: float,
     fx_stale_seconds: float | None = None,
+    us_stale_seconds: float | None = None,
 ) -> tuple[float | None, str | None]:
     observed = ensure_taipei(observed_at)
     fx_budget = stale_seconds if fx_stale_seconds is None else fx_stale_seconds
+    us_budget = stale_seconds if us_stale_seconds is None else us_stale_seconds
     for name, quote, budget in (
-        ("us_leg", quote_set.us_leg, stale_seconds),
+        ("us_leg", quote_set.us_leg, us_budget),
         ("usdttwd", quote_set.usdttwd, fx_budget),
     ):
         if not quote_is_fresh(quote, observed, budget):

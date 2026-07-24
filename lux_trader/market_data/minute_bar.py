@@ -24,6 +24,7 @@ class LiveMinuteBarBuilder:
         closed_dates: Iterable[date] = (),
         weekend_policy: str = WEEKEND_POLICY_FLAT,
         fx_stale_seconds: float | None = None,
+        us_stale_seconds: float | None = None,
         adr_share_ratio: float = 5.0,
     ) -> None:
         self.stale_seconds = stale_seconds
@@ -36,6 +37,16 @@ class LiveMinuteBarBuilder:
         # FxConfig.stale_seconds for why those two go together.
         self.fx_stale_seconds = (
             None if fx_stale_seconds is None else float(fx_stale_seconds)
+        )
+        # Same reclassification for the US leg, for a different reason: an IBKR
+        # feed without the NYSE subscription serves delayed data whose
+        # timestamps are honestly ~15 minutes old. A set budget admits them and
+        # takes the leg out of the skew check -- a delayed timestamp fails skew
+        # exactly as it fails freshness. With both FX and US reclassified the
+        # pair has one tick leg left and skew has nothing to compare, which is
+        # honest; unsetting this after subscribing restores both checks.
+        self.us_stale_seconds = (
+            None if us_stale_seconds is None else float(us_stale_seconds)
         )
         self.adr_share_ratio = float(adr_share_ratio)
         self.current_minute: datetime | None = None
@@ -96,8 +107,11 @@ class LiveMinuteBarBuilder:
         fx_budget = (
             self.stale_seconds if self.fx_stale_seconds is None else self.fx_stale_seconds
         )
+        us_budget = (
+            self.stale_seconds if self.us_stale_seconds is None else self.us_stale_seconds
+        )
         for name, quote, budget in (
-            ("us_leg", us_leg, self.stale_seconds),
+            ("us_leg", us_leg, us_budget),
             ("usdttwd", usdttwd, fx_budget),
         ):
             age = abs((close_time - ensure_taipei(quote.timestamp)).total_seconds())
@@ -120,18 +134,23 @@ class LiveMinuteBarBuilder:
         # it in would turn this check into a restatement of its own staleness
         # budget and stop it detecting what it exists for: two tick legs drifting
         # apart.
-        skew_quotes = [us_leg] if self.fx_stale_seconds is not None else [us_leg, usdttwd]
+        skew_quotes = []
+        if self.us_stale_seconds is None:
+            skew_quotes.append(us_leg)
+        if self.fx_stale_seconds is None:
+            skew_quotes.append(usdttwd)
         if tw_leg is not None and tw_leg_is_fresh:
             skew_quotes.append(tw_leg)
-        timestamps = [ensure_taipei(quote.timestamp) for quote in skew_quotes]
-        skew = (max(timestamps) - min(timestamps)).total_seconds()
-        if skew > self.max_leg_timestamp_skew_seconds:
-            return MinuteBuildResult(
-                None,
-                "leg_timestamp_skew",
-                {"skew_seconds": skew},
-                quote_set,
-            )
+        if len(skew_quotes) > 1:
+            timestamps = [ensure_taipei(quote.timestamp) for quote in skew_quotes]
+            skew = (max(timestamps) - min(timestamps)).total_seconds()
+            if skew > self.max_leg_timestamp_skew_seconds:
+                return MinuteBuildResult(
+                    None,
+                    "leg_timestamp_skew",
+                    {"skew_seconds": skew},
+                    quote_set,
+                )
 
         tw_leg_close = tw_leg.price if tw_leg is not None and tw_leg_is_fresh else None
         if tw_leg_close is not None:

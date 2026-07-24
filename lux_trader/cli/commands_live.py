@@ -79,8 +79,8 @@ def build_live_reporter(args: argparse.Namespace, config: object, *, mode: str):
             tw_leg_display=config.active_pair.tw_leg.display,
             us_leg_display=config.active_pair.us_leg.display,
             tw_leg_symbol=config.live.tw_leg_symbol,
-            binance_symbol=config.live.binance_symbol,
-            bitopro_symbol=config.live.bitopro_symbol,
+            binance_symbol=config.active_pair.us_leg.symbol,
+            bitopro_symbol=config.active_pair.fx.symbol,
             gate_text=gate_text,
             color=color,
         ),
@@ -90,6 +90,9 @@ def build_live_reporter(args: argparse.Namespace, config: object, *, mode: str):
 
 
 def command_live_dry_run(args: argparse.Namespace) -> int:
+    pair_ids = getattr(args, "pairs_multi", None)
+    if pair_ids:
+        return run_multi_pair_dry_run(args, pair_ids)
     config = load_config(args.config, pair_id=getattr(args, "pair", None))
     assert_live_lease_available(config.store_path)
     if config.safety.allow_live_order:
@@ -117,6 +120,66 @@ def command_live_dry_run(args: argparse.Namespace) -> int:
         f"skipped_minutes={result.skipped_minutes}, "
         f"plans_recorded={result.plans_recorded}, "
         f"{tw_symbol_label}={result.tw_leg_symbol}"
+    )
+    return 0
+
+
+def run_multi_pair_dry_run(args: argparse.Namespace, pair_ids: list[str]) -> int:
+    """Drive several pairs' dry-runs in one process.
+
+    One process because CCF and QFF quotes share one Fubon SDK session; the
+    session's market-data provider is created here once and handed to every
+    pair spec, and closed here once at the end.
+    """
+    from lux_trader.integrations.fubon.market_data_process import (
+        FubonTwLegMarketDataProcess,
+    )
+    from lux_trader.runtime.live.bootstrap import close_provider_quietly
+    from lux_trader.runtime.live.engine import LiveRuntime, PairRuntimeSpec
+    from lux_trader.runtime.live.modes import DryRunLiveModeHandler
+
+    configs = [load_config(args.config, pair_id=pair_id) for pair_id in pair_ids]
+    primary = configs[0]
+    assert_live_lease_available(primary.store_path)
+    for config in configs:
+        if config.safety.allow_live_order:
+            raise SystemExit("allow_live_order must remain false for live-dry-run")
+
+    shared_fubon = FubonTwLegMarketDataProcess(primary.live.fubon_env_path)
+    reporter = build_live_reporter(args, primary, mode="live-dry-run")
+    try:
+        runtime = LiveRuntime.for_pairs(
+            [
+                PairRuntimeSpec(
+                    config=config,
+                    handler=DryRunLiveModeHandler(config),
+                    tw_leg_provider=shared_fubon,
+                )
+                for config in configs
+            ],
+            reporter=reporter,
+        )
+        result = runtime.run(
+            resume=args.resume,
+            reset_store=args.reset_store,
+            max_iterations=args.max_iterations,
+            skip_warmup=args.skip_warmup,
+        )
+    except Exception as exc:
+        reporter.error(
+            datetime.now().astimezone(), f"{type(exc).__name__}: {exc}"
+        )
+        raise
+    finally:
+        reporter.finish()
+        close_provider_quietly(shared_fubon)
+    print(
+        "Live dry-run stopped: "
+        f"pairs={','.join(pair_ids)}, "
+        f"iterations={result.iterations}, "
+        f"bars_processed={result.bars_processed}, "
+        f"skipped_minutes={result.skipped_minutes}, "
+        f"plans_recorded={result.plans_recorded}"
     )
     return 0
 
@@ -260,7 +323,7 @@ def reconcile_brokers_to_store(
         ).reconcile(
             strategy_state=strategy_state,
             brokers=active_brokers,
-            us_leg_symbol=config.live.binance_symbol,
+            us_leg_symbol=config.active_pair.us_leg.symbol,
             tw_leg_symbol=helpers.reconciliation_tw_leg_symbol(config, strategy_state),
             timestamp=observed_at,
         )
@@ -314,7 +377,7 @@ def command_clear_pause(args: argparse.Namespace) -> int:
                 store=store,
                 strategy_state=state,
                 brokers=brokers,
-                us_leg_symbol=config.live.binance_symbol,
+                us_leg_symbol=config.active_pair.us_leg.symbol,
                 tw_leg_symbol=helpers.reconciliation_tw_leg_symbol(config, state),
                 timestamp=timestamp,
             )
@@ -329,7 +392,7 @@ def command_clear_pause(args: argparse.Namespace) -> int:
             ).reconcile(
                 strategy_state=state,
                 brokers=brokers,
-                us_leg_symbol=config.live.binance_symbol,
+                us_leg_symbol=config.active_pair.us_leg.symbol,
                 tw_leg_symbol=helpers.reconciliation_tw_leg_symbol(config, state),
                 timestamp=timestamp,
             )

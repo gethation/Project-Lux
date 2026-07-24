@@ -70,6 +70,14 @@ from lux_trader.core.tradable_spread import TradableSpreadSnapshot, estimate_tra
 from lux_trader.core.time import ensure_taipei
 
 from lux_trader.runtime.live.contracts import resolve_tw_leg_contract
+from lux_trader.runtime.live.pair_session import (
+    filter_umc_rth_minutes,
+    pair_trades_us_rth_only,
+)
+from lux_trader.runtime.live.providers import (
+    build_fx_provider,
+    build_us_leg_provider,
+)
 
 
 @dataclass(frozen=True)
@@ -132,12 +140,17 @@ class WarmupRunner:
             if fallback is None and self.config.live.taifex_use_network:
                 fallback = TaifexTwLegTradeDownloader(
                     self.config.live.taifex_cache_dir,
-                    product=self.config.live.tw_leg_product,
+                    product=self.config.active_pair.tw_leg.product,
                 )
-            elif fallback is None and self.config.live.taifex_tw_leg_1m_csv is not None:
-                fallback = CsvTwLegWarmupProvider(self.config.live.taifex_tw_leg_1m_csv)
-            us_leg_provider = self.us_leg_provider or BinanceMarketData()
-            usdttwd_provider = self.usdttwd_provider or BitoProMarketData()
+            elif fallback is None:
+                csv_path = (
+                    self.config.active_pair.tw_leg.taifex_1m_csv
+                    or self.config.live.taifex_tw_leg_1m_csv
+                )
+                if csv_path is not None:
+                    fallback = CsvTwLegWarmupProvider(csv_path)
+            us_leg_provider = self.us_leg_provider or build_us_leg_provider(self.config)
+            usdttwd_provider = self.usdttwd_provider or build_fx_provider(self.config)
             builder = WarmupBuilder(
                 live_config=self.config.live,
                 tw_leg_intraday_provider=tw_leg_provider,
@@ -146,6 +159,14 @@ class WarmupRunner:
                 usdttwd_provider=usdttwd_provider,
                 closed_dates=self.config.trading_calendar.closed_dates,
                 adr_share_ratio=self.config.active_pair.us_leg.adr_share_ratio,
+                us_leg_symbol=self.config.active_pair.us_leg.symbol,
+                fx_symbol=self.config.active_pair.fx.symbol,
+                warmup_minutes=self.config.effective_warmup_minutes(),
+                session_minute_filter=(
+                    filter_umc_rth_minutes
+                    if pair_trades_us_rth_only(self.config)
+                    else None
+                ),
             )
             bars = builder.build(
                 tw_leg_symbol=contract.symbol,
@@ -219,7 +240,7 @@ class TwLegWarmupCheckRunner:
             tw_leg_fetch_start = end_minute - TW_LEG_FORWARD_FILL_LOOKBACK
             taifex_provider = self.taifex_provider or TaifexTwLegTradeDownloader(
                 self.config.live.taifex_cache_dir,
-                product=self.config.live.tw_leg_product,
+                product=self.config.active_pair.tw_leg.product,
             )
             taifex_frame = taifex_provider.fetch_1m(
                 contract.symbol, tw_leg_fetch_start, end_minute
@@ -238,7 +259,7 @@ class TwLegWarmupCheckRunner:
             warmup_index, session_index = build_tw_leg_expected_warmup_index(
                 start=tw_leg_fetch_start,
                 end=end_minute,
-                count=self.config.live.warmup_minutes,
+                count=self.config.effective_warmup_minutes(),
                 closed_dates=self.config.trading_calendar.closed_dates,
             )
             start_minute = warmup_index[0].to_pydatetime()
@@ -251,11 +272,11 @@ class TwLegWarmupCheckRunner:
                 warmup_index=warmup_index,
                 fill_index=session_index,
             )
-            if len(report.frame) != self.config.live.warmup_minutes:
+            if len(report.frame) != self.config.effective_warmup_minutes():
                 raise RuntimeError(
                     f"{self.config.active_pair.tw_leg.display} warmup report has "
                     f"{len(report.frame)} rows, "
-                    f"need {self.config.live.warmup_minutes}"
+                    f"need {self.config.effective_warmup_minutes()}"
                 )
             if report.null_count:
                 raise RuntimeError(
@@ -352,10 +373,16 @@ def load_or_build_live_indicator(
         if config.live.taifex_use_network:
             fallback = TaifexTwLegTradeDownloader(
                 config.live.taifex_cache_dir,
-                product=config.live.tw_leg_product,
+                product=config.active_pair.tw_leg.product,
             )
-        elif config.live.taifex_tw_leg_1m_csv is not None:
-            fallback = CsvTwLegWarmupProvider(config.live.taifex_tw_leg_1m_csv)
+        elif (
+            config.active_pair.tw_leg.taifex_1m_csv is not None
+            or config.live.taifex_tw_leg_1m_csv is not None
+        ):
+            fallback = CsvTwLegWarmupProvider(
+                config.active_pair.tw_leg.taifex_1m_csv
+                or config.live.taifex_tw_leg_1m_csv
+            )
         else:
             fallback = None
         builder = WarmupBuilder(
@@ -366,6 +393,12 @@ def load_or_build_live_indicator(
             usdttwd_provider=usdttwd_provider,
             closed_dates=config.trading_calendar.closed_dates,
             adr_share_ratio=config.active_pair.us_leg.adr_share_ratio,
+            us_leg_symbol=config.active_pair.us_leg.symbol,
+            fx_symbol=config.active_pair.fx.symbol,
+            warmup_minutes=config.effective_warmup_minutes(),
+            session_minute_filter=(
+                filter_umc_rth_minutes if pair_trades_us_rth_only(config) else None
+            ),
         )
         seed_bars = builder.build(
             tw_leg_symbol=tw_leg_symbol,

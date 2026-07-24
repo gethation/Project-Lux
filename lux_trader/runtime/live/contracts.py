@@ -341,7 +341,7 @@ def resolve_tw_leg_contract(
     if configured.lower() != "auto":
         symbol = normalize_fubon_order_symbol(
             configured,
-            product=config.live.tw_leg_product,
+            product=config.active_pair.tw_leg.product,
             reference_date=ensure_taipei(now).date() if now is not None else None,
         )
         return TwLegContractResolution(
@@ -353,13 +353,13 @@ def resolve_tw_leg_contract(
     fetch_candidates = getattr(provider, "fetch_candidates", None)
     if config.contract_policy.enabled and fetch_candidates is not None:
         selection = ExpiryBufferContractPolicy(config.contract_policy).select_active(
-            fetch_candidates(config.live.tw_leg_product),
-            product=config.live.tw_leg_product,
+            fetch_candidates(config.active_pair.tw_leg.product),
+            product=config.active_pair.tw_leg.product,
             now=now,
         )
         symbol = normalize_fubon_order_symbol(
             selection.symbol,
-            product=config.live.tw_leg_product,
+            product=config.active_pair.tw_leg.product,
             expiry=selection.expiry,
             reference_date=ensure_taipei(now).date() if now is not None else None,
         )
@@ -373,10 +373,10 @@ def resolve_tw_leg_contract(
     selector = getattr(provider, "select_front_month_symbol", None)
     if selector is None:
         raise RuntimeError("tw_leg_symbol=auto requires a provider with front-month selector")
-    selected_symbol = str(selector(config.live.tw_leg_product))
+    selected_symbol = str(selector(config.active_pair.tw_leg.product))
     symbol = normalize_fubon_order_symbol(
         selected_symbol,
-        product=config.live.tw_leg_product,
+        product=config.active_pair.tw_leg.product,
         reference_date=ensure_taipei(now).date() if now is not None else None,
     )
     return TwLegContractResolution(
