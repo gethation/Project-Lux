@@ -72,6 +72,11 @@ class SQLiteStore:
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA synchronous = NORMAL")
+        # A multi-pair process opens one store instance per pair on the same
+        # file. Writes are sequential by design, but WAL checkpoints can still
+        # collide for an instant; retry briefly instead of raising "database is
+        # locked" at the worst possible moment.
+        self.connection.execute("PRAGMA busy_timeout = 5000")
         try:
             validate_schema_compatibility(self.connection)
         except Exception:
@@ -90,6 +95,11 @@ class SQLiteStore:
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA synchronous = NORMAL")
+        # A multi-pair process opens one store instance per pair on the same
+        # file. Writes are sequential by design, but WAL checkpoints can still
+        # collide for an instant; retry briefly instead of raising "database is
+        # locked" at the worst possible moment.
+        self.connection.execute("PRAGMA busy_timeout = 5000")
 
     def initialize(self) -> None:
         initialize_schema(self.connection)

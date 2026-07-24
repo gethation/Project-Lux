@@ -187,6 +187,7 @@ def build_live_strategy(
         tw_leg_symbol=config.active_pair.tw_leg.product,
         tw_leg_contract_multiplier=config.active_pair.tw_leg.contract_multiplier,
         us_leg_contract_multiplier=config.active_pair.us_leg.adr_share_ratio,
+        pair_id=config.active_pair.id,
     )
 
 

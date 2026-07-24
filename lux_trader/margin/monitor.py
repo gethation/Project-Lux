@@ -12,6 +12,7 @@ missing env gate is reported once and disables the monitor for the session.
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from datetime import date, datetime, time as dt_time, timedelta
 from typing import Any, Callable
 
@@ -82,10 +83,18 @@ class MarginMonitor:
         self,
         observed_at: datetime,
         *,
-        strategy_state: Any,
+        strategy_state: Any = None,
+        strategy_states: Sequence[Any] | None = None,
         store: Any,
         reporter: Any,
     ) -> None:
+        """Run the daily or red-line check when due.
+
+        Margin is an account-level fact, so a multi-pair process passes every
+        pair's state via ``strategy_states`` and the red-line cadence engages
+        when ANY of them holds a position. ``strategy_state`` remains for
+        single-pair callers.
+        """
         if not self.enabled:
             return
         observed_at = ensure_taipei(observed_at)
@@ -94,8 +103,14 @@ class MarginMonitor:
         if self._retry_at is not None and observed_at < self._retry_at:
             return
 
-        position_open = (
-            getattr(strategy_state, "state", None) in POSITION_OPEN_STATES
+        states = (
+            list(strategy_states)
+            if strategy_states is not None
+            else [strategy_state]
+        )
+        position_open = any(
+            getattr(state, "state", None) in POSITION_OPEN_STATES
+            for state in states
         )
         if self._daily_due(observed_at, store):
             self._run(

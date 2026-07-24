@@ -1002,6 +1002,7 @@ def execute_dry_run_entry(
         costs=costs,
     )
     plan = pair_execution_plan_from_order_requests(
+        pair_id=strategy.pair_id,
         plan_type=ExecutionPlanType.ENTRY,
         direction=state.candidate_direction,
         requests=requests,
@@ -1080,6 +1081,7 @@ def execute_dry_run_exit(
     )
     requests = strategy.build_exit_order_requests(bar=bar, costs=costs)
     plan = pair_execution_plan_from_order_requests(
+        pair_id=strategy.pair_id,
         plan_type=ExecutionPlanType.EXIT,
         direction=state.position_direction,
         requests=requests,
@@ -1206,6 +1208,7 @@ def execute_live_entry(
         costs=costs,
     )
     plan = pair_execution_plan_from_order_requests(
+        pair_id=strategy.pair_id,
         plan_type=ExecutionPlanType.ENTRY,
         direction=state.candidate_direction,
         requests=requests,
@@ -1313,6 +1316,7 @@ def execute_live_exit(
     )
     requests = strategy.build_exit_order_requests(bar=bar, costs=costs)
     plan = pair_execution_plan_from_order_requests(
+        pair_id=strategy.pair_id,
         plan_type=ExecutionPlanType.EXIT,
         direction=state.position_direction,
         requests=requests,

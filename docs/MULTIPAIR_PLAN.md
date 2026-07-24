@@ -165,6 +165,22 @@ recover (--clear-pause|--manual-flat) · warmup · summary
 
 ## 5. Phase 2 — 多 pair runtime
 
+> **slice 1 已完成（2026-07-24，branch `phase2-multipair-config`）**：
+> 第 1、3、5 項落地 —— `LiveRuntime.for_pairs()` 持 `list[PairContext]` 依序推進；
+> 保證金監控改為帳戶層級單一實例、any-pair-open 觸發紅線節奏（動作維持純告警，
+> 見 §5.4 註記）；單一 SQLite 檔案由 per-pair store 實例分割（busy_timeout +
+> 每 pair 推進後 commit）。**per-pair PAUSED 免費獲得**：狀態本就存於 per-pair
+> `strategy_state`，per-pair 迴圈天然「一個停、其他續跑」（有整合測試釘住）。
+> 驗收：replay fixture 逐字對齊、555 測試通過。
+> 另修一個 slice 1 才暴露的真缺陷：execution plan id 原本不含 pair 成分，
+> 兩 pair 同分鐘同方向進場會撞帳戶層級的 ID —— 已改為 `EXEC-{pair_id}-…`。
+>
+> **第 2 項（execution worker symbol-agnostic）刻意未動**：`self.identity`
+> 貫穿回報比對與 recall 偵測路徑（15 處），且 slice 1 沒有任何路徑會用到第二個
+> symbol。設計分岔（adapter 逐呼叫帶 symbol vs worker 內 per-symbol adapter 共用
+> session）待與使用者確認後獨立成片。第 4 項（Dashboard 多 panel）同樣留給
+> CCF/UMC 接線那一片。
+
 1. `LiveRuntime` 改持有 `list[PairContext]`，主迴圈依序推進各 pair
 2. **Fubon execution worker 改為 symbol-agnostic** —— symbol 從建構參數改為每次呼叫傳入
 3. **保證金**：兩 pair 曝險合併後對全帳戶權益計算比例
@@ -269,6 +285,13 @@ pair 關閉。QFF/TSM 預設維持啟用，CCF/UMC 預設關閉。
 完整分析見 PoC 的 `docs/ccf_umc_weekend_policy.md`。
 
 ### 5.4 保證金紅線觸發時：同時平全部 pair（已定案）
+
+> **實作狀態（2026-07-24）**：本節描述的「自動平倉」在現行系統**尚不存在** ——
+> 目前紅線觸發是**純告警**（ntfy + 轉帳指引），連單 pair 都不自動平倉。
+> Phase 2 slice 1 只合併了**量測**（any-pair-open 觸發紅線節奏）；
+> 「同時平全部 + PAUSED」是會改變 QFF/TSM 實單行為的新功能，
+> **獨立成一片實作、config 門控、預設關閉**（使用者 2026-07-24 定案）。
+> 屆時 dry-run pair 一視同仁：模擬平倉 + PAUSED。
 
 全帳戶保證金觸及紅線時，**所有 pair 同時平倉**，不做優先序排列。
 

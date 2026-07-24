@@ -541,3 +541,72 @@ def test_margin_check_cli_requires_enabled_config(
     )
     with pytest.raises(SystemExit, match="enabled=true"):
         command_margin_check(args)
+
+
+def test_red_line_cadence_engages_when_any_pair_is_open(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Multi-pair form of the red-line cadence: margin is an account-level fact,
+    so one open pair among flat siblings is enough to keep the cadence running.
+    """
+    monkeypatch.setenv("LUX_READONLY_BROKER", "1")
+    config = load_config(write_config(tmp_path))
+    store = open_store(tmp_path)
+    reporter = RecordingReporter()
+    monitor = make_monitor(
+        config,
+        binance=binance_broker(usd_ratio(0.04), maint_usdt=usd_ratio(0.035)),
+    )
+    try:
+        # Run the daily first so the red-line cadence is the only thing left.
+        monitor.maybe_run(
+            ts("2026-07-06T11:00:00+08:00"),
+            strategy_states=[flat_state(), open_state()],
+            store=store,
+            reporter=reporter,
+        )
+        assert "margin_red_line" in reporter.codes()
+        before = len(reporter.events)
+
+        # After the interval, one open pair among flats keeps the cadence alive.
+        monitor.maybe_run(
+            ts("2026-07-06T11:15:00+08:00"),
+            strategy_states=[flat_state(), open_state()],
+            store=store,
+            reporter=reporter,
+        )
+        assert len(reporter.events) > before
+        row = store.load_last_margin_check("red_line")
+        assert row is not None
+    finally:
+        monitor.close()
+        store.close()
+
+
+def test_red_line_cadence_stays_quiet_when_every_pair_is_flat(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("LUX_READONLY_BROKER", "1")
+    config = load_config(write_config(tmp_path))
+    store = open_store(tmp_path)
+    reporter = RecordingReporter()
+    monitor = make_monitor(config)
+    try:
+        # Daily fires once; with every pair flat there is no red-line cadence.
+        monitor.maybe_run(
+            ts("2026-07-06T10:00:01+08:00"),
+            strategy_states=[flat_state(), flat_state()],
+            store=store,
+            reporter=reporter,
+        )
+        after_daily = len(reporter.events)
+        monitor.maybe_run(
+            ts("2026-07-06T10:30:00+08:00"),
+            strategy_states=[flat_state(), flat_state()],
+            store=store,
+            reporter=reporter,
+        )
+        assert len(reporter.events) == after_daily
+    finally:
+        monitor.close()
+        store.close()

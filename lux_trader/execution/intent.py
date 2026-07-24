@@ -310,9 +310,20 @@ def make_execution_plan_id(
     direction: Direction,
     timestamp: datetime,
     row_index: int,
+    pair_id: str = "default_pair",
 ) -> str:
+    """Deterministic plan id, unique per account rather than per pair.
+
+    The pair segment is not decoration: two pairs sharing one process can
+    produce the same (row_index, minute, direction) plan in the same pass, and
+    everything downstream -- the store's collision check, and ultimately broker
+    client-order ids -- needs ids that stay unique across the whole account.
+    """
     compact_time = timestamp.strftime("%Y%m%d%H%M%S")
-    return f"EXEC-{row_index:08d}-{compact_time}-{plan_type.value}-{direction.value}"
+    return (
+        f"EXEC-{pair_id}-{row_index:08d}-{compact_time}"
+        f"-{plan_type.value}-{direction.value}"
+    )
 
 
 def execution_leg_from_order_request(request: OrderRequest) -> ExecutionLeg:
@@ -412,6 +423,7 @@ def pair_execution_plan_from_order_requests(
     plan_age_seconds: float | None = None,
     max_plan_age_seconds: int | None = None,
     plan_id: str | None = None,
+    pair_id: str = "default_pair",
 ) -> PairExecutionPlan:
     legs = tuple(execution_leg_from_order_request(request) for request in requests)
     if not legs:
@@ -433,6 +445,7 @@ def pair_execution_plan_from_order_requests(
             direction=direction,
             timestamp=timestamp,
             row_index=row_index,
+            pair_id=pair_id,
         ),
         plan_type=plan_type,
         direction=direction,

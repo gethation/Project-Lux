@@ -215,6 +215,7 @@ class PairStrategy:
         tw_leg_contract_multiplier: float,
         us_leg_contract_multiplier: float,
         adr_share_ratio: float | None = None,
+        pair_id: str = "default_pair",
     ) -> None:
         self.strategy = strategy
         self.fees = fees
@@ -232,6 +233,9 @@ class PairStrategy:
         self.adr_share_ratio = float(
             us_leg_contract_multiplier if adr_share_ratio is None else adr_share_ratio
         )
+        # Which pair this strategy instance trades. Execution plan ids embed it
+        # so two pairs in one process cannot mint colliding account-level ids.
+        self.pair_id = str(pair_id)
         self.state = state or StrategyRuntimeState(
             running_max_equity=strategy.initial_capital_twd
         )

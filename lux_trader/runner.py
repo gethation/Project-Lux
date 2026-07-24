@@ -81,6 +81,7 @@ class SystemRunner:
                 us_leg_contract_multiplier=(
                     self.config.active_pair.us_leg.adr_share_ratio
                 ),
+                pair_id=self.config.active_pair.id,
             )
 
             rows_processed = 0
