@@ -30,16 +30,18 @@ class FubonExecutionWorkerTimeout(TimeoutError):
 
 def _fubon_execution_worker(
     connection: Connection,
-    symbol: str,
     env_path: Path | None,
 ) -> None:
-    adapter = FubonFutureExecutionAdapter(symbol, env_path)
-    readonly = FubonReadOnlyBroker(env_path, symbol=symbol)
+    # No symbol here: one account, one SDK session, several contracts. Every
+    # operation names the instrument it acts on.
+    adapter = FubonFutureExecutionAdapter(env_path)
+    readonly = FubonReadOnlyBroker(env_path)
     try:
         while True:
             request = connection.recv()
             operation = str(request["operation"])
             args = tuple(request.get("args", ()))
+            kwargs = dict(request.get("kwargs", {}))
             should_stop = operation == "close"
             try:
                 if operation in {"fetch_snapshot", "fetch_margins"}:
@@ -47,9 +49,9 @@ def _fubon_execution_worker(
                     readonly.sdk = sdk
                     readonly.accounts = adapter.accounts
                     readonly.account = account
-                    result = getattr(readonly, operation)(*args)
+                    result = getattr(readonly, operation)(*args, **kwargs)
                 else:
-                    result = getattr(adapter, operation)(*args)
+                    result = getattr(adapter, operation)(*args, **kwargs)
                 response = {"ok": True, "result": result}
             except BaseException as exc:
                 response = {
@@ -78,7 +80,6 @@ class FubonFutureExecutionProcess:
 
     def __init__(
         self,
-        symbol: str,
         env_path: Path | None = None,
         *,
         execution_timeout_seconds: float = DEFAULT_EXECUTION_TIMEOUT_SECONDS,
@@ -87,7 +88,6 @@ class FubonFutureExecutionProcess:
         worker_target: Callable[..., None] = _fubon_execution_worker,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
-        self.symbol = str(symbol)
         self.env_path = env_path
         self.execution_timeout_seconds = float(execution_timeout_seconds)
         self.query_timeout_seconds = float(query_timeout_seconds)
@@ -96,7 +96,7 @@ class FubonFutureExecutionProcess:
         self.clock = clock or (lambda: datetime.now().astimezone())
         self._transport = SubprocessTransport(
             worker_target=self.worker_target,
-            worker_args=(self.symbol, self.env_path),
+            worker_args=(self.env_path,),
             process_name="project-lux-fubon-execution",
             broker_label="Fubon",
             worker_label="Fubon execution",
@@ -110,13 +110,19 @@ class FubonFutureExecutionProcess:
     def worker_pid(self) -> int | None:
         return self._transport.worker_pid
 
-    def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
+    def execute(
+        self,
+        plan: PairExecutionPlan,
+        *,
+        expected_symbol: str,
+    ) -> ExecutionOutcome:
         with self._transport.lock:
             try:
                 result = self._request(
                     "execute",
                     plan,
                     timeout=self.execution_timeout_seconds,
+                    expected_symbol=expected_symbol,
                 )
             except (FubonExecutionWorkerTimeout, FubonExecutionWorkerError) as exc:
                 self._terminate_worker()
@@ -141,14 +147,14 @@ class FubonFutureExecutionProcess:
             )
         return result
 
-    def fetch_open_orders(self) -> tuple[dict[str, Any], ...]:
-        return tuple(self._query("fetch_open_orders"))
+    def fetch_open_orders(self, symbol: str) -> tuple[dict[str, Any], ...]:
+        return tuple(self._query("fetch_open_orders", symbol))
 
-    def fetch_order_records(self) -> tuple[dict[str, Any], ...]:
-        return tuple(self._query("fetch_order_records"))
+    def fetch_order_records(self, symbol: str) -> tuple[dict[str, Any], ...]:
+        return tuple(self._query("fetch_order_records", symbol))
 
-    def fetch_position_quantity(self) -> float:
-        return float(self._query("fetch_position_quantity"))
+    def fetch_position_quantity(self, symbol: str) -> float:
+        return float(self._query("fetch_position_quantity", symbol))
 
     def fetch_snapshot(self) -> BrokerAccountSnapshot:
         result = self._readonly_query("fetch_snapshot")
@@ -166,8 +172,8 @@ class FubonFutureExecutionProcess:
             )
         return result
 
-    def preflight(self) -> ExecutionPreflight:
-        result = self._query("preflight")
+    def preflight(self, symbol: str) -> ExecutionPreflight:
+        result = self._query("preflight", symbol)
         if not isinstance(result, ExecutionPreflight):
             raise FubonExecutionWorkerError(
                 f"unexpected preflight type: {type(result).__name__}"
@@ -190,22 +196,23 @@ class FubonFutureExecutionProcess:
             timeout=self.terminate_timeout_seconds,
         )
 
-    def _query(self, operation: str) -> Any:
+    def _query(self, operation: str, *args: Any) -> Any:
         with self._transport.lock:
             try:
                 return self._request(
                     operation,
+                    *args,
                     timeout=self.query_timeout_seconds,
                 )
             except (FubonExecutionWorkerTimeout, FubonExecutionWorkerError):
                 self._terminate_worker()
                 raise
 
-    def _readonly_query(self, operation: str) -> Any:
+    def _readonly_query(self, operation: str, *args: Any) -> Any:
         last_error: Exception | None = None
         for _ in range(2):
             try:
-                return self._query(operation)
+                return self._query(operation, *args)
             except (FubonExecutionWorkerTimeout, FubonExecutionWorkerError) as exc:
                 last_error = exc
         assert last_error is not None
@@ -216,10 +223,11 @@ class FubonFutureExecutionProcess:
         operation: str,
         *args: Any,
         timeout: float,
+        **kwargs: Any,
     ) -> Any:
         return self._transport.request(
             operation,
-            payload={"operation": operation, "args": args},
+            payload={"operation": operation, "args": args, "kwargs": kwargs},
             timeout=timeout,
         )
 

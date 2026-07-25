@@ -90,7 +90,7 @@ def test_fill_callback_is_primary_confirmation_even_before_place_returns() -> No
     )
     adapter = adapter_for(sdk)
 
-    outcome = adapter.execute(execution_plan())
+    outcome = adapter.execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
     assert outcome.payload["fill_source"] == "filled_callback"
@@ -124,7 +124,7 @@ def test_fill_callbacks_accumulate_partial_fills_to_full() -> None:
     adapter = adapter_for(sdk)
     plan = execution_plan(legs=(fubon_leg(quantity=2.0),))
 
-    outcome = adapter.execute(plan)
+    outcome = adapter.execute(plan, expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
     assert outcome.payload["callback_filled_lot"] == 2.0
@@ -144,7 +144,7 @@ def test_duplicate_fill_callbacks_are_deduplicated_by_filled_no() -> None:
     fire_fill_during_place(sdk, [duplicated, dict(duplicated)])
     adapter = adapter_for(sdk)
 
-    outcome = adapter.execute(execution_plan())
+    outcome = adapter.execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.payload["callback_filled_lot"] == 1.0
     assert outcome.status == ExecutionOutcomeStatus.FILLED
@@ -162,7 +162,6 @@ def test_order_report_cancel_via_callback_fails_fast() -> None:
     sdk.futopt.place_order = place_and_cancel
     sleeps: list[float] = []
     adapter = FubonFutureExecutionAdapter(
-        SYMBOL,
         sdk=sdk,
         account=FakeAccount(),
         clock=ts,
@@ -171,7 +170,7 @@ def test_order_report_cancel_via_callback_fails_fast() -> None:
         poll_interval_seconds=1.0,
     )
 
-    outcome = adapter.execute(execution_plan())
+    outcome = adapter.execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.FAILED
     assert outcome.recommended_state == StrategyState.PAUSED
@@ -197,7 +196,6 @@ def test_polled_status_30_cancel_is_terminal_failed_without_waiting() -> None:
         positions=[],
     )
     adapter = FubonFutureExecutionAdapter(
-        SYMBOL,
         sdk=sdk,
         account=FakeAccount(),
         clock=ts,
@@ -206,7 +204,7 @@ def test_polled_status_30_cancel_is_terminal_failed_without_waiting() -> None:
         poll_interval_seconds=1.0,
     )
 
-    outcome = adapter.execute(execution_plan())
+    outcome = adapter.execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.FAILED
     assert sleeps == []  # official 30=Cancel is final; no timeout burn
@@ -241,7 +239,6 @@ def test_polled_status_9_timeout_triggers_immediate_requery() -> None:
     sdk = FakeSdk(position_results=[[], [position_row()]])
     sdk.futopt = SequencedFutOpt([[row_9], [row_50]])
     adapter = FubonFutureExecutionAdapter(
-        SYMBOL,
         sdk=sdk,
         account=FakeAccount(),
         clock=ts,
@@ -250,7 +247,7 @@ def test_polled_status_9_timeout_triggers_immediate_requery() -> None:
         poll_interval_seconds=1.0,
     )
 
-    outcome = adapter.execute(execution_plan())
+    outcome = adapter.execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
     assert len(sdk.futopt.get_order_results_calls) == 2
@@ -272,7 +269,7 @@ def test_disconnect_event_marks_callback_stream_unreliable() -> None:
     sdk.futopt.place_order = place_and_disconnect
     adapter = adapter_for(sdk)
 
-    outcome = adapter.execute(execution_plan())
+    outcome = adapter.execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
     assert outcome.payload["fill_source"] == "position_delta"
@@ -312,7 +309,7 @@ def test_sell_side_callback_fill_confirms_exit_leg() -> None:
     adapter = adapter_for(sdk)
     plan = execution_plan(side=OrderSide.SELL)
 
-    outcome = adapter.execute(plan)
+    outcome = adapter.execute(plan, expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
     assert outcome.payload["fill_source"] == "filled_callback"

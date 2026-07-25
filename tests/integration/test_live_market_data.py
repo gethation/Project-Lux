@@ -153,8 +153,15 @@ class FakeLiveExecutionAdapter:
     def __init__(self, broker: BrokerName) -> None:
         self.broker = broker
         self.plans: list[PairExecutionPlan] = []
+        self.expected_symbols: list[str | None] = []
 
-    def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
+    def execute(
+        self,
+        plan: PairExecutionPlan,
+        *,
+        expected_symbol: str | None = None,
+    ) -> ExecutionOutcome:
+        self.expected_symbols.append(expected_symbol)
         self.plans.append(plan)
         leg = plan.legs[0]
         order = OrderResult(

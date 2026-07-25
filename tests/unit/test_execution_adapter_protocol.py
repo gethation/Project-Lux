@@ -22,8 +22,8 @@ from lux_trader.integrations.fubon.execution_process import (
 def test_execution_adapters_share_the_formal_protocol() -> None:
     adapters = (
         BinanceUsLegExecutionAdapter("TSM/USDT:USDT"),
-        FubonFutureExecutionAdapter("TMFG6"),
-        FubonFutureExecutionProcess("TMFG6"),
+        FubonFutureExecutionAdapter(),
+        FubonFutureExecutionProcess(),
     )
     try:
         assert all(isinstance(adapter, ExecutionAdapter) for adapter in adapters)
@@ -41,7 +41,7 @@ def test_execution_preflight_type_is_shared_without_losing_fields() -> None:
 
 
 def test_fubon_only_capabilities_stay_on_narrow_protocols() -> None:
-    adapter = FubonFutureExecutionAdapter("TMFG6")
+    adapter = FubonFutureExecutionAdapter()
     try:
         assert isinstance(adapter, OrderRecordsProvider)
         assert isinstance(adapter, SessionHealthProvider)

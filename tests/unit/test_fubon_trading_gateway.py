@@ -16,7 +16,6 @@ from test_fubon_execution import SYMBOL, execution_plan, ts
 
 def _hanging_worker(
     connection: Connection,
-    _symbol: str,
     _env_path,
 ) -> None:
     try:
@@ -29,7 +28,6 @@ def _hanging_worker(
 
 def _snapshot_worker(
     connection: Connection,
-    symbol: str,
     _env_path,
 ) -> None:
     generation = 1
@@ -44,7 +42,7 @@ def _snapshot_worker(
                     fetched_at=datetime(2026, 7, 22),
                     positions=(),
                     open_orders=(),
-                    raw={"symbol": symbol},
+                    raw={"symbol": SYMBOL},
                 )
             elif operation == "session_health":
                 result = {
@@ -68,14 +66,13 @@ def _snapshot_worker(
 
 def test_execution_timeout_is_unknown_and_never_retried() -> None:
     gateway = FubonFutureExecutionProcess(
-        SYMBOL,
         execution_timeout_seconds=0.2,
         terminate_timeout_seconds=0.1,
         worker_target=_hanging_worker,
         clock=ts,
     )
     try:
-        outcome = gateway.execute(execution_plan())
+        outcome = gateway.execute(execution_plan(), expected_symbol=SYMBOL)
 
         assert outcome.status == ExecutionOutcomeStatus.UNKNOWN
         assert outcome.payload["do_not_retry"] is True
@@ -86,7 +83,6 @@ def test_execution_timeout_is_unknown_and_never_retried() -> None:
 
 def test_account_snapshot_and_health_share_one_worker() -> None:
     gateway = FubonFutureExecutionProcess(
-        SYMBOL,
         worker_target=_snapshot_worker,
     )
     try:

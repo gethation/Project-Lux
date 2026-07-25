@@ -268,6 +268,22 @@ class AppConfig:
                 return pair
         raise RuntimeError("No active pair is configured")
 
+    def sibling_tw_leg_products(self) -> frozenset[str]:
+        """TAIFEX products the OTHER enabled pairs trade on this account.
+
+        Fubon reports one account-wide snapshot -- it must, because the margin
+        view is account-wide -- so reconciliation has to be told which contracts
+        legitimately belong to somebody else. Products rather than resolved
+        symbols: the front month rolls, and this only needs to answer "is this
+        somebody's pair or a genuine ghost".
+        """
+        active = self.active_pair.id
+        return frozenset(
+            pair.tw_leg.product
+            for pair in self.pairs
+            if pair.enabled and pair.id != active and pair.tw_leg.venue == "fubon"
+        )
+
     def effective_warmup_minutes(self) -> int:
         """The active pair's warmup window, falling back to the account level."""
         pair_minutes = self.active_pair.warmup_minutes

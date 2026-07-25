@@ -457,7 +457,6 @@ class LiveExecuteModeHandler(LiveModeHandler):
             )
         if self.fubon_adapter is None:
             self.fubon_adapter = FubonFutureExecutionProcess(
-                tw_leg_symbol,
                 self.config.live.fubon_env_path,
             )
         if self.readonly_brokers is None:
@@ -486,7 +485,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
         health = getattr(self.fubon_adapter, "session_health", None)
         preflight = getattr(self.fubon_adapter, "preflight", None)
         if callable(health) and callable(preflight):
-            preflight()
+            preflight(tw_leg_symbol)
             store.record_fubon_session_health(
                 observed_at=datetime.now().astimezone(),
                 health=dict(health()),
@@ -529,6 +528,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
             brokers=self.readonly_brokers,
             us_leg_symbol=self.config.live.binance_symbol,
             tw_leg_symbol=state.trading_tw_leg_symbol or tw_leg_symbol,
+            sibling_symbols=self.config.sibling_tw_leg_products(),
             timestamp=timestamp,
         )
         run_id = store.record_reconciliation_report(report)
@@ -576,6 +576,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 brokers=self.readonly_brokers,
                 us_leg_symbol=self.config.live.binance_symbol,
                 tw_leg_symbol=state.trading_tw_leg_symbol or tw_leg_symbol,
+                sibling_symbols=self.config.sibling_tw_leg_products(),
                 timestamp=timestamp,
             )
             confirmed_run_id = store.record_reconciliation_report(confirmed)
@@ -653,6 +654,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 self.config.live_execution.max_plan_age_seconds,
                 plan_reason=force_exit_reason,
                 exit_reason=force_exit_reason,
+                tw_leg_symbol=tw_leg_symbol,
             )
             reporter.event(
                 bar.timestamp,
@@ -682,6 +684,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
                     decision_spread_type,
                     quote_set,
                     self.config.live_execution.max_plan_age_seconds,
+                    tw_leg_symbol=tw_leg_symbol,
                 )
         elif strategy.state.state == StrategyState.EXIT_PENDING:
             result, plan, outcome = execute_live_exit(
@@ -694,6 +697,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 self.config.live_execution.max_plan_age_seconds,
                 plan_reason="live_exit_order",
                 exit_reason="zscore_exit",
+                tw_leg_symbol=tw_leg_symbol,
             )
         else:
             result = strategy.on_bar(bar, decision_snapshot)
@@ -713,6 +717,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
                         decision_spread_type,
                         quote_set,
                         self.config.live_execution.max_plan_age_seconds,
+                        tw_leg_symbol=tw_leg_symbol,
                     )
             elif (
                 result.action == StrategyAction.EXIT_SIGNAL
@@ -729,6 +734,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
                     self.config.live_execution.max_plan_age_seconds,
                     plan_reason="live_exit_order",
                     exit_reason="zscore_exit",
+                    tw_leg_symbol=tw_leg_symbol,
                 )
 
         plans_recorded = 0
@@ -812,6 +818,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
             brokers=self.readonly_brokers,
             us_leg_symbol=self.config.live.binance_symbol,
             tw_leg_symbol=strategy.state.trading_tw_leg_symbol or tw_leg_symbol,
+            sibling_symbols=self.config.sibling_tw_leg_products(),
             timestamp=bar.timestamp,
         )
         self._record_post_trade_reconciliation(store, bar, report)
@@ -860,6 +867,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 brokers=self.readonly_brokers,
                 us_leg_symbol=self.config.live.binance_symbol,
                 tw_leg_symbol=strategy.state.trading_tw_leg_symbol or tw_leg_symbol,
+                sibling_symbols=self.config.sibling_tw_leg_products(),
                 timestamp=bar.timestamp,
             )
             self._record_post_trade_reconciliation(store, bar, confirmed)
@@ -1133,6 +1141,8 @@ def execute_live_entry(
     decision_spread_type: str | None,
     quote_set: LiveQuoteSet | None,
     max_plan_age_seconds: int | None,
+    *,
+    tw_leg_symbol: str,
 ) -> tuple[Any, PairExecutionPlan | None, ExecutionOutcome | None]:
     state = strategy.state
     if state.candidate_time is None:
@@ -1225,7 +1235,16 @@ def execute_live_entry(
             us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
             adr_share_ratio=strategy.adr_share_ratio,
         )
-    plan, outcome = coordinator.execute(plan)
+    plan, outcome = coordinator.execute(
+        plan,
+        # Independent of the plan: the pair's own resolved front month and
+        # its configured US symbol. The adapters reject a plan that names
+        # anything else.
+        expected_symbols={
+            BrokerName.FUBON: tw_leg_symbol,
+            BrokerName.BINANCE: strategy.us_leg_symbol,
+        },
+    )
     if outcome.filled:
         try:
             executed_sizing = position_sizing_from_fills(
@@ -1292,6 +1311,7 @@ def execute_live_exit(
     *,
     plan_reason: str,
     exit_reason: str,
+    tw_leg_symbol: str,
 ) -> tuple[Any, PairExecutionPlan | None, ExecutionOutcome | None]:
     state = strategy.state
     if state.position_direction is None or state.tw_leg_contracts == 0:
@@ -1333,7 +1353,16 @@ def execute_live_exit(
             us_leg_contract_multiplier=strategy.us_leg_contract_multiplier,
             adr_share_ratio=strategy.adr_share_ratio,
         )
-    plan, outcome = coordinator.execute(plan)
+    plan, outcome = coordinator.execute(
+        plan,
+        # Independent of the plan: the pair's own resolved front month and
+        # its configured US symbol. The adapters reject a plan that names
+        # anything else.
+        expected_symbols={
+            BrokerName.FUBON: tw_leg_symbol,
+            BrokerName.BINANCE: strategy.us_leg_symbol,
+        },
+    )
     if outcome.filled:
         result = strategy.apply_exit_execution(
             bar=bar,

@@ -41,12 +41,14 @@ class PostTradeReconciler:
         us_leg_symbol: str,
         tw_leg_symbol: str,
         timestamp: datetime,
+        sibling_symbols: frozenset[str] = frozenset(),
     ) -> ReconciliationReport:
         report = self.broker_reconciler.reconcile(
             strategy_state=strategy_state,
             brokers=brokers,
             us_leg_symbol=us_leg_symbol,
             tw_leg_symbol=tw_leg_symbol,
+            sibling_symbols=sibling_symbols,
             timestamp=timestamp,
         )
         issues = list(report.issues)

@@ -57,16 +57,27 @@ class PlanExecutor(Protocol):
 
 @runtime_checkable
 class ExecutionAdapter(Protocol):
-    def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
+    # Every method names the instrument it acts on. One Fubon account trades
+    # both pairs' futures over a single permitted SDK session, so an adapter
+    # cannot bind a symbol at construction. ``expected_symbol`` is the caller's
+    # own view of the contract that should be traded -- an independent
+    # reference the adapter checks the plan against, rather than trusting the
+    # plan to describe itself.
+    def execute(
+        self,
+        plan: PairExecutionPlan,
+        *,
+        expected_symbol: str,
+    ) -> ExecutionOutcome:
         ...
 
-    def fetch_open_orders(self) -> tuple[dict[str, Any], ...]:
+    def fetch_open_orders(self, symbol: str) -> tuple[dict[str, Any], ...]:
         ...
 
-    def fetch_position_quantity(self) -> float:
+    def fetch_position_quantity(self, symbol: str) -> float:
         ...
 
-    def preflight(self) -> ExecutionPreflight:
+    def preflight(self, symbol: str) -> ExecutionPreflight:
         ...
 
     def close(self) -> None:
@@ -75,7 +86,7 @@ class ExecutionAdapter(Protocol):
 
 @runtime_checkable
 class OrderRecordsProvider(Protocol):
-    def fetch_order_records(self) -> tuple[dict[str, Any], ...]:
+    def fetch_order_records(self, symbol: str) -> tuple[dict[str, Any], ...]:
         ...
 
 
@@ -86,7 +97,15 @@ class SessionHealthProvider(Protocol):
 
 
 class SimulatedExecutionAdapter:
-    def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
+    def execute(
+        self,
+        plan: PairExecutionPlan,
+        *,
+        expected_symbol: str | None = None,
+    ) -> ExecutionOutcome:
+        # Simulation fills whatever the plan says; the symbol is accepted so the
+        # dry-run and live coordinators can share one call shape.
+        del expected_symbol
         orders: list[OrderResult] = []
         fills: list[Fill] = []
         for index, leg in enumerate(plan.legs, start=1):

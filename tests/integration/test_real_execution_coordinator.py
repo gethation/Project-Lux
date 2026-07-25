@@ -52,6 +52,7 @@ SYMBOL_QFF = "QFFG6"
 class FakeStore:
     def __init__(self) -> None:
         self.plans: list[PairExecutionPlan] = []
+        self.expected_symbols: list[str | None] = []
         self.outcomes: list[ExecutionOutcome] = []
         self.events: list[dict] = []
 
@@ -86,8 +87,15 @@ class FakeExecutionAdapter:
         self.broker = broker
         self.outcomes = list(outcomes)
         self.plans: list[PairExecutionPlan] = []
+        self.expected_symbols: list[str | None] = []
 
-    def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
+    def execute(
+        self,
+        plan: PairExecutionPlan,
+        *,
+        expected_symbol: str | None = None,
+    ) -> ExecutionOutcome:
+        self.expected_symbols.append(expected_symbol)
         self.plans.append(plan)
         spec = self.outcomes.pop(0)
         if spec.get("raise"):
@@ -615,6 +623,7 @@ def test_live_entry_success_applies_strategy_open_position(tmp_path) -> None:
         "shortSpread",
         None,
         120,
+        tw_leg_symbol=SYMBOL_QFF,
     )
 
     assert plan is not None
@@ -648,6 +657,7 @@ def test_live_entry_uses_actual_fills_for_state_and_exit_quantity(tmp_path) -> N
         "shortSpread",
         None,
         120,
+        tw_leg_symbol=SYMBOL_QFF,
     )
 
     assert outcome is not None and outcome.filled
@@ -705,6 +715,7 @@ def test_live_entry_pauses_when_filled_outcome_is_missing_a_leg_fill(tmp_path) -
         "shortSpread",
         None,
         120,
+        tw_leg_symbol=SYMBOL_QFF,
     )
 
     assert outcome is not None and outcome.filled
@@ -734,6 +745,7 @@ def test_live_entry_breach_pauses_without_creating_strategy_position(tmp_path) -
         "shortSpread",
         None,
         120,
+        tw_leg_symbol=SYMBOL_QFF,
     )
 
     assert plan is not None

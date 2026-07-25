@@ -77,7 +77,18 @@ class BinanceUsLegExecutionAdapter:
         self.recovery_attempts = max(1, int(recovery_attempts))
         self.symbol_configured = False
 
-    def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
+    def execute(
+        self,
+        plan: PairExecutionPlan,
+        *,
+        expected_symbol: str | None = None,
+    ) -> ExecutionOutcome:
+        if expected_symbol is not None and str(expected_symbol).strip() != self.symbol:
+            return self._rejected(
+                plan,
+                f"Binance adapter is bound to {self.symbol}, "
+                f"not {str(expected_symbol).strip()}",
+            )
         leg, reject_reason = self._select_leg(plan)
         if reject_reason is not None or leg is None:
             return self._rejected(plan, reject_reason or "invalid_binance_leg")
@@ -305,13 +316,29 @@ class BinanceUsLegExecutionAdapter:
                 self.sleep(self.poll_interval_seconds)
         return "error", None, errors
 
+    def _resolve_symbol(self, symbol: str | None) -> str:
+        """Accept the protocol's symbol argument, but refuse a mismatch.
+
+        This adapter is still built per instrument, so a caller naming a
+        different one is a routing bug, not a request to trade it.
+        """
+        if symbol is None:
+            return self.symbol
+        target = str(symbol).strip()
+        if target != self.symbol:
+            raise ValueError(
+                f"Binance adapter is bound to {self.symbol}, not {target}"
+            )
+        return target
+
     def _safe_fetch_position_quantity(
         self,
+        symbol: str | None = None,
         *,
         stage: str,
     ) -> tuple[float | None, list[dict[str, Any]]]:
         try:
-            return self.fetch_position_quantity(), []
+            return self.fetch_position_quantity(symbol), []
         except Exception as exc:
             return None, [
                 {
@@ -396,23 +423,29 @@ class BinanceUsLegExecutionAdapter:
             },
         )
 
-    def fetch_open_orders(self) -> tuple[dict[str, Any], ...]:
-        rows = self._ensure_exchange().fetch_open_orders(self.symbol) or []
+    def fetch_open_orders(
+        self,
+        symbol: str | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        target = self._resolve_symbol(symbol)
+        rows = self._ensure_exchange().fetch_open_orders(target) or []
         return tuple(safe_jsonable(row) for row in rows)
 
-    def fetch_position_quantity(self) -> float:
-        rows = self._ensure_exchange().fetch_positions([self.symbol]) or []
+    def fetch_position_quantity(self, symbol: str | None = None) -> float:
+        target = self._resolve_symbol(symbol)
+        rows = self._ensure_exchange().fetch_positions([target]) or []
         total = 0.0
         for row in rows:
-            quantity = binance_position_quantity(row, self.symbol)
+            quantity = binance_position_quantity(row, target)
             if quantity is not None:
                 total += quantity
         return total
 
-    def preflight(self) -> BinanceExecutionPreflight:
+    def preflight(self, symbol: str | None = None) -> BinanceExecutionPreflight:
+        target = self._resolve_symbol(symbol)
         return BinanceExecutionPreflight(
-            open_orders=self.fetch_open_orders(),
-            position_quantity=self.fetch_position_quantity(),
+            open_orders=self.fetch_open_orders(target),
+            position_quantity=self.fetch_position_quantity(target),
         )
 
     def close(self) -> None:

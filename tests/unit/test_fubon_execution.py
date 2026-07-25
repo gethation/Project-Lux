@@ -287,7 +287,6 @@ def tw_leg_repr_order_result() -> dict:
 
 def adapter_for(fake_sdk: FakeSdk) -> FubonFutureExecutionAdapter:
     return FubonFutureExecutionAdapter(
-        SYMBOL,
         sdk=fake_sdk,
         account=FakeAccount(),
         clock=ts,
@@ -312,7 +311,7 @@ def test_adapter_places_entry_market_auto_order_fields() -> None:
         position_results=[[], [position_row()]],
     )
 
-    outcome = adapter_for(fake_sdk).execute(execution_plan())
+    outcome = adapter_for(fake_sdk).execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
     order = fake_sdk.futopt.place_calls[0]["order"]
@@ -343,7 +342,7 @@ def test_adapter_matches_fubon_repr_order_result_symbol_and_expiry() -> None:
         position_results=[[], [position_row()]],
     )
 
-    outcome = adapter_for(fake_sdk).execute(execution_plan())
+    outcome = adapter_for(fake_sdk).execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
     assert outcome.fills[0].quantity == 1
@@ -372,7 +371,7 @@ def test_adapter_fetch_order_records_filters_by_contract_identity() -> None:
         ]
     )
 
-    records = adapter_for(fake_sdk).fetch_order_records()
+    records = adapter_for(fake_sdk).fetch_order_records(SYMBOL)
 
     assert len(records) == 1
     assert records[0]["order_no"] == "s0E1X"
@@ -503,7 +502,8 @@ def test_adapter_exit_uses_close_sell_order() -> None:
     )
 
     outcome = adapter_for(fake_sdk).execute(
-        execution_plan(plan_type=ExecutionPlanType.EXIT, side=OrderSide.SELL)
+        execution_plan(plan_type=ExecutionPlanType.EXIT, side=OrderSide.SELL),
+        expected_symbol=SYMBOL,
     )
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
@@ -518,7 +518,7 @@ def test_adapter_maps_partial_fill_to_paused() -> None:
         position_results=[[], [position_row(quantity=0.4)]],
     )
 
-    outcome = adapter_for(fake_sdk).execute(execution_plan())
+    outcome = adapter_for(fake_sdk).execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.PARTIAL_FILL
     assert outcome.recommended_state == StrategyState.PAUSED
@@ -529,7 +529,7 @@ def test_adapter_maps_partial_fill_to_paused() -> None:
 def test_adapter_maps_failed_place_order_to_failed() -> None:
     fake_sdk = FakeSdk(place_result=FakeResult(None, is_success=False, message="rejected"))
 
-    outcome = adapter_for(fake_sdk).execute(execution_plan())
+    outcome = adapter_for(fake_sdk).execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.FAILED
     assert outcome.recommended_state == StrategyState.PAUSED
@@ -541,7 +541,7 @@ def test_adapter_maps_not_login_place_result_to_unknown_without_retry() -> None:
         place_result=FakeResult(None, is_success=False, message="Not Login Error")
     )
 
-    outcome = adapter_for(fake_sdk).execute(execution_plan())
+    outcome = adapter_for(fake_sdk).execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.UNKNOWN
     assert outcome.recommended_state == StrategyState.PAUSED
@@ -563,7 +563,7 @@ def test_adapter_maps_pending_timeout_to_unknown() -> None:
         ]
     )
 
-    outcome = adapter_for(fake_sdk).execute(execution_plan())
+    outcome = adapter_for(fake_sdk).execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.UNKNOWN
     assert outcome.recommended_state == StrategyState.PAUSED
@@ -588,7 +588,7 @@ def test_adapter_uses_position_delta_when_order_result_stays_active() -> None:
         ],
     )
 
-    outcome = adapter_for(fake_sdk).execute(execution_plan())
+    outcome = adapter_for(fake_sdk).execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
     assert outcome.recommended_state is None
@@ -641,7 +641,8 @@ def test_adapter_does_not_match_stale_filled_order_when_place_id_is_known() -> N
     )
 
     outcome = adapter_for(fake_sdk).execute(
-        execution_plan(side=OrderSide.SELL)
+        execution_plan(side=OrderSide.SELL),
+        expected_symbol=SYMBOL,
     )
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
@@ -682,7 +683,6 @@ def test_adapter_rejects_exact_id_row_outside_attempt_time_window() -> None:
         position_results=[[], [position_row()]],
     )
     adapter = FubonFutureExecutionAdapter(
-        SYMBOL,
         sdk=fake_sdk,
         account=FakeAccount(),
         clock=ts,
@@ -691,7 +691,7 @@ def test_adapter_rejects_exact_id_row_outside_attempt_time_window() -> None:
         poll_interval_seconds=0,
     )
 
-    outcome = adapter.execute(execution_plan())
+    outcome = adapter.execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
     assert outcome.payload["fill_source"] == "position_delta"
@@ -710,7 +710,7 @@ def test_adapter_records_order_poll_errors_in_payload() -> None:
         ),
     )
 
-    outcome = adapter_for(fake_sdk).execute(execution_plan())
+    outcome = adapter_for(fake_sdk).execute(execution_plan(), expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.UNKNOWN
     assert outcome.recommended_state == StrategyState.PAUSED
@@ -736,7 +736,7 @@ def test_adapter_rejects_invalid_plan_without_placing_order(
 ) -> None:
     fake_sdk = FakeSdk()
 
-    outcome = adapter_for(fake_sdk).execute(plan)
+    outcome = adapter_for(fake_sdk).execute(plan, expected_symbol=SYMBOL)
 
     assert outcome.status == ExecutionOutcomeStatus.REJECTED
     assert outcome.recommended_state == StrategyState.PAUSED
@@ -783,7 +783,7 @@ class FakeSmokeAdapter:
         self.executed_plans: list[PairExecutionPlan] = []
         self.close_called = False
 
-    def preflight(self):
+    def preflight(self, symbol: str | None = None):
         return type(
             "Preflight",
             (),
@@ -793,7 +793,12 @@ class FakeSmokeAdapter:
             },
         )()
 
-    def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
+    def execute(
+        self,
+        plan: PairExecutionPlan,
+        *,
+        expected_symbol: str | None = None,
+    ) -> ExecutionOutcome:
         self.executed_plans.append(plan)
         leg = plan.legs[0]
         status = (
@@ -841,17 +846,17 @@ class FakeSmokeAdapter:
             ),
         )
 
-    def fetch_open_orders(self):
+    def fetch_open_orders(self, symbol: str | None = None):
         return self.open_orders
 
-    def fetch_position_quantity(self) -> float:
+    def fetch_position_quantity(self, symbol: str | None = None) -> float:
         self.position_query_count += 1
         if self.position_quantities:
             index = min(self.position_query_count - 1, len(self.position_quantities) - 1)
             return self.position_quantities[index]
         return self.position_quantity
 
-    def fetch_order_records(self):
+    def fetch_order_records(self, symbol: str | None = None):
         return self.order_records
 
     def close(self) -> None:

@@ -49,7 +49,7 @@ def _hanging_readonly_worker(
 
 
 def test_subprocess_transport_preserves_adapter_timeouts_without_defaults() -> None:
-    execution = FubonFutureExecutionProcess(SYMBOL)
+    execution = FubonFutureExecutionProcess()
     readonly = FubonReadOnlyBrokerProcess(symbol=SYMBOL)
     try:
         assert (
@@ -88,14 +88,13 @@ def test_subprocess_transport_preserves_adapter_timeouts_without_defaults() -> N
 
 def test_execution_timeout_returns_unknown_and_kills_worker() -> None:
     adapter = FubonFutureExecutionProcess(
-        SYMBOL,
         execution_timeout_seconds=1.0,
         terminate_timeout_seconds=0.2,
         worker_target=_hanging_execution_worker,
         clock=ts,
     )
     try:
-        outcome = adapter.execute(execution_plan())
+        outcome = adapter.execute(execution_plan(), expected_symbol=SYMBOL)
 
         assert outcome.status == ExecutionOutcomeStatus.UNKNOWN
         assert outcome.recommended_state.value == "paused"

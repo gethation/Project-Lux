@@ -177,7 +177,6 @@ def build_live_execution_brokers(
     if tw_leg_symbol.strip().lower() == "auto":
         return None, None
     fubon = FubonFutureExecutionProcess(
-        tw_leg_symbol,
         config.live.fubon_env_path,
     )
     return fubon, (
@@ -221,7 +220,7 @@ def binance_exec_smoke(args: argparse.Namespace) -> int:
         enforce_leverage=config.binance_execution.enforce_leverage,
     )
     try:
-        preflight = adapter.preflight()
+        preflight = adapter.preflight(config.live.binance_symbol)
         if preflight.open_orders:
             raise SystemExit(
                 "Refusing Binance execution smoke with existing open orders: "
@@ -250,7 +249,7 @@ def binance_exec_smoke(args: argparse.Namespace) -> int:
             plan_type=ExecutionPlanType.ENTRY,
             timestamp=timestamp,
         )
-        entry_outcome = adapter.execute(entry_plan)
+        entry_outcome = adapter.execute(entry_plan, expected_symbol=config.live.binance_symbol)
         print_binance_smoke_outcome("entry", entry_outcome)
         entry_filled_quantity = sum(fill.quantity for fill in entry_outcome.fills)
         if entry_filled_quantity <= 0:
@@ -263,11 +262,11 @@ def binance_exec_smoke(args: argparse.Namespace) -> int:
             plan_type=ExecutionPlanType.EXIT,
             timestamp=datetime.now().astimezone().replace(microsecond=0),
         )
-        exit_outcome = adapter.execute(exit_plan)
+        exit_outcome = adapter.execute(exit_plan, expected_symbol=config.live.binance_symbol)
         print_binance_smoke_outcome("exit", exit_outcome)
 
-        final_open_orders = adapter.fetch_open_orders()
-        final_position = adapter.fetch_position_quantity()
+        final_open_orders = adapter.fetch_open_orders(config.live.binance_symbol)
+        final_position = adapter.fetch_position_quantity(config.live.binance_symbol)
         if (
             not entry_outcome.filled
             or not exit_outcome.filled
@@ -297,11 +296,10 @@ def fubon_exec_smoke(args: argparse.Namespace) -> int:
     symbol = str(args.symbol).strip()
     lot = int(args.lot)
     adapter = FubonFutureExecutionAdapter(
-        symbol,
         config.live.fubon_env_path,
     )
     try:
-        preflight = adapter.preflight()
+        preflight = adapter.preflight(symbol)
         if preflight.open_orders:
             raise SystemExit(
                 "Refusing Fubon execution smoke with existing open orders: "
@@ -326,28 +324,29 @@ def fubon_exec_smoke(args: argparse.Namespace) -> int:
             plan_type=ExecutionPlanType.ENTRY,
             timestamp=timestamp,
         )
-        entry_outcome = adapter.execute(entry_plan)
+        entry_outcome = adapter.execute(entry_plan, expected_symbol=symbol)
         print_fubon_smoke_outcome("entry", entry_outcome)
         entry_filled_lot = int(sum(fill.quantity for fill in entry_outcome.fills))
         if entry_filled_lot <= 0:
-            diagnostic_position = adapter.fetch_position_quantity()
-            diagnostic_open_orders = adapter.fetch_open_orders()
+            diagnostic_position = adapter.fetch_position_quantity(symbol)
+            diagnostic_open_orders = adapter.fetch_open_orders(symbol)
             print_fubon_smoke_position(
                 "entry_unknown_diagnostic",
                 position=diagnostic_position,
                 open_orders=len(diagnostic_open_orders),
             )
             print_fubon_smoke_order_records(
-                adapter.fetch_order_records(),
+                adapter.fetch_order_records(symbol),
                 raw_json=bool(args.raw_json),
             )
             print("CRITICAL manual intervention required")
             return 1
         after_entry_position = fetch_fubon_position_with_retry(
             adapter,
+            symbol,
             expected="nonzero",
         )
-        after_entry_open_orders = adapter.fetch_open_orders()
+        after_entry_open_orders = adapter.fetch_open_orders(symbol)
         print_fubon_smoke_position(
             "after_entry",
             position=after_entry_position,
@@ -366,12 +365,13 @@ def fubon_exec_smoke(args: argparse.Namespace) -> int:
             plan_type=ExecutionPlanType.EXIT,
             timestamp=datetime.now().astimezone().replace(microsecond=0),
         )
-        exit_outcome = adapter.execute(exit_plan)
+        exit_outcome = adapter.execute(exit_plan, expected_symbol=symbol)
         print_fubon_smoke_outcome("exit", exit_outcome)
 
-        final_open_orders = adapter.fetch_open_orders()
+        final_open_orders = adapter.fetch_open_orders(symbol)
         final_position = fetch_fubon_position_with_retry(
             adapter,
+            symbol,
             expected="zero",
         )
         print_fubon_smoke_position(
@@ -380,7 +380,7 @@ def fubon_exec_smoke(args: argparse.Namespace) -> int:
             open_orders=len(final_open_orders),
         )
         print_fubon_smoke_order_records(
-            adapter.fetch_order_records(),
+            adapter.fetch_order_records(symbol),
             raw_json=bool(args.raw_json),
         )
         if (
@@ -441,8 +441,8 @@ def binance_manual_close(args: argparse.Namespace) -> int:
         enforce_leverage=config.binance_execution.enforce_leverage,
     )
     try:
-        pre_open_orders = adapter.fetch_open_orders()
-        pre_position = adapter.fetch_position_quantity()
+        pre_open_orders = adapter.fetch_open_orders(symbol)
+        pre_position = adapter.fetch_position_quantity(symbol)
         print(
             "Binance manual close precheck: "
             f"symbol={symbol}, position={pre_position}, "
@@ -467,11 +467,11 @@ def binance_manual_close(args: argparse.Namespace) -> int:
             plan_type=ExecutionPlanType.EXIT,
             timestamp=timestamp,
         )
-        outcome = adapter.execute(close_plan)
+        outcome = adapter.execute(close_plan, expected_symbol=symbol)
         print_binance_smoke_outcome("manual_close", outcome)
 
-        final_open_orders = adapter.fetch_open_orders()
-        final_position = adapter.fetch_position_quantity()
+        final_open_orders = adapter.fetch_open_orders(symbol)
+        final_position = adapter.fetch_position_quantity(symbol)
         print(
             "Binance manual close after: "
             f"position={final_position}, open_orders={len(final_open_orders)}"
@@ -496,19 +496,18 @@ def fubon_manual_close(args: argparse.Namespace) -> int:
     lot = int(args.lot)
     side = OrderSide.BUY if str(args.side).lower() == "buy" else OrderSide.SELL
     adapter = FubonFutureExecutionAdapter(
-        symbol,
         config.live.fubon_env_path,
     )
     try:
-        pre_position = adapter.fetch_position_quantity()
-        pre_open_orders = adapter.fetch_open_orders()
+        pre_position = adapter.fetch_position_quantity(symbol)
+        pre_open_orders = adapter.fetch_open_orders(symbol)
         print_fubon_smoke_position(
             "manual_close_precheck",
             position=pre_position,
             open_orders=len(pre_open_orders),
         )
         print_fubon_smoke_order_records(
-            adapter.fetch_order_records(),
+            adapter.fetch_order_records(symbol),
             raw_json=bool(args.raw_json),
         )
         if pre_open_orders:
@@ -530,12 +529,13 @@ def fubon_manual_close(args: argparse.Namespace) -> int:
             plan_type=ExecutionPlanType.EXIT,
             timestamp=timestamp,
         )
-        outcome = adapter.execute(close_plan)
+        outcome = adapter.execute(close_plan, expected_symbol=symbol)
         print_fubon_smoke_outcome("manual_close", outcome)
 
-        final_open_orders = adapter.fetch_open_orders()
+        final_open_orders = adapter.fetch_open_orders(symbol)
         final_position = fetch_fubon_position_with_retry(
             adapter,
+            symbol,
             expected="zero",
         )
         print_fubon_smoke_position(
@@ -544,7 +544,7 @@ def fubon_manual_close(args: argparse.Namespace) -> int:
             open_orders=len(final_open_orders),
         )
         print_fubon_smoke_order_records(
-            adapter.fetch_order_records(),
+            adapter.fetch_order_records(symbol),
             raw_json=bool(args.raw_json),
         )
         if not outcome.filled or final_open_orders or abs(final_position) > 1e-12:
@@ -660,13 +660,12 @@ def fubon_order_records_status(config: object, args: argparse.Namespace) -> int:
         raise SystemExit("--orders requires a symbol")
 
     adapter = FubonFutureExecutionAdapter(
-        symbol,
         config.live.fubon_env_path,
     )
     try:
-        position = adapter.fetch_position_quantity()
-        open_orders = adapter.fetch_open_orders()
-        records = adapter.fetch_order_records()
+        position = adapter.fetch_position_quantity(symbol)
+        open_orders = adapter.fetch_open_orders(symbol)
+        records = adapter.fetch_order_records(symbol)
     finally:
         adapter.close()
 
@@ -789,6 +788,7 @@ def require_fubon_manual_close_ready(
 
 def fetch_fubon_position_with_retry(
     adapter: object,
+    symbol: str,
     *,
     expected: str,
     attempts: int = 5,
@@ -796,7 +796,7 @@ def fetch_fubon_position_with_retry(
 ) -> float:
     last = 0.0
     for attempt in range(max(1, attempts)):
-        last = float(adapter.fetch_position_quantity())
+        last = float(adapter.fetch_position_quantity(symbol))
         if expected == "nonzero" and abs(last) > 1e-12:
             return last
         if expected == "zero" and abs(last) <= 1e-12:

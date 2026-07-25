@@ -325,6 +325,7 @@ def reconcile_brokers_to_store(
             brokers=active_brokers,
             us_leg_symbol=config.active_pair.us_leg.symbol,
             tw_leg_symbol=helpers.reconciliation_tw_leg_symbol(config, strategy_state),
+            sibling_symbols=config.sibling_tw_leg_products(),
             timestamp=observed_at,
         )
         run_id = store.record_reconciliation_report(report)
@@ -379,6 +380,7 @@ def command_clear_pause(args: argparse.Namespace) -> int:
                 brokers=brokers,
                 us_leg_symbol=config.active_pair.us_leg.symbol,
                 tw_leg_symbol=helpers.reconciliation_tw_leg_symbol(config, state),
+                sibling_symbols=config.sibling_tw_leg_products(),
                 timestamp=timestamp,
             )
         else:
@@ -394,6 +396,7 @@ def command_clear_pause(args: argparse.Namespace) -> int:
                 brokers=brokers,
                 us_leg_symbol=config.active_pair.us_leg.symbol,
                 tw_leg_symbol=helpers.reconciliation_tw_leg_symbol(config, state),
+                sibling_symbols=config.sibling_tw_leg_products(),
                 timestamp=timestamp,
             )
         store.record_reconciliation_report(report)

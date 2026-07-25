@@ -45,6 +45,8 @@ class RealExecutionCoordinator:
     def execute(
         self,
         plan: PairExecutionPlan,
+        *,
+        expected_symbols: dict[BrokerName, str] | None = None,
     ) -> tuple[PairExecutionPlan, ExecutionOutcome]:
         recorded = record_live_execution_plan(self.store, plan, tw_leg_first=self.tw_leg_first)
         if recorded.status != ExecutionPlanStatus.RECORDED:
@@ -83,6 +85,11 @@ class RealExecutionCoordinator:
             self.store.record_execution_outcome(outcome)
             return recorded, outcome
 
+        # The caller's own view of which contract each venue should trade,
+        # independent of what the plan claims. Absent (dry-run and tests) the
+        # adapters fall back to their own bound symbol.
+        expected = dict(expected_symbols or {})
+
         primary_outcomes: dict[BrokerName, ExecutionOutcome] = {}
         primary_leg_timings: dict[BrokerName, dict[str, Any]] = {}
         emergency_outcomes: list[ExecutionOutcome] = []
@@ -95,6 +102,7 @@ class RealExecutionCoordinator:
             first_leg,
             suffix="primary",
             timings=primary_leg_timings,
+            expected_symbol=expected.get(first_leg.broker),
         )
         primary_outcomes[first_leg.broker] = first_outcome
         first_filled_quantity = filled_quantity(first_outcome, first_leg)
@@ -128,6 +136,7 @@ class RealExecutionCoordinator:
             second_leg,
             suffix="primary",
             timings=primary_leg_timings,
+            expected_symbol=expected.get(second_leg.broker),
         )
         primary_outcomes[second_leg.broker] = second_outcome
         second_filled_quantity = filled_quantity(second_outcome, second_leg)
@@ -180,6 +189,7 @@ class RealExecutionCoordinator:
         *,
         suffix: str,
         timings: dict[BrokerName, dict[str, Any]] | None = None,
+        expected_symbol: str | None = None,
     ) -> ExecutionOutcome:
         leg_plan = replace(
             plan,
@@ -218,7 +228,7 @@ class RealExecutionCoordinator:
                 if callable(commit):
                     commit()
         started_at = self.clock()
-        outcome = self._safe_adapter_execute(leg.broker, leg_plan)
+        outcome = self._safe_adapter_execute(leg.broker, leg_plan, expected_symbol)
         finished_at = self.clock()
         if attempt_id is not None:
             self._record_fubon_attempt_outcome(attempt_id, outcome)
@@ -299,6 +309,7 @@ class RealExecutionCoordinator:
         self,
         broker: BrokerName,
         plan: PairExecutionPlan,
+        expected_symbol: str | None = None,
     ) -> ExecutionOutcome:
         # A raising adapter (network/SDK error) must never crash the live loop.
         # Convert it to a zero-fill FAILED outcome so the existing stop /
@@ -307,7 +318,10 @@ class RealExecutionCoordinator:
         # post-trade / startup reconciliation as the backstop. Mirrors the dry-run
         # ExecutionCoordinator.execute() guard in execution/outcome.py.
         try:
-            return self.adapters[broker].execute(plan)
+            adapter = self.adapters[broker]
+            if expected_symbol is None:
+                return adapter.execute(plan)
+            return adapter.execute(plan, expected_symbol=expected_symbol)
         except Exception as exc:
             return ExecutionOutcome(
                 plan_id=plan.plan_id,
@@ -379,7 +393,11 @@ class RealExecutionCoordinator:
                     "quantity": quantity,
                 },
             )
-            outcome = self._safe_adapter_execute(leg.broker, emergency_plan)
+            outcome = self._safe_adapter_execute(
+                leg.broker,
+                emergency_plan,
+                leg.symbol,
+            )
             emergency_outcomes.append(outcome)
             if outcome.filled:
                 self._record_event(

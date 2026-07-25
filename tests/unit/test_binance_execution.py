@@ -611,7 +611,7 @@ class FakeSmokeAdapter:
         self.executed_plans: list[PairExecutionPlan] = []
         self.close_called = False
 
-    def preflight(self):
+    def preflight(self, symbol: str | None = None):
         return type(
             "Preflight",
             (),
@@ -621,7 +621,12 @@ class FakeSmokeAdapter:
             },
         )()
 
-    def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
+    def execute(
+        self,
+        plan: PairExecutionPlan,
+        *,
+        expected_symbol: str | None = None,
+    ) -> ExecutionOutcome:
         self.executed_plans.append(plan)
         leg = plan.legs[0]
         return ExecutionOutcome(
@@ -652,10 +657,10 @@ class FakeSmokeAdapter:
             ),
         )
 
-    def fetch_open_orders(self):
+    def fetch_open_orders(self, symbol: str | None = None):
         return ()
 
-    def fetch_position_quantity(self) -> float:
+    def fetch_position_quantity(self, symbol: str | None = None) -> float:
         return 0.0
 
     def close(self) -> None:

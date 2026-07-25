@@ -71,6 +71,7 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
             brokers=brokers,
             us_leg_symbol=config.live.binance_symbol,
             tw_leg_symbol=helpers.reconciliation_tw_leg_symbol(config, state),
+            sibling_symbols=config.sibling_tw_leg_products(),
             timestamp=observed_at,
         )
         if report.status != ReconciliationStatus.MATCHED:

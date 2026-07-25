@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from math import isfinite
 from pathlib import Path
 from typing import Any, Callable
@@ -97,7 +97,6 @@ class FubonFutureExecutionAdapter:
 
     def __init__(
         self,
-        symbol: str,
         env_path: Path | None = None,
         *,
         sdk: Any | None = None,
@@ -112,17 +111,18 @@ class FubonFutureExecutionAdapter:
         order_match_time_window_seconds: float | None = 120.0,
         unblock: bool = False,
     ) -> None:
-        self.symbol = str(symbol).strip()
         self.env_path = env_path
         self.sdk = sdk
         self.accounts = accounts
         self.account = account
         self.sdk_factory = sdk_factory
         self.clock = clock or (lambda: datetime.now().astimezone())
-        self.identity = FubonContractIdentity.from_symbol(
-            self.symbol,
-            reference_date=self.clock().date(),
-        )
+        # One Fubon account may trade several contracts (QFF and CCF share it),
+        # and only one SDK session per account is allowed, so a single adapter
+        # has to serve every symbol. Contract identity is a pure function of the
+        # symbol, derived per call and cached per (symbol, date) because the
+        # month resolution depends on today's date.
+        self._identity_cache: dict[tuple[str, date], FubonContractIdentity] = {}
         self.sleep = sleep or time.sleep
         self.max_poll_seconds = float(max_poll_seconds)
         self.poll_interval_seconds = float(poll_interval_seconds)
@@ -141,13 +141,36 @@ class FubonFutureExecutionAdapter:
         self.relogin_count = 0
         self.session_event_callback_attached = False
 
-    def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
-        leg, reject_reason = self._select_leg(plan)
+    def identity_for(self, symbol: str) -> FubonContractIdentity:
+        """Contract identity for one symbol, as of today.
+
+        Broker reports are matched against this, so it decides whether a row
+        belongs to the order we placed. Cached per (symbol, date) rather than
+        per symbol: contract-month resolution reads the reference date, and a
+        process that runs across midnight must not keep yesterday's answer.
+        """
+        key = (str(symbol).strip().upper(), self.clock().date())
+        cached = self._identity_cache.get(key)
+        if cached is None:
+            cached = FubonContractIdentity.from_symbol(
+                key[0],
+                reference_date=key[1],
+            )
+            self._identity_cache[key] = cached
+        return cached
+
+    def execute(
+        self,
+        plan: PairExecutionPlan,
+        *,
+        expected_symbol: str,
+    ) -> ExecutionOutcome:
+        leg, reject_reason = self._select_leg(plan, expected_symbol)
         if reject_reason is not None or leg is None:
             return self._rejected(plan, reject_reason or "invalid_fubon_leg")
 
         try:
-            position_before = self.fetch_position_quantity()
+            position_before = self.fetch_position_quantity(leg.symbol)
             position_errors: list[dict[str, Any]] = []
         except Exception as exc:
             if not is_fubon_session_invalid_error(exc):
@@ -156,7 +179,7 @@ class FubonFutureExecutionAdapter:
                 )
             self._reset_session(str(exc))
             try:
-                position_before = self.fetch_position_quantity()
+                position_before = self.fetch_position_quantity(leg.symbol)
                 position_errors = []
             except Exception as retry_exc:
                 return self._failed_from_exception(
@@ -262,7 +285,8 @@ class FubonFutureExecutionAdapter:
         # This prevents a stale terminal row from becoming the trade truth.
         if position_before is not None and not callback_confirmed_full:
             position_after, position_after_errors = self._safe_fetch_position_quantity(
-                stage="after_order"
+                leg.symbol,
+                stage="after_order",
             )
             position_errors.extend(position_after_errors)
             if position_after is not None:
@@ -293,7 +317,8 @@ class FubonFutureExecutionAdapter:
             stale_order_results=wait_result.stale_order_results,
         )
 
-    def fetch_open_orders(self) -> tuple[dict[str, Any], ...]:
+    def fetch_open_orders(self, symbol: str) -> tuple[dict[str, Any], ...]:
+        identity = self.identity_for(symbol)
         sdk, account = self._ensure_connected()
         rows: list[dict[str, Any]] = []
         seen: set[tuple[Any, ...]] = set()
@@ -305,7 +330,7 @@ class FubonFutureExecutionAdapter:
             )
             for row in raw_rows:
                 raw = fubon_raw_row(row)
-                if self.identity.matches(raw) and is_fubon_open_order(raw):
+                if identity.matches(raw) and is_fubon_open_order(raw):
                     key = fubon_record_key(raw)
                     if key in seen:
                         continue
@@ -313,7 +338,8 @@ class FubonFutureExecutionAdapter:
                     rows.append(raw)
         return tuple(rows)
 
-    def fetch_order_records(self) -> tuple[dict[str, Any], ...]:
+    def fetch_order_records(self, symbol: str) -> tuple[dict[str, Any], ...]:
+        identity = self.identity_for(symbol)
         sdk, account = self._ensure_connected()
         rows: list[dict[str, Any]] = []
         seen: set[tuple[Any, ...]] = set()
@@ -325,7 +351,7 @@ class FubonFutureExecutionAdapter:
             )
             for row in raw_rows:
                 raw = fubon_raw_row(row)
-                if self.identity.matches(raw):
+                if identity.matches(raw):
                     key = fubon_record_key(raw)
                     if key in seen:
                         continue
@@ -333,7 +359,8 @@ class FubonFutureExecutionAdapter:
                     rows.append(raw)
         return tuple(rows)
 
-    def fetch_position_quantity(self) -> float:
+    def fetch_position_quantity(self, symbol: str) -> float:
+        identity = self.identity_for(symbol)
         sdk, account = self._ensure_connected()
         rows = checked_result_data(
             sdk.futopt_accounting.query_single_position(account),
@@ -343,7 +370,7 @@ class FubonFutureExecutionAdapter:
         total = 0.0
         for row in rows:
             raw = fubon_raw_row(row)
-            if not self.identity.matches(raw):
+            if not identity.matches(raw):
                 continue
             quantity = fubon_position_quantity(raw)
             if quantity is not None:
@@ -351,10 +378,10 @@ class FubonFutureExecutionAdapter:
         self.last_success_at = self.clock()
         return total
 
-    def preflight(self) -> FubonExecutionPreflight:
+    def preflight(self, symbol: str) -> FubonExecutionPreflight:
         return FubonExecutionPreflight(
-            open_orders=self.fetch_open_orders(),
-            position_quantity=self.fetch_position_quantity(),
+            open_orders=self.fetch_open_orders(symbol),
+            position_quantity=self.fetch_position_quantity(symbol),
         )
 
     def session_health(self) -> dict[str, Any]:
@@ -435,6 +462,7 @@ class FubonFutureExecutionAdapter:
     def _select_leg(
         self,
         plan: PairExecutionPlan,
+        expected_symbol: str,
     ) -> tuple[ExecutionLeg | None, str | None]:
         matches = [leg for leg in plan.legs if leg.broker == BrokerName.FUBON]
         if len(matches) != 1:
@@ -444,8 +472,15 @@ class FubonFutureExecutionAdapter:
             return leg, "plan order_type must be market"
         if leg.order_type != ExecutionOrderType.MARKET.value:
             return leg, "Fubon leg order_type must be market"
-        if leg.symbol != self.symbol:
-            return leg, f"Fubon leg symbol {leg.symbol} does not match {self.symbol}"
+        # The caller supplies the contract it believes is current, from the
+        # pair's own resolved front month. Deriving identity from leg.symbol
+        # alone would check the plan against itself; this keeps an independent
+        # reference, exactly as the constructor-bound symbol used to.
+        expected = str(expected_symbol).strip()
+        if not expected:
+            return leg, "Fubon execute requires a non-empty expected_symbol"
+        if leg.symbol != expected:
+            return leg, f"Fubon leg symbol {leg.symbol} does not match {expected}"
         if not is_positive_integer_lot(leg.quantity):
             return leg, "Fubon futures leg quantity must be a positive integer lot"
         if leg.side not in {OrderSide.BUY, OrderSide.SELL}:
@@ -606,7 +641,7 @@ class FubonFutureExecutionAdapter:
             elif order_keys:
                 for row in rows:
                     raw = fubon_raw_row(row)
-                    if not self.identity.matches(
+                    if not self.identity_for(leg.symbol).matches(
                         raw,
                         side=leg.side,
                         lot=leg.quantity,
@@ -666,11 +701,12 @@ class FubonFutureExecutionAdapter:
             # queryable yet.  Falling through here would treat that stale row
             # as the new fill and can reuse its order/fill IDs in the ledger.
             return None
+        identity = self.identity_for(leg.symbol)
         for row in candidates:
-            if self.identity.matches(row, side=leg.side, lot=leg.quantity):
+            if identity.matches(row, side=leg.side, lot=leg.quantity):
                 return row
         for row in candidates:
-            if self.identity.matches(row):
+            if identity.matches(row):
                 return row
         return None
 
@@ -792,7 +828,7 @@ class FubonFutureExecutionAdapter:
             payload={
                 "adapter": "fubon_future_execution",
                 "attempt_id": attempt_id,
-                "symbol": self.symbol,
+                "symbol": leg.symbol,
                 "side": leg.side.value,
                 "submit_started_at": submit_started_at,
                 "submit_finished_at": submit_finished_at,
@@ -841,11 +877,12 @@ class FubonFutureExecutionAdapter:
 
     def _safe_fetch_position_quantity(
         self,
+        symbol: str,
         *,
         stage: str,
     ) -> tuple[float | None, list[dict[str, Any]]]:
         try:
-            return self.fetch_position_quantity(), []
+            return self.fetch_position_quantity(symbol), []
         except Exception as exc:
             return None, [
                 {
@@ -882,7 +919,7 @@ class FubonFutureExecutionAdapter:
             payload={
                 "adapter": "fubon_future_execution",
                 "stage": stage,
-                "symbol": self.symbol,
+                "symbol": leg.symbol,
                 "side": leg.side.value,
                 "quantity": leg.quantity,
                 "error_type": type(exc).__name__,
@@ -912,7 +949,7 @@ class FubonFutureExecutionAdapter:
                 "stage": stage,
                 "submission_started": True,
                 "do_not_retry": True,
-                "symbol": self.symbol,
+                "symbol": leg.symbol,
                 "side": leg.side.value,
                 "quantity": leg.quantity,
                 "error_type": type(exc).__name__,

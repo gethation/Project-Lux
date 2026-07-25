@@ -33,6 +33,7 @@ class BrokerReconciler:
         us_leg_symbol: str,
         tw_leg_symbol: str,
         timestamp: datetime | None = None,
+        sibling_symbols: frozenset[str] = frozenset(),
     ) -> ReconciliationReport:
         timestamp = timestamp or datetime.now().astimezone()
         expected = self.expected_from_strategy(
@@ -43,6 +44,15 @@ class BrokerReconciler:
         )
         snapshots = []
         issues: list[ReconciliationIssue] = []
+        # Contracts another pair legitimately holds on the same account. A Fubon
+        # account snapshot is account-wide -- it must be, because the margin
+        # view is account-wide -- so without this the CCF position shows up as a
+        # ghost while reconciling QFF, and a healthy pair gets paused.
+        siblings = frozenset(
+            str(symbol).strip().upper()
+            for symbol in sibling_symbols
+            if str(symbol).strip()
+        )
 
         for broker in brokers:
             try:
@@ -60,7 +70,7 @@ class BrokerReconciler:
                 )
                 continue
             snapshots.append(snapshot)
-            issues.extend(self._snapshot_issues(snapshot, expected))
+            issues.extend(self._snapshot_issues(snapshot, expected, siblings))
 
         return ReconciliationReport(
             timestamp=timestamp,
@@ -109,6 +119,7 @@ class BrokerReconciler:
         self,
         snapshot: BrokerAccountSnapshot,
         expected: ExpectedBrokerState,
+        sibling_symbols: frozenset[str] = frozenset(),
     ) -> list[ReconciliationIssue]:
         issues: list[ReconciliationIssue] = []
         expected_symbol = (
@@ -155,6 +166,10 @@ class BrokerReconciler:
         for position in snapshot.positions:
             if position.symbol == expected_symbol:
                 continue
+            if _matches_any_product(position.symbol, sibling_symbols):
+                # Another pair's contract on the shared account: not this
+                # reconciliation's business, and not a ghost.
+                continue
             if abs(position.quantity) > tolerance:
                 issues.append(
                     ReconciliationIssue(
@@ -195,3 +210,15 @@ def report_status(issues: list[ReconciliationIssue]) -> ReconciliationStatus:
     if issues:
         return ReconciliationStatus.WARNING
     return ReconciliationStatus.MATCHED
+
+
+def _matches_any_product(symbol: str, products: frozenset[str]) -> bool:
+    """Does this broker symbol belong to one of the given TAIFEX products?
+
+    Callers pass products (QFF, CCF) rather than resolved contracts because the
+    front month rolls; a symbol like CCFH6 starts with its product code.
+    """
+    if not products:
+        return False
+    candidate = str(symbol or "").strip().upper()
+    return any(candidate.startswith(product) for product in products)
