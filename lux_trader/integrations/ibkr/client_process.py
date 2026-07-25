@@ -19,6 +19,11 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
 DEFAULT_TERMINATE_TIMEOUT_SECONDS = 3.0
 
 
+# How long to let the event loop run per steady-state quote so queued ticks
+# are applied. Short on purpose: the live loop polls once a second.
+_QUOTE_PUMP_SECONDS = 0.1
+
+
 class IbkrWorkerError(RuntimeError):
     """The isolated IBKR worker failed a requested read-only operation."""
 
@@ -81,6 +86,11 @@ class _IbkrWorkerClient:
         self._last_event_at: datetime | None = None
         self._data_lost = False
         self._umc_detail: Any | None = None
+        # One streaming subscription is opened lazily and kept for the process's
+        # lifetime; see _ensure_umc_subscription for why per-quote subscribe and
+        # cancel is actively harmful.
+        self._umc_ticker: Any | None = None
+        self._umc_ticker_time: Any | None = None
         self._register_events()
 
     def _register_events(self) -> None:
@@ -107,6 +117,10 @@ class _IbkrWorkerClient:
         self._stamp("connected", data_lost=False)
 
     def _on_disconnected(self, *_args: object) -> None:
+        # The ticker belongs to the session that just died; holding it would
+        # serve that session's last values forever after a reconnect.
+        self._umc_ticker = None
+        self._umc_ticker_time = None
         self._stamp(
             "gateway_unavailable",
             message="IB Gateway socket disconnected; login may be required",
@@ -239,6 +253,44 @@ class _IbkrWorkerClient:
             self._umc_detail = matches[0]
         return self._umc_detail
 
+    def _ensure_umc_subscription(self) -> Any:
+        """Open the streaming subscription once and keep it.
+
+        Subscribing and cancelling per quote looks harmless but is not: ib_async
+        returns the SAME cached Ticker for a contract, and cancelMktData does
+        not clear its fields. A wait loop that stops as soon as any finite value
+        is present therefore returns the PREVIOUS call's snapshot instantly,
+        forever. Measured 2026-07-25: 485 consecutive fetches returned a
+        byte-identical payload, with ticker.time frozen at the first fetch.
+        The staleness gate caught it, which is the only reason it was visible.
+
+        Keeping one subscription also stops the 485 subscribe/cancel cycles that
+        wedged the Gateway badly enough to refuse fresh client ids.
+        """
+        if self._umc_ticker is None:
+            contract = self._resolve_umc_detail().contract
+            self.ib.reqMarketDataType(3)
+            self._umc_ticker = self.ib.reqMktData(
+                contract,
+                genericTickList="",
+                snapshot=False,
+                regulatorySnapshot=False,
+            )
+        return self._umc_ticker
+
+    def _cancel_umc_subscription(self) -> None:
+        if self._umc_ticker is None:
+            return
+        self._umc_ticker = None
+        self._umc_ticker_time = None
+        if self._umc_detail is None or not self.ib.isConnected():
+            return
+        try:
+            self.ib.cancelMktData(self._umc_detail.contract)
+        except Exception:
+            # Teardown must never mask the caller's own failure.
+            pass
+
     def fetch_umc_quote(
         self,
         *,
@@ -248,48 +300,58 @@ class _IbkrWorkerClient:
             raise ValueError("quote_wait_timeout_seconds must be positive")
         self._ensure_connected()
         contract = self._resolve_umc_detail().contract
-        self.ib.reqMarketDataType(3)
-        ticker = self.ib.reqMktData(
-            contract,
-            genericTickList="",
-            snapshot=False,
-            regulatorySnapshot=False,
-        )
-        remaining = float(quote_wait_timeout_seconds)
-        try:
+        ticker = self._ensure_umc_subscription()
+        previous_time = self._umc_ticker_time
+
+        def has_values() -> bool:
+            return any(
+                _is_finite(getattr(ticker, name, None))
+                for name in ("last", "close", "bid", "ask")
+            )
+
+        if previous_time is None:
+            # Bootstrap only: a brand-new subscription has no values yet, so the
+            # first call waits for the stream to deliver something.
+            remaining = float(quote_wait_timeout_seconds)
             while remaining > 0:
-                tier = getattr(ticker, "marketDataType", None)
-                values = (
-                    getattr(ticker, "last", None),
-                    getattr(ticker, "close", None),
-                    getattr(ticker, "bid", None),
-                    getattr(ticker, "ask", None),
-                )
-                if tier is not None and any(_is_finite(value) for value in values):
+                if getattr(ticker, "marketDataType", None) is not None and has_values():
                     break
                 wait_slice = min(0.2, remaining)
                 self.ib.sleep(wait_slice)
                 remaining -= wait_slice
-            return {
-                "con_id": int(contract.conId),
-                "market_data_tier": getattr(ticker, "marketDataType", None),
-                "last": getattr(ticker, "last", None),
-                "close": getattr(ticker, "close", None),
-                "bid": getattr(ticker, "bid", None),
-                "ask": getattr(ticker, "ask", None),
-                "bid_size": getattr(ticker, "bidSize", None),
-                "ask_size": getattr(ticker, "askSize", None),
-                "ticker_time": getattr(ticker, "time", None),
-                "last_timestamp": getattr(ticker, "lastTimestamp", None),
-                "delayed_last_timestamp": getattr(
-                    ticker,
-                    "delayedLastTimestamp",
-                    None,
-                ),
-                "observed_at": self.clock(),
-            }
-        finally:
-            self.ib.cancelMktData(contract)
+        else:
+            # Steady state: pump the event loop briefly so queued ticks are
+            # applied, then read whatever the stream currently holds. Blocking
+            # until the ticker advances would stall the live loop whenever the
+            # market is quiet -- and a quiet market is not an error. The quote's
+            # timestamp stays honest, so the staleness budget decides.
+            self.ib.sleep(_QUOTE_PUMP_SECONDS)
+
+        ticker_time = getattr(ticker, "time", None)
+        advanced = previous_time is None or ticker_time != previous_time
+        self._umc_ticker_time = ticker_time
+        return {
+            "con_id": int(contract.conId),
+            "market_data_tier": getattr(ticker, "marketDataType", None),
+            "last": getattr(ticker, "last", None),
+            "close": getattr(ticker, "close", None),
+            "bid": getattr(ticker, "bid", None),
+            "ask": getattr(ticker, "ask", None),
+            "bid_size": getattr(ticker, "bidSize", None),
+            "ask_size": getattr(ticker, "askSize", None),
+            "ticker_time": ticker_time,
+            # Whether ib_async applied a new tick since the previous fetch. Not
+            # an error on its own -- a quiet market does not tick -- but a long
+            # run of False while the session is open means the stream is wedged.
+            "ticker_advanced": advanced,
+            "last_timestamp": getattr(ticker, "lastTimestamp", None),
+            "delayed_last_timestamp": getattr(
+                ticker,
+                "delayedLastTimestamp",
+                None,
+            ),
+            "observed_at": self.clock(),
+        }
 
     def fetch_umc_historical_1m(
         self,
@@ -375,6 +437,7 @@ class _IbkrWorkerClient:
         }
 
     def close(self) -> None:
+        self._cancel_umc_subscription()
         if self.ib.isConnected():
             self.ib.disconnect()
         self._stamp("closed")
