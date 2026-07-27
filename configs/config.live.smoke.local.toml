@@ -63,6 +63,6 @@ minute_finalize_delay_seconds = 1.0
 stale_seconds = 10.0
 max_leg_timestamp_skew_seconds = 10.0
 warmup_minutes = 1440
-fubon_env_path = 'env'
+fubon_env_path = '.env'
 taifex_use_network = true
 taifex_cache_dir = 'data\taifex_cache'

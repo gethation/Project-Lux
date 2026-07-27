@@ -97,17 +97,22 @@ display = 'UMC'
 venue = 'ibkr'
 symbol = 'UMC'
 adr_share_ratio = 5.0
-# Delayed-feed admission (no NYSE subscription yet): IBKR stamps quotes with the
-# honest ~15-minute-delayed source time. REMOVE this line once the real-time
-# subscription is active so the strict global budget applies again -- it also
-# pulls the warmup window end back by the same amount, because the feed cannot
-# serve bars fresher than it is.
+# Delayed-feed admission. IBKR stamps quotes with the honest ~15-minute-delayed
+# source time, which the strict global budget rejects outright, so without this
+# the pair cannot even seed its warmup. REMOVE it once the real-time
+# subscription actually reaches the API -- it also pulls the warmup window end
+# back by the same amount, because the feed cannot serve bars fresher than it is.
 #
-# Measured 2026-07-25 mid-session: the delayed tier serves NO bid/ask (this
-# account has no book permission), so every CCF/UMC bar reports
-# missing_book skip_signal and the pair produces no entries at all until the
-# subscription is live. That is the intended trade-off -- see the plan's Phase 2
-# section: pricing both sides at last would understate UMC's real crossing cost.
+# Still required as of 2026-07-27 23:40 despite the subscription being ordered.
+# Measured directly against the Gateway that evening: requesting market data
+# type 1 (live) returns tier 1 but every field is NaN plus error 10089
+# ("...需要額外訂閱... UMC NYSE/TOP/ALL"); type 3 returns last=18.78 and NO
+# bid/ask. So the entitlement has not reached the API session yet.
+#
+# Consequence while this line is needed: the delayed tier serves no book, so
+# every CCF/UMC bar reports missing_book skip_signal and the pair produces no
+# entries. Pricing both sides at last instead would understate UMC's real
+# crossing cost -- see the plan's Phase 2 section.
 stale_seconds = 1200.0
 
 [pairs.fx]
@@ -188,7 +193,7 @@ max_leg_timestamp_skew_seconds = 10.0
 warmup_minutes = 500
 warmup_forward_fill_max_ratio = 0.9
 warmup_tw_leg_max_trailing_fill_minutes = 5
-fubon_env_path = 'env'
+fubon_env_path = '.env'
 taifex_use_network = true
 taifex_cache_dir = 'data\taifex_cache'
 
