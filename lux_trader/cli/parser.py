@@ -140,6 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run read-only broker checks and optional Fubon detail queries",
     )
     add_config_argument(status_broker)
+    add_pair_argument(status_broker)
     status_broker.add_argument(
         "--funds",
         action="store_true",
@@ -163,6 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Check replay configuration, live market data, or live-order gates",
     )
     add_config_argument(status_doctor)
+    add_pair_argument(status_doctor)
     status_doctor.add_argument(
         "--mode",
         choices=("replay", "live", "order", "ibkr"),
@@ -279,6 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a tiny single-venue real entry/exit smoke behind every env gate",
     )
     add_config_argument(exec_smoke)
+    add_pair_argument(exec_smoke)
     exec_smoke.add_argument(
         "--venue",
         choices=("fubon", "binance"),
@@ -311,6 +314,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emergency-close one stranded leg with a real market order behind gates",
     )
     add_config_argument(manual_close)
+    add_pair_argument(manual_close)
     manual_close.add_argument(
         "--venue",
         choices=("fubon", "binance"),

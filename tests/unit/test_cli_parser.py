@@ -293,6 +293,47 @@ def test_top_level_surface_is_exactly_seven_commands() -> None:
     )
 
 
+def leaf_parsers(
+    parser: argparse.ArgumentParser,
+    prefix: tuple[str, ...] = (),
+):
+    """Walk the subparser tree, yielding (command path, parser) for each leaf."""
+    nested = [
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    ]
+    if not nested:
+        yield prefix, parser
+        return
+    for action in nested:
+        for name, sub in action.choices.items():
+            yield from leaf_parsers(sub, prefix + (name,))
+
+
+def test_every_config_taking_command_also_takes_pair() -> None:
+    """--config without --pair is unusable against a multi-pair config.
+
+    ``load_config`` refuses to guess when several pairs are enabled, so a command
+    that accepts a config but offers no way to name a pair fails at load time --
+    which is how ``status doctor``, ``status broker`` and both ``admin`` recovery
+    commands broke once a second pair was configured. Asserted structurally so a
+    newly added command cannot reintroduce it.
+    """
+    missing = [
+        " ".join(path)
+        for path, sub in leaf_parsers(build_parser())
+        if "--config" in (options := {
+            option
+            for action in sub._actions
+            for option in action.option_strings
+        })
+        and "--pair" not in options
+    ]
+
+    assert missing == []
+
+
 def test_pair_id_is_resolved_from_config_instead_of_parser_choices() -> None:
     args = build_parser().parse_args(
         ["replay", "--config", CONFIG, "--pair", "configured_pair"]
