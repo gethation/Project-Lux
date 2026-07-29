@@ -31,6 +31,10 @@ _QUOTE_PUMP_SECONDS = 0.1
 # regardless: the delayed tier serves no book, so every bar reports missing_book
 # and the pair takes no entries. Asking for 3 buys a `last` price nothing can
 # trade on, at the cost of hiding whether the entitlement ever arrived.
+# Terminal IBKR order statuses that mean the order will never fill. Anything
+# outside this set that is not "Filled" is ambiguous, not safe.
+TERMINAL_UNFILLED_STATUSES = frozenset({"Cancelled", "ApiCancelled", "Inactive"})
+
 LIVE_MARKET_DATA_TYPE = 1
 FROZEN_MARKET_DATA_TYPE = 2
 DELAYED_MARKET_DATA_TYPE = 3
@@ -64,6 +68,10 @@ class IbkrConnectionConfig:
     client_id: int = DEFAULT_CLIENT_ID
     connect_timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS
     market_data_type: int = LIVE_MARKET_DATA_TYPE
+    # Defaults to a read-only session, so a client that never intends to trade
+    # cannot place an order even through a bug. Order placement has to ask for
+    # it by name; see integrations/ibkr/execution.py.
+    readonly: bool = True
 
     def __post_init__(self) -> None:
         if not self.host.strip():
@@ -195,7 +203,7 @@ class _IbkrWorkerClient:
                 self.config.port,
                 clientId=self.config.client_id,
                 timeout=self.config.connect_timeout_seconds,
-                readonly=True,
+                readonly=self.config.readonly,
                 fetchFields=StartupFetch(0),
             )
         except Exception as exc:
@@ -463,6 +471,135 @@ class _IbkrWorkerClient:
             "fetched_at": self.clock(),
         }
 
+    # -- orders ------------------------------------------------------------
+    #
+    # Confirmation is tiered here rather than in the parent, because the Trade
+    # object and its events live in this process. Mirrors the Fubon adapter's
+    # design: event first, query second, position delta last.
+
+    def fetch_umc_position(self) -> float:
+        """Signed UMC share count, summed over any split rows."""
+        self._ensure_connected()
+        total = 0.0
+        for position in self.ib.positions():
+            if str(position.contract.symbol).strip().upper() == "UMC":
+                total += float(position.position)
+        return total
+
+    def fetch_umc_open_orders(self) -> list[dict[str, Any]]:
+        self._ensure_connected()
+        return [
+            {
+                "order_id": int(trade.order.orderId),
+                "action": str(trade.order.action),
+                "quantity": float(trade.order.totalQuantity),
+                "status": str(trade.orderStatus.status),
+                "filled": float(trade.orderStatus.filled),
+                "remaining": float(trade.orderStatus.remaining),
+            }
+            for trade in self.ib.openTrades()
+            if str(trade.contract.symbol).strip().upper() == "UMC"
+        ]
+
+    def place_and_confirm_umc_order(
+        self,
+        *,
+        action: str,
+        quantity: float,
+        wait_seconds: float,
+        poll_seconds: float = 0.25,
+    ) -> dict[str, Any]:
+        """Place one market order and report what is KNOWN about its outcome.
+
+        Returns a classification, never a guess:
+
+          filled     the order reached a terminal filled state
+          failed     terminal, zero filled, and the position did not move --
+                     safe, because nothing was left open
+          unknown    anything else, including a timeout or a partial. The caller
+                     must treat this as possible exposure and pause.
+
+        The failed/unknown split is the whole point. "Rejected" and "no idea"
+        are both non-fills, but only one of them is safe to retry.
+        """
+        if quantity <= 0:
+            raise ValueError("quantity must be positive")
+        if float(quantity) != int(quantity):
+            raise ValueError(f"UMC is a cash equity; got {quantity} shares")
+        self._ensure_connected()
+
+        from ib_async import MarketOrder
+
+        contract = self._resolve_umc_detail().contract
+        position_before = self.fetch_umc_position()
+        order = MarketOrder(action, int(quantity))
+
+        submitted_at = self.clock()
+        trade = self.ib.placeOrder(contract, order)
+
+        # Tier 1 -- events. isDone() flips when a terminal status arrives.
+        deadline = float(wait_seconds)
+        while deadline > 0 and not trade.isDone():
+            slice_seconds = min(float(poll_seconds), deadline)
+            self.ib.sleep(slice_seconds)
+            deadline -= slice_seconds
+
+        status = str(trade.orderStatus.status)
+        filled = float(trade.orderStatus.filled)
+        remaining = float(trade.orderStatus.remaining)
+
+        # Tier 2 -- query. An event can be missed; the order book cannot.
+        if not trade.isDone():
+            for row in self.fetch_umc_open_orders():
+                if row["order_id"] == int(trade.order.orderId):
+                    status, filled, remaining = (
+                        row["status"],
+                        row["filled"],
+                        row["remaining"],
+                    )
+                    break
+
+        # Tier 3 -- position delta. Last resort, and only trusted when it
+        # agrees exactly with the order: a delta that half-matches says the
+        # position moved for some other reason too, which is not a confirmation.
+        position_after = self.fetch_umc_position()
+        expected_delta = int(quantity) if action.upper() == "BUY" else -int(quantity)
+        observed_delta = position_after - position_before
+        delta_confirms = abs(observed_delta - expected_delta) <= 1e-9
+
+        if status == "Filled" or (filled >= int(quantity) and remaining <= 0):
+            classification = "filled"
+            filled = max(filled, float(quantity))
+        elif delta_confirms:
+            # The broker never said so, but the account moved by exactly this
+            # order. Treat as filled and say which tier decided it.
+            classification = "filled"
+            filled = float(quantity)
+        elif (
+            status in TERMINAL_UNFILLED_STATUSES
+            and filled == 0.0
+            and observed_delta == 0.0
+        ):
+            classification = "failed"
+        else:
+            classification = "unknown"
+
+        return {
+            "classification": classification,
+            "order_id": int(trade.order.orderId),
+            "status": status,
+            "filled": filled,
+            "remaining": remaining,
+            "avg_fill_price": float(trade.orderStatus.avgFillPrice or 0.0),
+            "position_before": position_before,
+            "position_after": position_after,
+            "observed_delta": observed_delta,
+            "expected_delta": expected_delta,
+            "delta_confirms": delta_confirms,
+            "submitted_at": submitted_at,
+            "resolved_at": self.clock(),
+        }
+
     def close(self) -> None:
         self._cancel_umc_subscription()
         if self.ib.isConnected():
@@ -506,7 +643,11 @@ def _ibkr_worker(
 
 
 class IbkrClientProcess:
-    """Process-isolated, read-only IBKR connection and contract facade."""
+    """Process-isolated IBKR connection and contract facade.
+
+    Read-only unless ``readonly=False`` is passed, which only the execution
+    adapter does, and only behind env gates.
+    """
 
     def __init__(
         self,
@@ -518,6 +659,7 @@ class IbkrClientProcess:
         request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
         terminate_timeout_seconds: float = DEFAULT_TERMINATE_TIMEOUT_SECONDS,
         market_data_type: int = LIVE_MARKET_DATA_TYPE,
+        readonly: bool = True,
         worker_target: Callable[..., None] = _ibkr_worker,
     ) -> None:
         self.connection_config = IbkrConnectionConfig(
@@ -526,6 +668,7 @@ class IbkrClientProcess:
             client_id=client_id,
             connect_timeout_seconds=connect_timeout_seconds,
             market_data_type=market_data_type,
+            readonly=readonly,
         )
         self.request_timeout_seconds = float(request_timeout_seconds)
         self.terminate_timeout_seconds = float(terminate_timeout_seconds)
@@ -537,9 +680,11 @@ class IbkrClientProcess:
         self._transport = SubprocessTransport(
             worker_target=self.worker_target,
             worker_args=(self.connection_config,),
-            process_name="project-lux-ibkr-readonly",
+            process_name=(
+                "project-lux-ibkr-readonly" if readonly else "project-lux-ibkr-exec"
+            ),
             broker_label="IBKR",
-            worker_label="IBKR readonly",
+            worker_label="IBKR readonly" if readonly else "IBKR execution",
             closed_message="IBKR client process is closed",
             error_type=IbkrWorkerError,
             timeout_type=IbkrWorkerTimeout,
@@ -592,6 +737,30 @@ class IbkrClientProcess:
 
     def fetch_account_snapshot(self) -> dict[str, Any]:
         return dict(self._request_guarded("fetch_account_snapshot"))
+
+    def fetch_umc_position(self) -> float:
+        return float(self._request_guarded("fetch_umc_position"))
+
+    def fetch_umc_open_orders(self) -> list[dict[str, Any]]:
+        return [dict(row) for row in self._request_guarded("fetch_umc_open_orders")]
+
+    def place_and_confirm_umc_order(
+        self,
+        *,
+        action: str,
+        quantity: float,
+        wait_seconds: float,
+        poll_seconds: float = 0.25,
+    ) -> dict[str, Any]:
+        return dict(
+            self._request_guarded(
+                "place_and_confirm_umc_order",
+                action=action,
+                quantity=quantity,
+                wait_seconds=wait_seconds,
+                poll_seconds=poll_seconds,
+            )
+        )
 
     def session_health(self) -> dict[str, Any]:
         health = dict(self._request_guarded("session_health"))

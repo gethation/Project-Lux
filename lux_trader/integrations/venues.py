@@ -7,10 +7,12 @@ so the parts that are still missing say which phase fills them in.
 Wired (Phase B): UMC quotes and history from IBKR, USD/TWD from Twelve Data
 behind a TTL cache, read-only IBKR account access.
 
-Not wired: UMC order placement, which needs the IBKR execution adapter in Phase
-D. It raises rather than returning a degraded stand-in -- a pair that quietly
-prices its US leg off nothing, or reports a position it never queried, is far
-more dangerous than one that refuses to start.
+Everything is wired as of Phase D1/D2, though the execution adapter is a
+skeleton whose short-selling paths cannot be validated until the IBKR account is
+upgraded to margin. Anything that is ever unwired here raises rather than
+returning a degraded stand-in -- a pair that quietly prices its US leg off
+nothing, or reports a position it never queried, is far more dangerous than one
+that refuses to start.
 
 The CCF leg is unaffected: Fubon is wired and stays wired.
 
@@ -88,12 +90,19 @@ def open_umc_readonly_broker(symbol: str, env_path: Path | None = None) -> Any:
 
 
 def open_umc_execution_adapter(symbol: str, env_path: Path | None = None) -> Any:
-    """UMC order placement. Phase D: IBKR.
+    """UMC order placement via IBKR.
 
-    The largest single piece of new code in the plan -- nothing anywhere in the
-    repo can place a US-leg order today.
+    The only trade-capable IBKR session in the repo, and the only caller that
+    asks IbkrClientProcess for readonly=False. It still refuses to send anything
+    unless both live-order env gates are open, checked per order.
+
+    A skeleton: exercised against a fake worker, never against a real Gateway,
+    and its short-selling paths cannot be validated at all until the account is
+    upgraded to margin.
     """
-    raise _refuse("execution adapter", "Phase D")
+    from .ibkr.execution import IbkrUmcExecutionAdapter
+
+    return IbkrUmcExecutionAdapter(symbol)
 
 
 # The startup clock-skew gate does NOT live here. It checks absolute time, not
