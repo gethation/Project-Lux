@@ -303,7 +303,57 @@ CCF/UMC golden 綠燈後，刪掉 QFF/TSM fixture 與 `weekend_policy = flat` �
 
 ---
 
-## 5. Phase D — IBKR 下單 adapter
+## 5. Phase D — 進度 2026-07-29
+
+| # | 狀態 |
+|---|---|
+| **D4 下單前查券商實際部位** | ✅ 完成 `d7c0a41`，444 passed |
+| D1/D2 IBKR execution adapter + 成交確認分層 | 未做（Phase D 主體） |
+| D3 費用模型、D7 整股取整 | **被 golden 擋住**，見下 |
+| D5 持倉期間部位對帳 | **前提要修正**，見下 |
+| D6 Recall 應對 | 需 D5 先偵測到 |
+
+### D4 已完成
+
+`execution/position_guard.py`：下單前讀兩邊券商實際部位。出場必須找到**反向、
+等量**的部位；進場必須兩邊都是 flat。三個刻意的決定：**拒絕而非調整**（依券商
+回報重新定量 = 用一個剛被證明是錯的世界模型去交易）、**讀不到不等於 flat**、
+**失敗時一張單都不送**（包含本來會先成交的富邦腿，否則留下裸腿）。
+
+### D3 / D7 被 golden 擋住
+
+兩者都會動到 Phase C 剛凍好的 golden：
+- **D3**：golden 用 `umc_fee_bps = 2.5` 對齊 PoC。換成 per-share + 最低佣金 +
+  SEC/FINRA 會讓 replay 不再重現 PoC。
+- **D7**：golden 的 `umc_units` 是分數股（PoC 從不下單，所以不取整）。在共用
+  sizing 裡取整就會偏離。
+
+**正確的落點是 live 專屬路徑**：sizing 算理想避險比例，**order 層**才取整成可
+交易股數；費用模型同理，replay 保留 bps（且實測 bps 是**偏保守**的 —— 中位數
+406 股時模型 $2.49/邊 vs 實際 $2.03）。兩者都要等 D1 的 adapter 存在才有落點。
+
+### D5 的前提是錯的（計畫本身的錯誤，已查證）
+
+計畫原文說「`BrokerAccountSnapshot` 已經帶 `positions`，而保證金監控每 15 分鐘
+就在抓它 —— **資料已在手上，只是沒拿去比對**」。**不成立。**
+
+`margin/service.py:fetch_margin_snapshot` **刻意**優先用輕量的 `fetch_margins()`
+而非完整 `fetch_snapshot()`，理由寫在該函式的 docstring 裡：富邦的
+`query_single_position` 在頻繁輪詢下**受流量控管（業務系統流量控管）**。這是別人
+先前刻意繞開的限制，不是疏漏。
+
+所以 D5 需要一個設計決定，不是「加一行比對」：
+- 部位查詢用**比保證金更低的頻率**（例如 30–60 分鐘）？
+- 只在持倉期間查（red_line 已經是這個條件）？
+- 或者只查 IBKR 側（它的 readonly 沒有 `fetch_margins`，本來就走完整快照，
+  順帶就有 positions）—— **而 recall 風險本來就只在 UMC 這一腿**？
+
+第三個選項看起來最好：零額外的富邦流量，而且正好覆蓋唯一會被第三方平掉的腿。
+但這是需要確認的決定，不是實作細節。
+
+---
+
+## 5b. Phase D 原始計畫（保留供對照）
 
 **全新程式碼，本案最大一塊。** master 的 `integrations/ibkr/` 底下沒有
 `execution.py`，grep `place_order|placeOrder|submit` 命中 0 —— 目前 UMC
