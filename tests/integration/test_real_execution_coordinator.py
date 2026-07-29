@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 
 import pytest
@@ -82,10 +83,22 @@ class FakeStore:
 
 
 class FakeExecutionAdapter:
-    def __init__(self, broker: BrokerName, outcomes: list[dict]) -> None:
+    def __init__(
+        self,
+        broker: BrokerName,
+        outcomes: list[dict],
+        *,
+        position_quantity: float = 0.0,
+    ) -> None:
         self.broker = broker
         self.outcomes = list(outcomes)
         self.plans: list[PairExecutionPlan] = []
+        # The coordinator asks before sending anything; flat is what an entry
+        # plan expects to find. See execution/position_guard.py.
+        self.position_quantity = float(position_quantity)
+
+    def fetch_position_quantity(self) -> float:
+        return self.position_quantity
 
     def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
         self.plans.append(plan)
@@ -213,16 +226,35 @@ def pair_plan(*, ccf_quantity: float = 2.0) -> PairExecutionPlan:
     )
 
 
+def exit_plan(*, ccf_quantity: float = 2.0) -> PairExecutionPlan:
+    """Closing SHORT_UMC_LONG_CCF: buy back the UMC short, sell the CCF long."""
+    return replace(
+        pair_plan(ccf_quantity=ccf_quantity),
+        plan_id="LIVE-EXIT-1",
+        plan_type=ExecutionPlanType.EXIT,
+        legs=(
+            replace(pair_plan().legs[0], side=OrderSide.BUY),
+            replace(pair_plan(ccf_quantity=ccf_quantity).legs[1], side=OrderSide.SELL),
+        ),
+    )
+
+
 def coordinator(
     store: FakeStore,
     *,
     ccf_outcomes: list[dict],
     umc_outcomes: list[dict],
+    ccf_position: float = 0.0,
+    umc_position: float = 0.0,
 ) -> RealExecutionCoordinator:
     return RealExecutionCoordinator(
         store=store,
-        fubon_adapter=FakeExecutionAdapter(BrokerName.FUBON_CCF, ccf_outcomes),
-        umc_adapter=FakeExecutionAdapter(BrokerName.IBKR_UMC, umc_outcomes),
+        fubon_adapter=FakeExecutionAdapter(
+            BrokerName.FUBON_CCF, ccf_outcomes, position_quantity=ccf_position
+        ),
+        umc_adapter=FakeExecutionAdapter(
+            BrokerName.IBKR_UMC, umc_outcomes, position_quantity=umc_position
+        ),
         ccf_first=True,
         clock=ts,
     )
@@ -960,3 +992,52 @@ def test_live_execute_post_trade_reconciliation_mismatch_pauses_strategy(
     finally:
         handler.close()
         store.close()
+
+
+def test_a_recalled_umc_short_is_refused_before_any_order_is_sent() -> None:
+    """The recall scenario, end to end through the coordinator.
+
+    IBKR reports flat because the short was bought in without our consent. The
+    exit plan's BUY would open a fresh long on top of the CCF long. Nothing may
+    reach either adapter, including the Fubon leg that would otherwise fill
+    first and leave a naked position behind.
+    """
+    store = FakeStore()
+    engine = coordinator(
+        store,
+        ccf_outcomes=[{"status": ExecutionOutcomeStatus.FILLED}],
+        umc_outcomes=[{"status": ExecutionOutcomeStatus.FILLED}],
+        ccf_position=2.0,
+        umc_position=0.0,  # recalled
+    )
+
+    recorded, outcome = engine.execute(exit_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.REJECTED
+    assert outcome.recommended_state == StrategyState.PAUSED
+    assert engine.adapters[BrokerName.FUBON_CCF].plans == []
+    assert engine.adapters[BrokerName.IBKR_UMC].plans == []
+
+    guard = outcome.payload["position_guard"]
+    assert guard["passed"] is False
+    failed = [check for check in guard["checks"] if not check["passed"]]
+    assert [check["broker"] for check in failed] == [BrokerName.IBKR_UMC.value]
+    assert "would OPEN a position" in failed[0]["detail"]
+
+
+def test_a_matching_exit_still_goes_through() -> None:
+    """The guard must not become a blanket refusal of exits."""
+    store = FakeStore()
+    engine = coordinator(
+        store,
+        ccf_outcomes=[{"status": ExecutionOutcomeStatus.FILLED}],
+        umc_outcomes=[{"status": ExecutionOutcomeStatus.FILLED}],
+        ccf_position=2.0,
+        umc_position=-100.0,
+    )
+
+    _, outcome = engine.execute(exit_plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.FILLED
+    assert len(engine.adapters[BrokerName.FUBON_CCF].plans) == 1
+    assert len(engine.adapters[BrokerName.IBKR_UMC].plans) == 1

@@ -149,9 +149,15 @@ class FakeOhlcvProvider:
 
 
 class FakeLiveExecutionAdapter:
-    def __init__(self, broker: BrokerName) -> None:
+    def __init__(self, broker: BrokerName, *, position_quantity: float = 0.0) -> None:
         self.broker = broker
         self.plans: list[PairExecutionPlan] = []
+        # The coordinator reads this before sending anything; an entry plan
+        # expects flat. See execution/position_guard.py.
+        self.position_quantity = float(position_quantity)
+
+    def fetch_position_quantity(self) -> float:
+        return self.position_quantity
 
     def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
         self.plans.append(plan)

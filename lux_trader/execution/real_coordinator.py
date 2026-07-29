@@ -5,6 +5,11 @@ from datetime import datetime
 from typing import Any
 
 from .outcome import ExecutionAdapter, ExecutionOutcome, ExecutionOutcomeStatus
+from .position_guard import (
+    PositionReader,
+    adapter_position_reader,
+    verify_plan_against_broker,
+)
 from .intent import (
     ExecutionCheck,
     ExecutionLeg,
@@ -33,6 +38,8 @@ class RealExecutionCoordinator:
         fubon_adapter: ExecutionAdapter,
         ccf_first: bool = True,
         clock: Any | None = None,
+        read_position: PositionReader | None = None,
+        position_tolerances: dict[BrokerName, float] | None = None,
     ) -> None:
         self.store = store
         self.adapters = {
@@ -41,6 +48,10 @@ class RealExecutionCoordinator:
         }
         self.ccf_first = bool(ccf_first)
         self.clock = clock or (lambda: datetime.now().astimezone())
+        # Defaults to asking the adapters. An adapter with no position query
+        # reads as unverifiable, which the guard refuses -- see position_guard.
+        self.read_position = read_position or adapter_position_reader(self.adapters)
+        self.position_tolerances = dict(position_tolerances or {})
 
     def execute(
         self,
@@ -79,6 +90,28 @@ class RealExecutionCoordinator:
                 message="live execution plan missing required legs",
                 recommended_state=StrategyState.PAUSED,
                 payload={"adapter": "real_execution_coordinator"},
+            )
+            self.store.record_execution_outcome(outcome)
+            return recorded, outcome
+
+        # Last gate before anything is sent. Everything above this line trusts
+        # our own record of the position; this is where we ask the brokers.
+        guard = verify_plan_against_broker(
+            recorded,
+            read_position=self.read_position,
+            tolerances=self.position_tolerances,
+        )
+        if not guard.passed:
+            outcome = ExecutionOutcome(
+                plan_id=recorded.plan_id,
+                timestamp=self.clock(),
+                status=ExecutionOutcomeStatus.REJECTED,
+                message="broker position does not match the plan",
+                recommended_state=StrategyState.PAUSED,
+                payload={
+                    "adapter": "real_execution_coordinator",
+                    "position_guard": guard.to_jsonable(),
+                },
             )
             self.store.record_execution_outcome(outcome)
             return recorded, outcome
