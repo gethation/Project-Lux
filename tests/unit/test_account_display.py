@@ -22,12 +22,12 @@ def config() -> SimpleNamespace:
 
 
 def umc_margin(*, upnl: float | None = 500.0, equity: float = 10_000.0) -> BrokerMarginSnapshot:
-    raw: dict[str, object] = {
-        "totalMarginBalance": equity,
-        "totalWalletBalance": equity - (upnl or 0.0),
-    }
+    # IBKR account-summary tag names, flattened by IbkrReadOnlyBroker. There is
+    # no equity-minus-wallet derivation here: IBKR reports UnrealizedPnL
+    # directly, so an absent tag means the panel shows blank.
+    raw: dict[str, object] = {"MaintMarginReq": 0.0}
     if upnl is not None:
-        raw["totalUnrealizedProfit"] = upnl
+        raw["UnrealizedPnL"] = upnl
     return BrokerMarginSnapshot(
         broker=BrokerName.IBKR_UMC,
         currency="USD",

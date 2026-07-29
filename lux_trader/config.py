@@ -104,6 +104,30 @@ class LiveMarketDataConfig:
     # from passing merely because the other historical minutes are complete.
     warmup_ccf_max_trailing_fill_minutes: int = 5
 
+    # -- IBKR (UMC) ---------------------------------------------------------
+    ibkr_host: str = "127.0.0.1"
+    ibkr_port: int = 4001
+    ibkr_client_id: int = 17_002
+    # 1 live | 2 frozen | 3 delayed | 4 delayed-frozen. Default 1: asking for 3
+    # OVERRIDES an entitlement you hold, and delayed data serves no book, so the
+    # directional signal could never fire anyway. Failing loudly beats a system
+    # that runs and never trades. See integrations/ibkr/client_process.py.
+    ibkr_market_data_type: int = 1
+
+    # -- Twelve Data (USD/TWD) ---------------------------------------------
+    # 300s TTL measured at 78 requests per UMC session against a free tier of
+    # 800/day -- roughly ten sessions of headroom.
+    fx_cache_ttl_seconds: float = 300.0
+    # The FX rate is polled on a cache TTL, not co-timed with the legs, so it
+    # gets its own budget instead of the global one. Worst case measured is
+    # 300s cache + ~35s publish lag; 600 leaves ~1.8x headroom while still
+    # catching a genuinely dead feed inside ten minutes.
+    fx_stale_seconds: float = 600.0
+    # How long a cached rate may still be served after refetch failures before
+    # the provider gives up. Without it a dead upstream becomes a frozen rate
+    # that the staleness gate would eventually catch -- but only eventually.
+    fx_max_serve_seconds: float = 900.0
+
 
 @dataclass(frozen=True)
 class BrokerReconciliationConfig:
@@ -333,6 +357,15 @@ def load_config(path: Path) -> AppConfig:
             warmup_ccf_max_trailing_fill_minutes=int(
                 live.get("warmup_ccf_max_trailing_fill_minutes", 5)
             ),
+            ibkr_host=str(live.get("ibkr_host", "127.0.0.1")).strip(),
+            ibkr_port=int(live.get("ibkr_port", 4001)),
+            ibkr_client_id=int(live.get("ibkr_client_id", 17_002)),
+            ibkr_market_data_type=validate_market_data_type(
+                live.get("ibkr_market_data_type", 1)
+            ),
+            fx_cache_ttl_seconds=float(live.get("fx_cache_ttl_seconds", 300.0)),
+            fx_stale_seconds=float(live.get("fx_stale_seconds", 600.0)),
+            fx_max_serve_seconds=float(live.get("fx_max_serve_seconds", 900.0)),
         ),
         broker_reconciliation=BrokerReconciliationConfig(
             enabled=bool(broker_reconciliation.get("enabled", False)),
@@ -486,6 +519,24 @@ def optional_path(value: object, root: Path) -> Path | None:
     if not path.is_absolute():
         path = root / path
     return path
+
+
+def validate_market_data_type(value: object) -> int:
+    """IBKR market-data type, validated at load rather than at first quote.
+
+    Imported lazily: config must stay importable without ib_async installed,
+    since replay and summary never touch a venue.
+    """
+    from .integrations.ibkr.client_process import MARKET_DATA_TYPES
+
+    parsed = int(value)
+    if parsed not in MARKET_DATA_TYPES:
+        raise RuntimeError(
+            "live_market_data.ibkr_market_data_type must be one of "
+            f"{sorted(MARKET_DATA_TYPES)} (1=live, 2=frozen, 3=delayed, "
+            f"4=delayed-frozen); got {parsed}"
+        )
+    return parsed
 
 
 def required_contract_multiplier(fees: dict) -> float:

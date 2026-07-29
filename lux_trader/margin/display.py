@@ -186,17 +186,12 @@ class AccountDisplayProvider:
         if not snapshot.margins or rate is None:
             return None
         margin = snapshot.margins[0]
-        # PHASE B: "totalUnrealizedProfit" / "totalWalletBalance" are Binance
-        # USD-M account fields. IBKR reports unrealized PnL under different
-        # names, so this lookup returns None against an IBKR snapshot and the
-        # panel shows no UMC uPnL -- blank, never a wrong number. Remap when the
-        # IBKR read-only broker lands.
-        upnl_usd = raw_float(margin.raw, "totalUnrealizedProfit")
+        # IBKR reports it directly as an account-summary tag, so there is no
+        # equity-minus-wallet derivation to fall back on: absent means absent,
+        # and the panel shows blank rather than a number it made up.
+        upnl_usd = raw_float(margin.raw, "UnrealizedPnL")
         if upnl_usd is None:
-            wallet = raw_float(margin.raw, "totalWalletBalance")
-            if margin.equity is None or wallet is None:
-                return None
-            upnl_usd = margin.equity - wallet
+            return None
         return upnl_usd * rate
 
     @staticmethod

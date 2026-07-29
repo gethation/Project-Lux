@@ -471,13 +471,89 @@ def test_tradable_spread_uses_bid_ask_and_does_not_mutate_indicator() -> None:
         last_ccf_close=100.0,
     )
 
-    short_spread = ((19.5 * 29.9 / 5.0) - 101.0) / ((19.5 * 29.9 / 5.0) + 101.0) * 200.0
-    long_spread = ((20.5 * 30.1 / 5.0) - 99.0) / ((20.5 * 30.1 / 5.0) + 99.0) * 200.0
+    # UMC and CCF cross their books; USD/TWD prices at its mid in BOTH
+    # directions. The FX rate makes the two legs comparable -- it is not a book
+    # this strategy crosses, so charging a currency spread would model a
+    # conversion that never happens. Note 30.0 below, not 29.9/30.1.
+    short_spread = ((19.5 * 30.0 / 5.0) - 101.0) / ((19.5 * 30.0 / 5.0) + 101.0) * 200.0
+    long_spread = ((20.5 * 30.0 / 5.0) - 99.0) / ((20.5 * 30.0 / 5.0) + 99.0) * 200.0
     assert snapshot.short_spread == pytest.approx(short_spread)
     assert snapshot.long_spread == pytest.approx(long_spread)
     assert snapshot.short_zscore is not None
     assert snapshot.long_zscore is not None
     assert indicator.to_jsonable() == before
+
+
+def test_tradable_spread_ignores_an_fx_book_even_when_one_exists() -> None:
+    """A source that does report a book must not change the spread.
+
+    Twelve Data serves no bid/ask, so this could look academic -- but if the FX
+    source is ever swapped for one that does, the spread must not silently start
+    charging a currency crossing.
+    """
+    indicator = IndicatorEngine(window=3)
+    for spread in (1.0, 2.0, 3.0):
+        indicator.update(bar(spread))
+    observed_at = ts("2026-06-18T09:00:10+08:00")
+
+    def snapshot_with(fx_bid, fx_ask):
+        return estimate_tradable_spreads(
+            LiveQuoteSet(
+                ccf=quote("ccf", "2026-06-18T09:00:10+08:00", 100.0, bid=99.0, ask=101.0),
+                umc=quote("umc", "2026-06-18T09:00:10+08:00", 20.0, bid=19.5, ask=20.5),
+                usd_twd=quote(
+                    "usd", "2026-06-18T09:00:10+08:00", 30.0, bid=fx_bid, ask=fx_ask
+                ),
+            ),
+            observed_at,
+            indicator,
+            stale_seconds=10.0,
+            ccf_book_stale_seconds=55.0,
+            last_ccf_close=100.0,
+        )
+
+    with_book = snapshot_with(29.9, 30.1)
+    without_book = snapshot_with(None, None)
+
+    assert with_book.short_spread == pytest.approx(without_book.short_spread)
+    assert with_book.long_spread == pytest.approx(without_book.long_spread)
+    assert without_book.missing_reason is None
+
+
+def test_fx_gets_its_own_staleness_budget() -> None:
+    """A cached FX rate is minutes old by design and must not fail the leg gate."""
+    indicator = IndicatorEngine(window=3)
+    for spread in (1.0, 2.0, 3.0):
+        indicator.update(bar(spread))
+    observed_at = ts("2026-06-18T09:05:00+08:00")
+    quote_set = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T09:04:55+08:00", 100.0, bid=99.0, ask=101.0),
+        umc=quote("umc", "2026-06-18T09:04:55+08:00", 20.0, bid=19.5, ask=20.5),
+        # Five minutes old: fine for a reference rate, far past the leg budget.
+        usd_twd=quote("usd", "2026-06-18T09:00:00+08:00", 30.0),
+    )
+
+    on_the_leg_budget = estimate_tradable_spreads(
+        quote_set,
+        observed_at,
+        indicator,
+        stale_seconds=10.0,
+        ccf_book_stale_seconds=55.0,
+        last_ccf_close=100.0,
+    )
+    with_fx_budget = estimate_tradable_spreads(
+        quote_set,
+        observed_at,
+        indicator,
+        stale_seconds=10.0,
+        ccf_book_stale_seconds=55.0,
+        last_ccf_close=100.0,
+        usd_twd_stale_seconds=600.0,
+    )
+
+    assert on_the_leg_budget.missing_reason == "stale_usd_twd"
+    assert with_fx_budget.missing_reason is None
+    assert with_fx_budget.short_spread is not None
 
 
 def test_tradable_spread_uses_ccf_specific_stale_threshold() -> None:

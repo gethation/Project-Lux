@@ -42,12 +42,14 @@ def estimate_tradable_spreads(
     stale_seconds: float,
     ccf_book_stale_seconds: float,
     last_ccf_close: float | None,
+    usd_twd_stale_seconds: float | None = None,
 ) -> TradableSpreadSnapshot:
     mid_spread = estimate_mid_spread(
         quote_set,
         observed_at,
         stale_seconds=stale_seconds,
         last_ccf_close=last_ccf_close,
+        usd_twd_stale_seconds=usd_twd_stale_seconds,
     )
     short_spread, short_missing = estimate_directional_spread(
         quote_set,
@@ -55,8 +57,8 @@ def estimate_tradable_spreads(
         stale_seconds=stale_seconds,
         ccf_book_stale_seconds=ccf_book_stale_seconds,
         umc_side="bid",
-        usd_twd_side="bid",
         ccf_side="ask",
+        usd_twd_stale_seconds=usd_twd_stale_seconds,
     )
     long_spread, long_missing = estimate_directional_spread(
         quote_set,
@@ -64,8 +66,8 @@ def estimate_tradable_spreads(
         stale_seconds=stale_seconds,
         ccf_book_stale_seconds=ccf_book_stale_seconds,
         umc_side="ask",
-        usd_twd_side="ask",
         ccf_side="bid",
+        usd_twd_stale_seconds=usd_twd_stale_seconds,
     )
     missing_reason = short_missing or long_missing
     return TradableSpreadSnapshot(
@@ -85,11 +87,16 @@ def estimate_mid_spread(
     *,
     stale_seconds: float,
     last_ccf_close: float | None,
+    usd_twd_stale_seconds: float | None = None,
 ) -> float | None:
     observed = ensure_taipei(observed_at)
+    fx_budget = stale_seconds if usd_twd_stale_seconds is None else usd_twd_stale_seconds
     if not quote_is_fresh(quote_set.umc, observed, stale_seconds):
         return None
-    if not quote_is_fresh(quote_set.usd_twd, observed, stale_seconds):
+    # The FX reference gets its own budget: it is polled on a cache TTL measured
+    # in minutes, not co-timed with the legs, so holding it to the same
+    # ten-second gate would reject every bar.
+    if not quote_is_fresh(quote_set.usd_twd, observed, fx_budget):
         return None
 
     ccf_price = last_ccf_close
@@ -109,15 +116,16 @@ def estimate_directional_spread(
     stale_seconds: float,
     ccf_book_stale_seconds: float,
     umc_side: str,
-    usd_twd_side: str,
     ccf_side: str,
+    usd_twd_stale_seconds: float | None = None,
 ) -> tuple[float | None, str | None]:
     observed = ensure_taipei(observed_at)
-    for name, quote in (
-        ("umc", quote_set.umc),
-        ("usd_twd", quote_set.usd_twd),
+    fx_budget = stale_seconds if usd_twd_stale_seconds is None else usd_twd_stale_seconds
+    for name, quote, budget in (
+        ("umc", quote_set.umc, stale_seconds),
+        ("usd_twd", quote_set.usd_twd, fx_budget),
     ):
-        if not quote_is_fresh(quote, observed, stale_seconds):
+        if not quote_is_fresh(quote, observed, budget):
             return None, f"stale_{name}"
     if ccf_book_quote_missing(quote_set.ccf):
         return None, "stale_ccf"
@@ -125,8 +133,15 @@ def estimate_directional_spread(
         return None, "stale_ccf"
 
     umc_price = book_price(quote_set.umc, umc_side)
-    usd_twd_price = book_price(quote_set.usd_twd, usd_twd_side)
     ccf_price = book_price(quote_set.ccf, ccf_side)
+    # USD/TWD prices at its mid in BOTH directions, with no bid/ask side. The FX
+    # rate is a reference that makes a TWD future and a USD equity comparable --
+    # it is not a leg this strategy crosses. Long CCF / short UMC settles in two
+    # currencies and converts nothing per trade, so charging a currency spread
+    # would model a conversion that never happens. It also means an FX source
+    # with no book, which is every honest one at this cadence, does not stop the
+    # pair from producing a signal.
+    usd_twd_price = quote_set.usd_twd.price
     if umc_price is None or usd_twd_price is None or ccf_price is None:
         return None, "missing_book"
 

@@ -46,7 +46,7 @@ def reading_from_snapshot(snapshot: BrokerAccountSnapshot, venue: str) -> Margin
         )
     margin = snapshot.margins[0]
     if venue == "ibkr":
-        maint = raw_float(margin.raw, "totalMaintMargin", "maintMargin")
+        maint = raw_float(margin.raw, "MaintMarginReq")
     else:
         maint = raw_float(margin.raw, "maintenance_margin", "maintenanceMargin")
     return MarginReading(

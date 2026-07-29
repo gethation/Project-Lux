@@ -20,6 +20,12 @@ class LiveQuote:
     bid_size: float | None = None
     ask_size: float | None = None
     raw: dict[str, Any] | None = None
+    # IBKR serves a tier per subscription (1 live, 2 frozen, 3 delayed,
+    # 4 delayed-frozen) and will happily downgrade without being asked. Carrying
+    # it on the quote means the runtime can say what it is trading on rather
+    # than assuming.
+    market_data_tier: int | None = None
+    is_delayed: bool = False
 
 
 @dataclass(frozen=True)

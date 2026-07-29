@@ -23,6 +23,23 @@ def require_env(name: str) -> str:
     return value
 
 
+READONLY_BROKER_ENV = "LUX_READONLY_BROKER"
+
+
+def readonly_broker_enabled() -> bool:
+    return os.getenv(READONLY_BROKER_ENV, "").strip() == "1"
+
+
+def require_readonly_broker_env() -> None:
+    """One switch governs every venue's read-only account access.
+
+    Lives here rather than in cli.helpers so integrations never import from the
+    CLI layer.
+    """
+    if not readonly_broker_enabled():
+        raise RuntimeError(f"Set {READONLY_BROKER_ENV}=1 to query real broker accounts")
+
+
 def resolve_cert_path(env_path: Path | None) -> Path:
     value = os.getenv("FUBON_CERT_PATH", "").strip()
     root = env_path.parent if env_path is not None else Path.cwd()

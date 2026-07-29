@@ -97,10 +97,9 @@ def umc_broker(equity_usdt: float, maint_usdt: float = 800.0) -> FakeReadOnlyBro
                 broker=BrokerName.IBKR_UMC,
                 currency="USD",
                 equity=equity_usdt,
-                raw={
-                    "totalMarginBalance": equity_usdt,
-                    "totalMaintMargin": maint_usdt,
-                },
+                # IBKR account-summary tag names, flattened by
+                # IbkrReadOnlyBroker.
+                raw={"MaintMarginReq": maint_usdt},
             ),
         ),
     )
