@@ -331,15 +331,27 @@ class LiveRuntime:
                 if umc_position_drifted:
                     # IBKR no longer holds what we think we hold, so the CCF leg
                     # is uncovered while the strategy believes it is market
-                    # neutral. Stop before the next decision: every rule from
-                    # here on reasons from a position that does not exist, and
-                    # repairing it is an operator's call (Phase D6).
-                    #
+                    # neutral. Live-execute unwinds the CCF leg down to what the
+                    # surviving UMC still hedges; every other mode reports and
+                    # stops, because it has no exposure to unwind.
+                    unwound = self.handler.on_umc_position_drift(
+                        store,
+                        strategy=strategy,
+                        reporter=self.reporter,
+                        timestamp=observed_at,
+                        ccf_symbol=ccf_symbol,
+                    )
+                    if unwound:
+                        strategy.state.state = StrategyState.FLAT
+                        strategy.state.position_direction = None
+                        strategy.state.umc_units = 0.0
+                        strategy.state.ccf_contracts = 0
+                    else:
+                        strategy.state.state = StrategyState.PAUSED
                     # Persisted immediately rather than left to the next bar's
                     # save: a drift can be detected on a bar the loop then skips
-                    # for staleness, and a PAUSE that only exists in memory is
+                    # for staleness, and a state that only exists in memory is
                     # undone by the next restart.
-                    strategy.state.state = StrategyState.PAUSED
                     store.save_state(
                         next_row_index,
                         observed_at,

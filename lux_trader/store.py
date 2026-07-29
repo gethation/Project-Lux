@@ -163,6 +163,21 @@ class SQLiteStore:
             ),
         )
 
+    def count_events_on(self, timestamp: datetime, event_type: str) -> int:
+        """How many events of a type were recorded on ``timestamp``'s date.
+
+        Used for the daily recall budget. Matching on the stored text prefix
+        rather than parsing every row keeps it a single indexed-ish scan, and
+        timestamps are written in a fixed ISO form by timestamp_text.
+        """
+        day = timestamp_text(timestamp)[:10]
+        row = self.connection.execute(
+            "SELECT COUNT(*) FROM events "
+            "WHERE event_type = ? AND substr(timestamp, 1, 10) = ?",
+            (event_type, day),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
     def record_order(self, order: OrderResult) -> None:
         request = order.request
         payload_json = json.dumps(

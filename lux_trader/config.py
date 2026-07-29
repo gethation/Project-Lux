@@ -156,6 +156,14 @@ class LiveExecutionConfig:
     require_readonly_reconciliation: bool
     max_plan_age_seconds: int
     ccf_first: bool
+    # How many stock-loan recalls to unwind in one day before stopping instead.
+    # Returning to FLAT after an unwind means the strategy may re-enter the same
+    # short it could not borrow and be recalled again, paying fees each round.
+    # One recall can be a single lender changing its mind; a second in a day
+    # says the borrow itself is unreliable. Clamped to a floor of 1, so a
+    # misconfigured 0 cannot refuse the very first unwind and leave the naked
+    # leg the mechanism exists to remove.
+    max_daily_recalls: int = 2
 
 
 @dataclass(frozen=True)
@@ -403,6 +411,7 @@ def load_config(path: Path) -> AppConfig:
             ),
             max_plan_age_seconds=int(live_execution.get("max_plan_age_seconds", 120)),
             ccf_first=bool(live_execution.get("ccf_first", True)),
+            max_daily_recalls=int(live_execution.get("max_daily_recalls", 2)),
         ),
         live_execution_smoke=LiveExecutionSmokeConfig(
             enabled=bool(live_execution_smoke.get("enabled", False)),

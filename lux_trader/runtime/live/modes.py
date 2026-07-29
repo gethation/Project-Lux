@@ -67,6 +67,11 @@ from lux_trader.core.models import (
 )
 from lux_trader.reconciliation.post_trade import PostTradeReconciler
 from lux_trader.execution.real_coordinator import RealExecutionCoordinator
+from lux_trader.execution.recall_response import (
+    build_recall_unwind_plan,
+    plan_recall_response,
+    recall_budget_exhausted,
+)
 from lux_trader.reconciliation import ReadOnlyBroker, ReconciliationReport, ReconciliationStatus
 from lux_trader.core.sizing import size_position_for_direction
 from lux_trader.core.strategy import PairStrategy, StrategyRuntimeState, minutes_between
@@ -144,6 +149,26 @@ class LiveModeHandler:
         # Hook for modes that must verify restored state against the broker after
         # a restart. Default is a no-op; live-execute overrides it.
         return None
+
+    def on_umc_position_drift(
+        self,
+        store: SQLiteStore,
+        *,
+        strategy: PairStrategy,
+        reporter: Any,
+        timestamp: datetime,
+        ccf_symbol: str = "",
+    ) -> bool:
+        """React to IBKR reporting a UMC position we did not expect.
+
+        Returns True when the CCF leg was successfully unwound and the strategy
+        may go FLAT; False means the caller must pause.
+
+        The default is False -- report and stop. Only live-execute overrides it,
+        because only live-execute can place the closing order. A dry run has no
+        exposure to unwind, so pretending to unwind one would be theatre.
+        """
+        return False
 
     def close(self) -> None:
         return None
@@ -474,6 +499,102 @@ class LiveExecuteModeHandler(LiveModeHandler):
         if self.readonly_brokers is None:
             return None
         return lambda: self.readonly_brokers
+
+    def on_umc_position_drift(
+        self,
+        store: SQLiteStore,
+        *,
+        strategy: PairStrategy,
+        reporter: Any,
+        timestamp: datetime,
+        ccf_symbol: str = "",
+    ) -> bool:
+        """Unwind the CCF leg down to what the surviving UMC still hedges.
+
+        The only place this system places an order in an abnormal state. The
+        three assertions the policy enforces -- close only, never increase,
+        never flip -- live in execution/recall_response.py; what this method
+        adds is that every quantity fed to it comes from the BROKERS, never from
+        the strategy state we already know to be wrong.
+        """
+        if self.umc_adapter is None or self.fubon_adapter is None:
+            reporter.error(timestamp, "umc_recall adapters unavailable")
+            return False
+
+        recalls_today = store.count_events_on(timestamp, "umc_recall_unwound")
+        if recall_budget_exhausted(
+            recalls_today, self.config.live_execution.max_daily_recalls
+        ):
+            reporter.error(
+                timestamp,
+                f"umc_recall budget exhausted ({recalls_today} today) -- "
+                "not unwinding again; the borrow is unreliable and re-entering "
+                "would loop",
+            )
+            return False
+
+        try:
+            observed_umc = float(self.umc_adapter.fetch_position_quantity())
+            observed_ccf = float(self.fubon_adapter.fetch_position_quantity())
+        except Exception as exc:
+            reporter.error(
+                timestamp, f"umc_recall position read failed: {type(exc).__name__}: {exc}"
+            )
+            return False
+
+        response = plan_recall_response(
+            entry_ccf_contracts=int(strategy.state.ccf_contracts or 0),
+            entry_umc_units=float(strategy.state.umc_units or 0.0),
+            observed_ccf_contracts=observed_ccf,
+            observed_umc_units=observed_umc,
+        )
+        store.record_event(
+            -1, timestamp, "umc_recall_plan", response.reason, response.to_jsonable()
+        )
+        if response.refused:
+            reporter.error(timestamp, f"umc_recall refused: {response.reason}")
+            return False
+        if not response.requires_order:
+            # Nothing to unwind. Still not FLAT-by-default: the drift that got
+            # us here is unexplained, and an operator should see it.
+            reporter.error(timestamp, f"umc_recall no order needed: {response.reason}")
+            return False
+
+        outcome = self._send_recall_unwind(
+            response, timestamp=timestamp, ccf_symbol=ccf_symbol
+        )
+        if outcome is None or not outcome.filled:
+            reporter.error(
+                timestamp,
+                "umc_recall unwind FAILED -- CCF leg is still uncovered and must "
+                "be closed at the next tradable moment: "
+                f"{getattr(outcome, 'message', 'no outcome')}",
+            )
+            return False
+
+        store.record_event(
+            -1,
+            timestamp,
+            "umc_recall_unwound",
+            f"closed {response.close_contracts} CCF contracts",
+            response.to_jsonable(),
+        )
+        reporter.warn(
+            timestamp, "umc_recall_unwound", response.reason
+        )
+        return True
+
+    def _send_recall_unwind(self, response, *, timestamp: datetime, ccf_symbol: str):
+        """Route the close-only CCF order through the normal execution path."""
+        try:
+            plan = build_recall_unwind_plan(
+                response,
+                ccf_symbol=ccf_symbol,
+                timestamp=timestamp,
+            )
+            return self.fubon_adapter.execute(plan)
+        except Exception:
+            return None
 
     def on_resume(
         self,
