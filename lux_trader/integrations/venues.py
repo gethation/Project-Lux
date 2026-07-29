@@ -43,10 +43,12 @@ def open_umc_quote_provider(config: "AppConfig") -> Any:
 def open_fx_quote_provider(config: "AppConfig") -> Any:
     """Live USD/TWD. Phase B: Twelve Data behind a TTL cache.
 
-    Deliberately not BitoPro's USD/TWD, which is a different rate: measured at
-    77% of spread std against CCF/UMC, and it drifts inside the z window so the
-    rolling z-score cannot absorb it. A synthetic USD/TWD derived from it was
-    measured too, and was worse on every metric.
+    A real USD/TWD rate, NOT the USDT/TWD one BitoPro serves. Those are
+    different rates: BitoPro's was measured at 77% of spread std against
+    CCF/UMC, and it drifts inside the z window, so the rolling z-score cannot
+    absorb it. Deriving a synthetic USD/TWD from it was measured too and came
+    out worse on every metric -- the wedge is Taiwan's local crypto premium, not
+    something a currency ratio cancels.
     """
     raise _refuse("FX reference provider", "Phase B")
 

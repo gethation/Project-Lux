@@ -32,7 +32,7 @@ def quote_set(timestamp: datetime) -> LiveQuoteSet:
             ask=101.0,
         ),
         umc=LiveQuote(
-            source="binance",
+            source="ibkr",
             symbol="UMC",
             timestamp=timestamp,
             price=20.5,
@@ -40,7 +40,7 @@ def quote_set(timestamp: datetime) -> LiveQuoteSet:
             ask=21.0,
         ),
         usd_twd=LiveQuote(
-            source="bitopro",
+            source="twelvedata",
             symbol="USD/TWD",
             timestamp=timestamp,
             price=30.5,

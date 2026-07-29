@@ -46,9 +46,25 @@ TAIFEX 日盤 `08:45–13:45` 完全落在 NYSE 之外，**本系統在日盤不
 
 ---
 
-## 2. Phase A — 剝除與更名
+## 2. Phase A — 剝除與更名 ✅ 完成 2026-07-29
 
 純刪除與機械更名，**不加任何功能**。每一步都有可驗證的不變量。
+
+| 步驟 | commit | 驗收 |
+|---|---|---|
+| A1 更名 | `acacf94` | 372 passed / 8 skipped，golden **逐字不變** |
+| A2 刪除 Binance/BitoPro | `253f465` | 336 passed / 7 skipped（−36 = 被刪的 Binance 測試） |
+| A3 週末規則開關 | `db9e0ae` | 340 passed / 7 skipped |
+| A4 部位與費用 | `9c5c81f` | 343 passed / 7 skipped |
+| A5 CLI 14→7 + A6 schema | `9191162` | 344 passed / 7 skipped |
+
+`lux_trader` 20,470 → 19,246 行（−1,224）。QFF/TSM replay golden
+（29,909 bars / 66 trades / net 261,507.82918）**全程未動**。
+
+Phase A 期間新增的三道硬失敗（都是原本會靜默出錯的地方）：
+- `fees.ccf_contract_multiplier` 無預設值 —— 少寫會導致 20 倍部位錯誤且完全無跡可循
+- `integrations/venues.py` 的五個未接通 venue 一律 raise，不回傳降級替代品
+- 開啟 QFF/TSM 舊 store 直接拒絕，而非用 `ensure_column` 補欄位補成半殘狀態
 
 ### A1 — 更名（tripwire：既有 QFF/TSM replay golden 必須逐字不變）
 

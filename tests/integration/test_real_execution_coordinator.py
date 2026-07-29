@@ -496,7 +496,7 @@ def test_umc_adapter_exception_after_ccf_fill_emergency_closes_ccf() -> None:
     )
     umc_adapter = FakeExecutionAdapter(
         BrokerName.IBKR_UMC,
-        [{"raise": True, "message": "binance sdk boom"}],
+        [{"raise": True, "message": "ibkr sdk boom"}],
     )
     runner = RealExecutionCoordinator(
         store=store,

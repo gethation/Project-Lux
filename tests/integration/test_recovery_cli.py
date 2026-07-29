@@ -105,7 +105,7 @@ def seed_recorded_exposure(config_path: Path) -> None:
         store.initialize()
         for order_id, broker, symbol, side, quantity in (
             (
-                "entry-binance",
+                "entry-ibkr",
                 BrokerName.IBKR_UMC,
                 config.live.umc_symbol,
                 OrderSide.SELL,

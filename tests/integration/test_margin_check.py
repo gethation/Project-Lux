@@ -91,7 +91,7 @@ def fubon_broker(equity_twd: float, maint_twd: float = 103_500.0) -> FakeReadOnl
 def umc_broker(equity_usdt: float, maint_usdt: float = 800.0) -> FakeReadOnlyBroker:
     return FakeReadOnlyBroker(
         BrokerName.IBKR_UMC,
-        account_id="FAKE-BINANCE",
+        account_id="FAKE-IBKR",
         margins=(
             BrokerMarginSnapshot(
                 broker=BrokerName.IBKR_UMC,

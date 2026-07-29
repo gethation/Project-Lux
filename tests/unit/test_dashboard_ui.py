@@ -158,14 +158,14 @@ def test_dashboard_margin_panel_tracks_margin_events() -> None:
         reporter.event(
             ts("2026-07-06T10:00:05+08:00"),
             "margin_check",
-            "每日檢查正常 binance=30.0% fubon=30.0% — 不需轉帳。",
+            "每日檢查正常 ibkr=30.0% fubon=30.0% — 不需轉帳。",
         )
         assert reporter.state.margin_level == "ok"
 
         reporter.warn(
             ts("2026-07-06T10:00:06+08:00"),
             "margin_transfer_required",
-            "需要轉帳 binance=10.0% fubon=50.0%",
+            "需要轉帳 ibkr=10.0% fubon=50.0%",
         )
         assert reporter.state.margin_level == "transfer"
         assert reporter.state.margin_time == "10:00:06"
@@ -173,7 +173,7 @@ def test_dashboard_margin_panel_tracks_margin_events() -> None:
         reporter.warn(
             ts("2026-07-06T11:15:00+08:00"),
             "margin_red_line",
-            "紅線警報 binance=4.0%",
+            "紅線警報 ibkr=4.0%",
         )
         assert reporter.state.margin_level == "red_line"
     finally:
