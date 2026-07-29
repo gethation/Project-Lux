@@ -233,7 +233,42 @@ server time 或 NTP。`clock_skew_fail_seconds` 閘門保留。
 
 ---
 
-## 4. Phase C — replay 基準線
+## 4. Phase C — replay 基準線 ✅ 完成 2026-07-29
+
+CCF/UMC golden 已立（`configs/replay.fixture.ccf_umc.toml` +
+`tests/integration/test_replay_golden.py`），**與 PoC `wk_none_0728` 逐位吻合**：
+
+```
+rows 12,460   trades 18   winners 18   losers 0
+total_pnl_twd  235,726.65723246615
+net_pnl_twd    235,726.65723246636
+gross_pnl_twd  255,861.06235473434
+total_fee_twd   20,134.405122268032
+max_drawdown   -25,585.958856977057
+exposure_ratio       0.4862967385518422
+```
+
+**凍 fixture 時挖出一個一直存在的結構性偏差：replay 的出場成交價用 close，
+PoC 用的是下一根 bar 的 open。** 進場端本來就對（用 open），所以這個偏差被掩蓋 ——
+數字夠接近，看起來像對齊。在這組資料上它值 9,449 TWD（占 235,726 的 4%），
+並且讓一筆獲利變成虧損。
+
+PoC 的規則是：**訊號出場用下一根 open**（你不可能成交在還沒看到的 close），
+**強制平倉用 close**（因為觸發它的正是 session 結束）。已照此實作。
+
+舊的 QFF/TSM golden 測試裡寫著 *"Replay sizing/fill logic is byte-for-byte
+identical to the PoC backtest"* —— **那句話是錯的**，它把 265,481 → 261,507 的
+落差全部歸因於 TAIFEX 資料窗縮短，其中一部分其實是這個。修正後那個數字會變成
+270,264；該 fixture 依計畫在此退役，所以記錄而不重新釘住。
+
+**偏離計畫一處**：C3 原本要求連 `weekend_policy = 'flat'` 分支一起刪。**保留。**
+Phase B 已把 `is_weekend_force_exit_bar` 重新錨到 pair session，所以 `flat` 現在
+是**正確的程式碼**而非接好卻打不到；它有測試，而且它是重跑那個「+19.7%」週末
+比較的唯一途徑 —— PoC 的週末分析本身就明說樣本長大後要重驗。
+
+---
+
+## 4b. Phase C 原始計畫（保留供對照）
 
 ### C1 — 凍結 fixture
 
