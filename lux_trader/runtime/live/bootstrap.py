@@ -30,8 +30,8 @@ from lux_trader.integrations.fubon.market_data import FubonCcfMarketData
 from lux_trader.integrations.fubon.market_data_process import FubonCcfMarketDataProcess
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.integrations.taifex.downloader import TaifexCcfTradeDownloader
+from lux_trader.integrations.ntp import fetch_reference_time
 from lux_trader.integrations.venues import (
-    fetch_umc_market_time,
     open_fx_quote_provider,
     open_umc_quote_provider,
 )
@@ -220,7 +220,7 @@ def run_live_startup_preflight(
     *,
     platform_name: str = sys.platform,
     sync_runner: Callable[[float], WindowsTimeSyncResult] = run_windows_time_sync,
-    market_time_probe: Callable[[str], datetime] = fetch_umc_market_time,
+    reference_time_probe: Callable[..., datetime] = fetch_reference_time,
 ) -> None:
     local_now = ensure_taipei(clock())
     if platform_name.startswith("win") and config.live.sync_windows_time_on_startup:
@@ -235,13 +235,21 @@ def run_live_startup_preflight(
 
     local_now = ensure_taipei(clock())
     try:
-        market_now = ensure_taipei(market_time_probe(config.live.umc_symbol))
+        market_now = ensure_taipei(
+            reference_time_probe(
+                config.live.ntp_servers,
+                timeout_seconds=config.live.ntp_timeout_seconds,
+            )
+        )
     except Exception as exc:
+        # Fails closed on purpose. A probe that could not run must not be read
+        # as "no skew" -- an unverifiable clock is exactly the state this gate
+        # exists to refuse.
         reporter.error(
             local_now,
             f"clock_skew unavailable:{type(exc).__name__}",
         )
-        raise RuntimeError("Unable to verify market clock skew") from exc
+        raise RuntimeError("Unable to verify clock skew against NTP") from exc
 
     skew = clock_skew_seconds(local_now, market_now)
     if skew > config.live.clock_skew_fail_seconds:

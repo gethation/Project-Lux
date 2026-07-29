@@ -91,6 +91,15 @@ taifex_use_network = true
 taifex_cache_dir = 'data\taifex_cache'
 taifex_ccf_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\ccf1_1m_cumulative.csv'
 
+# -- Clock-skew gate ---------------------------------------------------------
+# Checked against NTP, not a venue. The loop labels bars off the local clock and
+# measures staleness against three feeds at once, so what has to be correct is
+# absolute time -- and this still works when the IB Gateway is at its daily
+# login screen, which is exactly when a startup gate must run. Tried in order;
+# the first to answer wins. Measured 2026-07-29: 29-59ms round trip.
+ntp_servers = ['time.stdtime.gov.tw', 'tock.stdtime.gov.tw', 'pool.ntp.org']
+ntp_timeout_seconds = 5.0
+
 # -- IBKR (UMC) --------------------------------------------------------------
 ibkr_host = '127.0.0.1'
 ibkr_port = 4001

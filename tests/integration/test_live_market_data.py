@@ -456,14 +456,14 @@ def test_live_startup_preflight_syncs_windows_time_and_accepts_clock_skew(tmp_pa
     config = small_live_config(tmp_path)
     terminal_output = io.StringIO()
     sync_timeouts: list[float] = []
-    market_symbols: list[str] = []
+    probe_calls: list[tuple] = []
 
     def sync_runner(timeout_seconds: float) -> WindowsTimeSyncResult:
         sync_timeouts.append(timeout_seconds)
         return WindowsTimeSyncResult(True, "ok")
 
-    def market_time_probe(symbol: str) -> datetime:
-        market_symbols.append(symbol)
+    def reference_time_probe(servers, *, timeout_seconds) -> datetime:
+        probe_calls.append((tuple(servers), timeout_seconds))
         return ts("2026-06-23T11:45:00+08:00")
 
     run_live_startup_preflight(
@@ -472,11 +472,13 @@ def test_live_startup_preflight_syncs_windows_time_and_accepts_clock_skew(tmp_pa
         lambda: ts("2026-06-23T11:45:00+08:00"),
         platform_name="win32",
         sync_runner=sync_runner,
-        market_time_probe=market_time_probe,
+        reference_time_probe=reference_time_probe,
     )
 
     assert sync_timeouts == [15.0]
-    assert market_symbols == ["UMC"]
+    # The configured NTP servers, not a venue symbol: the gate checks absolute
+    # time, which is what a drifting local clock actually breaks.
+    assert probe_calls == [(config.live.ntp_servers, config.live.ntp_timeout_seconds)]
     output = terminal_output.getvalue()
     assert "EVENT startup sync_windows_time" in output
     assert "EVENT startup clock_ok skew=0.000s" in output
@@ -494,7 +496,7 @@ def test_live_startup_preflight_warns_on_sync_failure_but_allows_good_skew(
         lambda: ts("2026-06-23T11:45:00+08:00"),
         platform_name="win32",
         sync_runner=lambda _: WindowsTimeSyncResult(False, "exit_1"),
-        market_time_probe=lambda _: ts("2026-06-23T11:44:59+08:00"),
+        reference_time_probe=lambda *_a, **_k: ts("2026-06-23T11:44:59+08:00"),
     )
 
     output = terminal_output.getvalue()
@@ -515,7 +517,7 @@ def test_live_startup_preflight_skips_windows_sync_on_non_windows(tmp_path) -> N
         lambda: ts("2026-06-23T11:45:00+08:00"),
         platform_name="linux",
         sync_runner=sync_runner,
-        market_time_probe=lambda _: ts("2026-06-23T11:45:00+08:00"),
+        reference_time_probe=lambda *_a, **_k: ts("2026-06-23T11:45:00+08:00"),
     )
 
     output = terminal_output.getvalue()
@@ -534,7 +536,7 @@ def test_live_startup_preflight_rejects_bad_clock_skew(tmp_path) -> None:
             lambda: ts("2026-06-23T03:45:00+08:00"),
             platform_name="win32",
             sync_runner=lambda _: WindowsTimeSyncResult(True, "ok"),
-            market_time_probe=lambda _: ts("2026-06-23T11:45:00+08:00"),
+            reference_time_probe=lambda *_a, **_k: ts("2026-06-23T11:45:00+08:00"),
         )
 
     output = terminal_output.getvalue()
@@ -546,17 +548,17 @@ def test_live_startup_preflight_rejects_unavailable_market_time(tmp_path) -> Non
     config = small_live_config(tmp_path)
     terminal_output = io.StringIO()
 
-    def market_time_probe(_: str) -> datetime:
-        raise RuntimeError("market down")
+    def reference_time_probe(*_a, **_k) -> datetime:
+        raise RuntimeError("no NTP route")
 
-    with pytest.raises(RuntimeError, match="Unable to verify market clock skew"):
+    with pytest.raises(RuntimeError, match="Unable to verify clock skew against NTP"):
         run_live_startup_preflight(
             config,
             LiveTerminalReporter(terminal_output, color=False),
             lambda: ts("2026-06-23T11:45:00+08:00"),
             platform_name="win32",
             sync_runner=lambda _: WindowsTimeSyncResult(True, "ok"),
-            market_time_probe=market_time_probe,
+            reference_time_probe=reference_time_probe,
         )
 
     assert "ERR clock_skew unavailable:RuntimeError" in terminal_output.getvalue()

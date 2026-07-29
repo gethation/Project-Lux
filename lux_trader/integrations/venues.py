@@ -8,10 +8,9 @@ Wired (Phase B): UMC quotes and history from IBKR, USD/TWD from Twelve Data
 behind a TTL cache, read-only IBKR account access.
 
 Not wired: UMC order placement, which needs the IBKR execution adapter in Phase
-D, and the market clock behind the startup skew gate. Both raise rather than
-returning a degraded stand-in -- a pair that quietly prices its US leg off
-nothing, or reports a position it never queried, is far more dangerous than one
-that refuses to start.
+D. It raises rather than returning a degraded stand-in -- a pair that quietly
+prices its US leg off nothing, or reports a position it never queried, is far
+more dangerous than one that refuses to start.
 
 The CCF leg is unaffected: Fubon is wired and stays wired.
 
@@ -97,25 +96,12 @@ def open_umc_execution_adapter(symbol: str, env_path: Path | None = None) -> Any
     raise _refuse("execution adapter", "Phase D")
 
 
-def fetch_umc_market_time(symbol: str) -> Any:
-    """An independent market clock for the startup clock-skew gate.
-
-    Binance's USD-M server time used to serve this. It is a safety gate --
-    clock_skew_fail_seconds refuses to start the loop on a drifting clock -- so
-    it raises rather than quietly returning the local clock, which would make
-    every skew check pass by construction.
-
-    Still open: IBKR's server time arrives through the ib_async connection
-    handshake rather than a request, so exposing it means widening the worker
-    protocol. NTP is the other candidate and does not depend on the Gateway
-    being up.
-    """
-    raise _refuse("market clock for the skew gate", "Phase B (open item)")
+# The startup clock-skew gate does NOT live here. It checks absolute time, not
+# a venue's, so it belongs with integrations/ntp.py -- see that module for why.
 
 
 __all__ = [
     "UsLegVenueNotWired",
-    "fetch_umc_market_time",
     "open_fx_quote_provider",
     "open_umc_execution_adapter",
     "open_umc_quote_provider",

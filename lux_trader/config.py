@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import date
 
 from .core.calendar import DEFAULT_WEEKEND_POLICY, validate_weekend_policy
+from .integrations.ntp import DEFAULT_NTP_SERVERS, DEFAULT_NTP_TIMEOUT_SECONDS
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -107,6 +108,14 @@ class LiveMarketDataConfig:
     # end of the warmup window.  This independently prevents a long-stale feed
     # from passing merely because the other historical minutes are complete.
     warmup_ccf_max_trailing_fill_minutes: int = 5
+
+    # -- Clock-skew gate ----------------------------------------------------
+    # Absolute time, not a venue's: the loop labels bars off the local clock and
+    # measures staleness against three feeds at once, so what has to be right is
+    # real time. Also survives the IB Gateway being at its daily login screen,
+    # which is precisely when a startup gate must still work.
+    ntp_servers: tuple[str, ...] = DEFAULT_NTP_SERVERS
+    ntp_timeout_seconds: float = DEFAULT_NTP_TIMEOUT_SECONDS
 
     # -- IBKR (UMC) ---------------------------------------------------------
     ibkr_host: str = "127.0.0.1"
@@ -363,6 +372,8 @@ def load_config(path: Path) -> AppConfig:
             warmup_ccf_max_trailing_fill_minutes=int(
                 live.get("warmup_ccf_max_trailing_fill_minutes", 5)
             ),
+            ntp_servers=parse_ntp_servers(live.get("ntp_servers")),
+            ntp_timeout_seconds=float(live.get("ntp_timeout_seconds", 5.0)),
             ibkr_host=str(live.get("ibkr_host", "127.0.0.1")).strip(),
             ibkr_port=int(live.get("ibkr_port", 4001)),
             ibkr_client_id=int(live.get("ibkr_client_id", 17_002)),
@@ -525,6 +536,21 @@ def optional_path(value: object, root: Path) -> Path | None:
     if not path.is_absolute():
         path = root / path
     return path
+
+
+def parse_ntp_servers(value: object) -> tuple[str, ...]:
+    if value is None:
+        return DEFAULT_NTP_SERVERS
+    if isinstance(value, str):
+        raise RuntimeError(
+            "live_market_data.ntp_servers must be a list of hostnames, not a string"
+        )
+    servers = tuple(str(item).strip() for item in value if str(item).strip())
+    if not servers:
+        # Silently falling back to the defaults would leave an operator who
+        # deliberately emptied the list believing the gate was off.
+        raise RuntimeError("live_market_data.ntp_servers must not be empty")
+    return servers
 
 
 def validate_market_data_type(value: object) -> int:
