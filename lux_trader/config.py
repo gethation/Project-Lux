@@ -55,6 +55,12 @@ class FeeConfig:
     ccf_tax_rate: float
     ccf_contract_multiplier: float
     umc_contract_multiplier: float = 5.0
+    # 'bps' (default) charges umc_fee_bps on notional, which is what the PoC
+    # does and therefore what the replay golden requires. 'ibkr' charges what
+    # IBKR actually charges: per share, with a minimum and a 1% cap, plus
+    # sell-side regulatory fees. The two disagree by cents per side, in a
+    # direction that depends on the UMC price -- see integrations/ibkr/fees.py.
+    umc_fee_model: str = "bps"
 
 
 @dataclass(frozen=True)
@@ -318,6 +324,7 @@ def load_config(path: Path) -> AppConfig:
             ccf_tax_rate=float(fees.get("ccf_tax_rate", 0.00002)),
             ccf_contract_multiplier=required_contract_multiplier(fees),
             umc_contract_multiplier=float(fees.get("umc_contract_multiplier", 5.0)),
+            umc_fee_model=validate_umc_fee_model(fees.get("umc_fee_model", "bps")),
         ),
         safety=SafetyConfig(
             allow_live_order=bool(safety.get("allow_live_order", False)),
@@ -578,6 +585,17 @@ def validate_market_data_type(value: object) -> int:
             f"4=delayed-frozen); got {parsed}"
         )
     return parsed
+
+
+UMC_FEE_MODELS = ("bps", "ibkr")
+
+
+def validate_umc_fee_model(value: object) -> str:
+    model = str(value).strip().lower()
+    if model not in UMC_FEE_MODELS:
+        allowed = ", ".join(repr(name) for name in UMC_FEE_MODELS)
+        raise RuntimeError(f"fees.umc_fee_model must be one of {allowed}; got {value!r}")
+    return model
 
 
 def required_contract_multiplier(fees: dict) -> float:
