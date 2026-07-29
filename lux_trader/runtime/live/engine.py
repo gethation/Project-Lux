@@ -322,12 +322,31 @@ class LiveRuntime:
                     )
                     if callable(notify_trading_session):
                         notify_trading_session(observed_at)
-                margin_monitor.maybe_run(
+                umc_position_drifted = margin_monitor.maybe_run(
                     observed_at,
                     strategy_state=strategy.state,
                     store=store,
                     reporter=self.reporter,
                 )
+                if umc_position_drifted:
+                    # IBKR no longer holds what we think we hold, so the CCF leg
+                    # is uncovered while the strategy believes it is market
+                    # neutral. Stop before the next decision: every rule from
+                    # here on reasons from a position that does not exist, and
+                    # repairing it is an operator's call (Phase D6).
+                    #
+                    # Persisted immediately rather than left to the next bar's
+                    # save: a drift can be detected on a bar the loop then skips
+                    # for staleness, and a PAUSE that only exists in memory is
+                    # undone by the next restart.
+                    strategy.state.state = StrategyState.PAUSED
+                    store.save_state(
+                        next_row_index,
+                        observed_at,
+                        strategy.state,
+                        indicator,
+                    )
+                    store.commit()
 
                 if ccf_books_torn_down_for_non_trading:
                     # Re-login first so the session starts on a fresh marketdata

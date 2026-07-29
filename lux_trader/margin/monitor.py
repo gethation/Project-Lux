@@ -19,6 +19,10 @@ from lux_trader.config import AppConfig
 from lux_trader.core.contract_policy import parse_hhmm
 from lux_trader.core.models import StrategyState
 from lux_trader.core.time import TAIPEI_TZ, ensure_taipei
+from lux_trader.reconciliation.position_drift import (
+    compare_umc_position,
+    report_position_drift,
+)
 from lux_trader.margin.service import (
     MarginCheckService,
     record_and_report_decision,
@@ -85,34 +89,42 @@ class MarginMonitor:
         strategy_state: Any,
         store: Any,
         reporter: Any,
-    ) -> None:
+    ) -> bool:
+        """Run the due checks. Returns True when the UMC position has drifted.
+
+        The caller decides what a drift means -- this object reports, it does
+        not move the strategy's state.
+        """
         if not self.enabled:
-            return
+            return False
         observed_at = ensure_taipei(observed_at)
         if not self._check_env_gate(observed_at, reporter):
-            return
+            return False
         if self._retry_at is not None and observed_at < self._retry_at:
-            return
+            return False
 
         position_open = (
             getattr(strategy_state, "state", None) in POSITION_OPEN_STATES
         )
         if self._daily_due(observed_at, store):
-            self._run(
+            return self._run(
                 observed_at,
                 check_type="daily",
                 position_open=position_open,
+                strategy_state=strategy_state,
                 store=store,
                 reporter=reporter,
             )
-        elif position_open and self._red_line_due(observed_at):
-            self._run(
+        if position_open and self._red_line_due(observed_at):
+            return self._run(
                 observed_at,
                 check_type="red_line",
                 position_open=True,
+                strategy_state=strategy_state,
                 store=store,
                 reporter=reporter,
             )
+        return False
 
     def close(self) -> None:
         if self._brokers is None:
@@ -171,9 +183,10 @@ class MarginMonitor:
         *,
         check_type: str,
         position_open: bool,
+        strategy_state: Any,
         store: Any,
         reporter: Any,
-    ) -> None:
+    ) -> bool:
         try:
             service = self._ensure_service()
             decision = service.run_check(
@@ -186,6 +199,14 @@ class MarginMonitor:
                 checked_at=observed_at,
             )
             record_and_report_decision(decision, store=store, reporter=reporter)
+            drifted = self._check_umc_position_drift(
+                observed_at,
+                service=service,
+                position_open=position_open,
+                strategy_state=strategy_state,
+                store=store,
+                reporter=reporter,
+            )
             store.commit()
         except Exception as exc:
             # Broker/API hiccups must not kill the live loop; retry after the
@@ -196,12 +217,52 @@ class MarginMonitor:
                 f"{type(exc).__name__}: {exc}",
             )
             self._retry_at = observed_at + self.retry_interval
-            return
+            return False
         self._retry_at = None
         if check_type == "daily":
             self._last_daily_date = observed_at.date()
         # A daily check also covers the red-line question for this interval.
         self._last_red_line_at = observed_at
+        return drifted
+
+    def _check_umc_position_drift(
+        self,
+        observed_at: datetime,
+        *,
+        service: MarginCheckService,
+        position_open: bool,
+        strategy_state: Any,
+        store: Any,
+        reporter: Any,
+    ) -> bool:
+        """Compare IBKR's reported UMC position to the strategy's.
+
+        Free: the margin check just pulled IBKR's full snapshot, because that
+        broker has no lightweight margins-only call. Fubon is deliberately not
+        checked -- see reconciliation/position_drift.py for why, and why the US
+        leg is the only one that needs it.
+        """
+        if not position_open:
+            return False
+        snapshot = service.last_umc_snapshot
+        if snapshot is None:
+            return False
+
+        drift = compare_umc_position(
+            snapshot,
+            symbol=self.config.live.umc_symbol,
+            expected_units=float(getattr(strategy_state, "umc_units", 0.0) or 0.0),
+            tolerance=self.config.broker_reconciliation.umc_units_tolerance,
+        )
+        if not drift.drifted:
+            return False
+        report_position_drift(
+            drift,
+            checked_at=observed_at,
+            store=store,
+            reporter=reporter,
+        )
+        return True
 
     def _ensure_service(self) -> MarginCheckService:
         if self._service is None:

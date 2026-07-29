@@ -112,6 +112,7 @@ class MarginCheckService:
         self.fubon_broker, self.umc_broker = brokers
         self.usd_twd_rate = usd_twd_rate
         self.clock = clock or (lambda: datetime.now().astimezone())
+        self.last_umc_snapshot: BrokerAccountSnapshot | None = None
 
     def run_check(
         self,
@@ -124,6 +125,12 @@ class MarginCheckService:
         checked_at = checked_at or self.clock()
         fubon_snapshot = fetch_margin_snapshot(self.fubon_broker)
         umc_snapshot = fetch_margin_snapshot(self.umc_broker)
+        # Kept for the caller's position-drift check. IBKR has no lightweight
+        # fetch_margins, so this is already the FULL snapshot with positions in
+        # it -- the comparison costs nothing extra. Fubon's is deliberately not
+        # exposed: its snapshot here is margins-only by design, because
+        # query_single_position is rate-limited under frequent polling.
+        self.last_umc_snapshot = umc_snapshot
         margin_config = self.config.margin_management
         if leg_notional_twd is not None and leg_notional_twd > 0:
             margin_config = replace(margin_config, leg_notional_twd=leg_notional_twd)

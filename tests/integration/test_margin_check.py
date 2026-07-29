@@ -16,7 +16,10 @@ from lux_trader.core.strategy import StrategyRuntimeState
 from lux_trader.margin.monitor import MarginMonitor
 from lux_trader.margin.service import MarginCheckService, record_and_report_decision
 from lux_trader.reconciliation import FakeReadOnlyBroker
-from lux_trader.reconciliation.models import BrokerMarginSnapshot
+from lux_trader.reconciliation.models import (
+    BrokerMarginSnapshot,
+    BrokerPositionSnapshot,
+)
 from lux_trader.store import SQLiteStore
 
 
@@ -584,3 +587,138 @@ def test_margin_check_cli_requires_enabled_config(
     )
     with pytest.raises(SystemExit, match="enabled=true"):
         command_margin_check(args)
+
+
+# --- UMC position drift (D5) -------------------------------------------------
+
+
+def umc_broker_holding(units: float, *, equity_usd: float = 300_000.0 / USD_TWD):
+    """An IBKR-shaped read-only broker: no fetch_margins, so the margin check
+    already pulls its FULL snapshot and the positions come along for free."""
+    return FakeReadOnlyBroker(
+        BrokerName.IBKR_UMC,
+        account_id="FAKE-IBKR",
+        margins=(
+            BrokerMarginSnapshot(
+                broker=BrokerName.IBKR_UMC,
+                currency="USD",
+                equity=equity_usd,
+                raw={"MaintMarginReq": 800.0},
+            ),
+        ),
+        positions=(
+            BrokerPositionSnapshot(
+                broker=BrokerName.IBKR_UMC, symbol="UMC", quantity=units
+            ),
+        )
+        if units
+        else (),
+    )
+
+
+def open_state_holding(units: float) -> StrategyRuntimeState:
+    state = StrategyRuntimeState(state=StrategyState.OPEN)
+    state.umc_units = units
+    return state
+
+
+def test_matching_umc_position_reports_no_drift(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("LUX_READONLY_BROKER", "1")
+    config = load_config(write_config(tmp_path))
+    store = open_store(tmp_path)
+    reporter = RecordingReporter()
+    monitor = make_monitor(config, umc=umc_broker_holding(-1200.0))
+    try:
+        drifted = monitor.maybe_run(
+            ts("2026-07-06T10:00:01+08:00"),
+            strategy_state=open_state_holding(-1200.0),
+            store=store,
+            reporter=reporter,
+        )
+
+        assert drifted is False
+        assert "umc_position_drift" not in " ".join(reporter.codes())
+    finally:
+        store.close()
+
+
+def test_a_recalled_umc_short_is_detected_during_the_hold(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The whole point: noticed on the margin interval, not at the next exit."""
+    monkeypatch.setenv("LUX_READONLY_BROKER", "1")
+    config = load_config(write_config(tmp_path))
+    store = open_store(tmp_path)
+    reporter = RecordingReporter()
+    # Strategy believes it is short 1,200; IBKR reports nothing.
+    monitor = make_monitor(config, umc=umc_broker_holding(0.0))
+    try:
+        drifted = monitor.maybe_run(
+            ts("2026-07-06T10:00:01+08:00"),
+            strategy_state=open_state_holding(-1200.0),
+            store=store,
+            reporter=reporter,
+        )
+
+        assert drifted is True
+        assert any("umc_position_drift" in message for _, message, _ in reporter.events)
+        row = store.connection.execute(
+            "SELECT event_type FROM events WHERE event_type = 'umc_position_drift'"
+        ).fetchone()
+        assert row is not None
+    finally:
+        store.close()
+
+
+def test_a_flat_strategy_is_not_checked_for_drift(tmp_path: Path, monkeypatch) -> None:
+    """Nothing to be uncovered when nothing is held."""
+    monkeypatch.setenv("LUX_READONLY_BROKER", "1")
+    config = load_config(write_config(tmp_path))
+    store = open_store(tmp_path)
+    reporter = RecordingReporter()
+    monitor = make_monitor(config, umc=umc_broker_holding(0.0))
+    try:
+        drifted = monitor.maybe_run(
+            ts("2026-07-06T10:00:01+08:00"),
+            strategy_state=flat_state(),
+            store=store,
+            reporter=reporter,
+        )
+
+        assert drifted is False
+    finally:
+        store.close()
+
+
+def test_the_drift_check_does_not_query_fubon(tmp_path: Path, monkeypatch) -> None:
+    """Fubon's query_single_position is rate-limited under frequent polling, so
+    the margin path deliberately takes its lightweight margins-only call. The
+    drift check must not undo that."""
+    monkeypatch.setenv("LUX_READONLY_BROKER", "1")
+    config = load_config(write_config(tmp_path))
+    store = open_store(tmp_path)
+    reporter = RecordingReporter()
+
+    fubon = fubon_broker(300_000.0)
+    calls: list[str] = []
+    original_snapshot = fubon.fetch_snapshot
+
+    def counted_snapshot():
+        calls.append("fetch_snapshot")
+        return original_snapshot()
+
+    fubon.fetch_snapshot = counted_snapshot
+    fubon.fetch_margins = lambda: original_snapshot()
+
+    monitor = make_monitor(config, fubon=fubon, umc=umc_broker_holding(-1200.0))
+    try:
+        monitor.maybe_run(
+            ts("2026-07-06T10:00:01+08:00"),
+            strategy_state=open_state_holding(-1200.0),
+            store=store,
+            reporter=reporter,
+        )
+
+        assert calls == []
+    finally:
+        store.close()
