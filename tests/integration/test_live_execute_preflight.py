@@ -28,7 +28,7 @@ def write_live_execute_config(tmp_path: Path) -> Path:
                 "allow_live_order = true",
                 "",
                 "[live_market_data]",
-                "qff_symbol = 'QFFG6'",
+                "ccf_symbol = 'CCFG6'",
                 "binance_symbol = 'TSM/USDT:USDT'",
                 "bitopro_symbol = 'USDT/TWD'",
                 f"taifex_cache_dir = '{cache_dir}'",
@@ -36,14 +36,14 @@ def write_live_execute_config(tmp_path: Path) -> Path:
                 "[broker_reconciliation]",
                 "enabled = true",
                 "fail_on_mismatch = true",
-                "tsm_units_tolerance = 0.000001",
-                "qff_contract_tolerance = 0",
+                "umc_units_tolerance = 0.000001",
+                "ccf_contract_tolerance = 0",
                 "",
                 "[live_execution]",
                 "enabled = true",
                 "require_readonly_reconciliation = true",
                 "max_plan_age_seconds = 120",
-                "qff_first = true",
+                "ccf_first = true",
             ]
         ),
         encoding="utf-8",
@@ -70,7 +70,7 @@ def latest_reconciliation(store_path: Path):
 def inject_fake_shared_brokers(monkeypatch, fake_case: str) -> None:
     builder = make_fake_broker_builder(fake_case)
 
-    def shared(config, _qff_symbol):
+    def shared(config, _ccf_symbol):
         brokers = builder(config, None, readonly=True)
         return brokers[0], brokers
 

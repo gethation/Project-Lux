@@ -25,8 +25,8 @@ def test_order_and_fill_ids_are_append_only(tmp_path) -> None:
     store.initialize()
     try:
         request = OrderRequest(
-            broker=BrokerName.FUBON_QFF,
-            symbol="QFFH6",
+            broker=BrokerName.FUBON_CCF,
+            symbol="CCFH6",
             side=OrderSide.BUY,
             quantity=1,
             price=2444.0,
@@ -37,8 +37,8 @@ def test_order_and_fill_ids_are_append_only(tmp_path) -> None:
         fill = Fill(
             fill_id="FUBON-FILL-LUX-FUBON-attempt-1",
             order_id=order.order_id,
-            broker=BrokerName.FUBON_QFF,
-            symbol="QFFH6",
+            broker=BrokerName.FUBON_CCF,
+            symbol="CCFH6",
             side=OrderSide.BUY,
             quantity=1,
             price=2444.0,
@@ -68,7 +68,7 @@ def test_fubon_attempt_and_evidence_schema_is_created(tmp_path) -> None:
             attempt_id="LUX-FUBON-attempt-1",
             plan_id="plan-1",
             created_at=ts(),
-            payload={"symbol": "QFFH6"},
+            payload={"symbol": "CCFH6"},
         )
         evidence_id = store.record_fubon_evidence(
             attempt_id="LUX-FUBON-attempt-1",

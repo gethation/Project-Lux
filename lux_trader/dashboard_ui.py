@@ -65,8 +65,8 @@ def z_style(zscore: float | None) -> str:
 @dataclass
 class DashboardState:
     mode: str = ""
-    qff_symbol: str | None = None
-    qff_expiry: str | None = None
+    ccf_symbol: str | None = None
+    ccf_expiry: str | None = None
     binance_symbol: str | None = None
     bitopro_symbol: str | None = None
     session: str = "starting"
@@ -81,8 +81,8 @@ class DashboardState:
     bar_account_display: Any = None
     state_text: str = "…"
     position_direction: str | None = None
-    tsm_units: float = 0.0
-    qff_contracts: int = 0
+    umc_units: float = 0.0
+    ccf_contracts: int = 0
     entry_zscore: float | None = None
     decision_text: str | None = None
     decision_time: str | None = None
@@ -100,7 +100,7 @@ class DashboardReporter:
         self,
         *,
         mode: str,
-        qff_symbol: str | None = None,
+        ccf_symbol: str | None = None,
         binance_symbol: str | None = None,
         bitopro_symbol: str | None = None,
         gate_text: str | None = None,
@@ -110,7 +110,7 @@ class DashboardReporter:
     ) -> None:
         self.state = DashboardState(
             mode=mode,
-            qff_symbol=qff_symbol,
+            ccf_symbol=ccf_symbol,
             binance_symbol=binance_symbol,
             bitopro_symbol=bitopro_symbol,
             gate_text=gate_text,
@@ -232,15 +232,15 @@ class DashboardReporter:
         self.state.state_text = state_value(strategy_state)
         direction = getattr(strategy_state, "position_direction", None)
         self.state.position_direction = getattr(direction, "value", direction)
-        self.state.tsm_units = float(getattr(strategy_state, "tsm_units", 0.0) or 0.0)
-        self.state.qff_contracts = int(
-            getattr(strategy_state, "qff_contracts", 0) or 0
+        self.state.umc_units = float(getattr(strategy_state, "umc_units", 0.0) or 0.0)
+        self.state.ccf_contracts = int(
+            getattr(strategy_state, "ccf_contracts", 0) or 0
         )
         self.state.entry_zscore = getattr(strategy_state, "entry_zscore", None)
-        trading_symbol = getattr(strategy_state, "trading_qff_symbol", None)
+        trading_symbol = getattr(strategy_state, "trading_ccf_symbol", None)
         if trading_symbol:
-            self.state.qff_symbol = trading_symbol
-            self.state.qff_expiry = getattr(strategy_state, "trading_qff_expiry", None)
+            self.state.ccf_symbol = trading_symbol
+            self.state.ccf_expiry = getattr(strategy_state, "trading_ccf_expiry", None)
 
     def _absorb_status_event(self, timestamp: Any, code: str, detail: str) -> None:
         code_text = str(code)
@@ -256,8 +256,8 @@ class DashboardReporter:
                 f"{code_text} {detail}".strip() if detail else code_text
             )
         if lowered == "contract_switch_done" and detail:
-            self.state.qff_symbol = detail
-            self.state.qff_expiry = None
+            self.state.ccf_symbol = detail
+            self.state.ccf_expiry = None
         if lowered.startswith("margin_"):
             level_by_code = {
                 "margin_red_line": "red_line",
@@ -318,7 +318,7 @@ class DashboardReporter:
         symbols = " | ".join(
             part
             for part in (
-                self._qff_label(),
+                self._ccf_label(),
                 self.state.binance_symbol,
                 self.state.bitopro_symbol,
             )
@@ -337,12 +337,12 @@ class DashboardReporter:
         table.add_row("Reconcile", Text(recon, style=recon_style))
         return Panel(table, title=f"Project Lux — {self.state.mode}", border_style="cyan")
 
-    def _qff_label(self) -> str | None:
-        if not self.state.qff_symbol:
+    def _ccf_label(self) -> str | None:
+        if not self.state.ccf_symbol:
             return None
-        if self.state.qff_expiry:
-            return f"{self.state.qff_symbol} (exp {self.state.qff_expiry})"
-        return self.state.qff_symbol
+        if self.state.ccf_expiry:
+            return f"{self.state.ccf_symbol} (exp {self.state.ccf_expiry})"
+        return self.state.ccf_symbol
 
     def _market_panel(self) -> Panel:
         table = Table(expand=True)
@@ -393,8 +393,8 @@ class DashboardReporter:
         if self.state.position_direction:
             position = (
                 f"{self.state.position_direction}  "
-                f"tsm_units={self.state.tsm_units:g}  "
-                f"qff_contracts={self.state.qff_contracts}"
+                f"umc_units={self.state.umc_units:g}  "
+                f"ccf_contracts={self.state.ccf_contracts}"
             )
             if self.state.entry_zscore is not None:
                 position += f"  entry_z={format_float(self.state.entry_zscore, digits=2)}"

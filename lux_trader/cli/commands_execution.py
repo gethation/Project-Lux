@@ -80,7 +80,7 @@ def run_order_doctor_checks(config: object) -> tuple[bool, list[str]]:
 
     lines = [
         f"store_path={config.store_path}",
-        "execution=real_two_leg_coordinator (qff_first)",
+        "execution=real_two_leg_coordinator (ccf_first)",
     ]
     for check in report.checks:
         status = "PASS" if check.passed else "FAIL"
@@ -107,13 +107,13 @@ def command_live_execute(args: argparse.Namespace) -> int:
                 store.reset()
             store.initialize()
             resume_state = store.load_resume_state()
-            qff_symbol = helpers.reconciliation_qff_symbol(
+            ccf_symbol = helpers.reconciliation_ccf_symbol(
                 config,
                 resume_state.strategy if resume_state is not None else None,
             )
             shared_fubon, shared_brokers = build_live_execution_brokers(
                 config,
-                qff_symbol,
+                ccf_symbol,
             )
             if config.live_execution.require_readonly_reconciliation:
                 run_id, reconciliation_report = reconcile_brokers_to_store(
@@ -167,15 +167,15 @@ def command_live_execute(args: argparse.Namespace) -> int:
 
 def build_live_execution_brokers(
     config: object,
-    qff_symbol: str,
+    ccf_symbol: str,
 ) -> tuple[
     FubonFutureExecutionProcess | None,
     tuple[ReadOnlyBroker, ...] | None,
 ]:
-    if qff_symbol.strip().lower() == "auto":
+    if ccf_symbol.strip().lower() == "auto":
         return None, None
     fubon = FubonFutureExecutionProcess(
-        qff_symbol,
+        ccf_symbol,
         config.live.fubon_env_path,
     )
     return fubon, (
@@ -422,7 +422,7 @@ def command_manual_close(args: argparse.Namespace) -> int:
 
 
 def binance_manual_close(args: argparse.Namespace) -> int:
-    """Emergency-close a Binance TSM position with a market order. Mirrors the
+    """Emergency-close a Binance UMC position with a market order. Mirrors the
     Fubon path so either stranded leg from a single-leg PAUSE can be flattened
     by hand before clear-pause."""
     config = load_config(args.config)
@@ -581,8 +581,8 @@ def command_broker_status(args: argparse.Namespace) -> int:
         f"store_path={config.store_path}",
         f"reconciliation_enabled={config.broker_reconciliation.enabled}",
         f"fail_on_mismatch={config.broker_reconciliation.fail_on_mismatch}",
-        f"tsm_units_tolerance={config.broker_reconciliation.tsm_units_tolerance}",
-        f"qff_contract_tolerance={config.broker_reconciliation.qff_contract_tolerance}",
+        f"umc_units_tolerance={config.broker_reconciliation.umc_units_tolerance}",
+        f"ccf_contract_tolerance={config.broker_reconciliation.ccf_contract_tolerance}",
         "private_api=disabled",
     ]
     brokers: tuple[ReadOnlyBroker, ...] = ()
@@ -813,12 +813,12 @@ def build_binance_smoke_plan(
     return PairExecutionPlan(
         plan_id=f"BINANCE-SMOKE-{timestamp.strftime('%Y%m%d%H%M%S')}-{plan_type.value}",
         plan_type=plan_type,
-        direction=Direction.LONG_TSM_SHORT_QFF,
+        direction=Direction.LONG_UMC_SHORT_CCF,
         timestamp=timestamp,
         row_index=-1,
         legs=(
             ExecutionLeg(
-                broker=BrokerName.BINANCE_TSM,
+                broker=BrokerName.IBKR_UMC,
                 symbol=symbol,
                 side=side,
                 quantity=quantity,
@@ -843,24 +843,24 @@ def build_fubon_smoke_plan(
     return PairExecutionPlan(
         plan_id=f"FUBON-SMOKE-{timestamp.strftime('%Y%m%d%H%M%S')}-{plan_type.value}",
         plan_type=plan_type,
-        direction=Direction.SHORT_TSM_LONG_QFF,
+        direction=Direction.SHORT_UMC_LONG_CCF,
         timestamp=timestamp,
         row_index=-1,
         legs=(
             ExecutionLeg(
-                broker=BrokerName.FUBON_QFF,
+                broker=BrokerName.FUBON_CCF,
                 symbol=symbol,
                 side=side,
                 quantity=float(lot),
                 price=1.0,
                 timestamp=timestamp,
                 row_index=-1,
-                qff_symbol=symbol,
+                ccf_symbol=symbol,
             ),
         ),
         reason="fubon_execution_smoke",
         decision_spread_type="manual_smoke",
-        qff_symbol=symbol,
+        ccf_symbol=symbol,
     )
 
 

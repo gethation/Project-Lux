@@ -45,8 +45,8 @@ class SystemRunner:
 
             bars = CsvReplayMarketData(
                 self.config.input_csv,
-                qff_ohlcv_path=self.config.qff_ohlcv_csv,
-                tsm_ohlcv_path=self.config.tsm_ohlcv_csv,
+                ccf_ohlcv_path=self.config.ccf_ohlcv_csv,
+                umc_ohlcv_path=self.config.umc_ohlcv_csv,
                 usdttwd_ohlcv_path=self.config.usdttwd_ohlcv_csv,
             ).load()
             if resume_state is None:
@@ -68,7 +68,7 @@ class SystemRunner:
                 self.config.fees,
                 broker,
                 state=strategy_state,
-                tsm_symbol=self.config.live.binance_symbol,
+                umc_symbol=self.config.live.binance_symbol,
             )
 
             rows_processed = 0

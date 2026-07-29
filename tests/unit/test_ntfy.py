@@ -110,7 +110,7 @@ def test_bar_does_not_publish_periodic_status() -> None:
     snapshot = SimpleNamespace(mid_spread=10.83, short_zscore=-2.12, long_zscore=-1.86)
     state = SimpleNamespace(
         state=SimpleNamespace(value="open"),
-        position_direction=Direction.LONG_TSM_SHORT_QFF,
+        position_direction=Direction.LONG_UMC_SHORT_CCF,
     )
     account = SimpleNamespace(
         combined_upnl_twd=12345.0,
@@ -147,13 +147,13 @@ def test_dry_run_filled_execution_is_clearly_labeled_and_lists_both_fills() -> N
     ntfy, publisher = reporter(mode="live-dry-run")
     plan = SimpleNamespace(
         plan_type=ExecutionPlanType.ENTRY,
-        direction=Direction.SHORT_TSM_LONG_QFF,
+        direction=Direction.SHORT_UMC_LONG_CCF,
     )
     fills = (
         Fill(
             fill_id="f1",
             order_id="o1",
-            broker=BrokerName.BINANCE_TSM,
+            broker=BrokerName.IBKR_UMC,
             symbol="TSM/USDT:USDT",
             side=OrderSide.SELL,
             quantity=2.5,
@@ -165,8 +165,8 @@ def test_dry_run_filled_execution_is_clearly_labeled_and_lists_both_fills() -> N
         Fill(
             fill_id="f2",
             order_id="o2",
-            broker=BrokerName.FUBON_QFF,
-            symbol="QFFQ6",
+            broker=BrokerName.FUBON_CCF,
+            symbol="CCFQ6",
             side=OrderSide.BUY,
             quantity=1.0,
             price=842.0,
@@ -190,8 +190,8 @@ def test_dry_run_filled_execution_is_clearly_labeled_and_lists_both_fills() -> N
     assert message.priority == ALERT_PRIORITY
     assert "[DRY-RUN]" in message.title
     assert "mode=DRY-RUN" in message.message
-    assert "BINANCE_TSM TSM/USDT:USDT sell qty=2.5 price=105.25" in message.message
-    assert "FUBON_QFF QFFQ6 buy qty=1 price=842" in message.message
+    assert "IBKR_UMC TSM/USDT:USDT sell qty=2.5 price=105.25" in message.message
+    assert "FUBON_CCF CCFQ6 buy qty=1 price=842" in message.message
     assert "trade_pnl_twd" not in message.message
 
 
@@ -199,11 +199,11 @@ def test_filled_exit_notification_includes_authoritative_trade_pnl() -> None:
     ntfy, publisher = reporter()
     plan = SimpleNamespace(
         plan_type=ExecutionPlanType.EXIT,
-        direction=Direction.LONG_TSM_SHORT_QFF,
+        direction=Direction.LONG_UMC_SHORT_CCF,
     )
     fill = SimpleNamespace(
-        broker=SimpleNamespace(value="fubon_qff"),
-        symbol="QFFQ6",
+        broker=SimpleNamespace(value="fubon_ccf"),
+        symbol="CCFQ6",
         side=SimpleNamespace(value="buy"),
         quantity=1.0,
         price=842.0,
@@ -236,14 +236,14 @@ def test_filled_exit_notification_marks_missing_trade_pnl_unavailable() -> None:
     ntfy, publisher = reporter()
     plan = SimpleNamespace(
         plan_type=ExecutionPlanType.EXIT,
-        direction=Direction.LONG_TSM_SHORT_QFF,
+        direction=Direction.LONG_UMC_SHORT_CCF,
     )
     outcome = SimpleNamespace(
         status=ExecutionOutcomeStatus.FILLED,
         fills=(
             SimpleNamespace(
-                broker=SimpleNamespace(value="fubon_qff"),
-                symbol="QFFQ6",
+                broker=SimpleNamespace(value="fubon_ccf"),
+                symbol="CCFQ6",
                 side=SimpleNamespace(value="buy"),
                 quantity=1.0,
                 price=842.0,
@@ -262,12 +262,12 @@ def test_partial_execution_publishes_fill_and_error_notifications() -> None:
     ntfy, publisher = reporter()
     plan = SimpleNamespace(
         plan_type=ExecutionPlanType.EXIT,
-        direction=Direction.LONG_TSM_SHORT_QFF,
+        direction=Direction.LONG_UMC_SHORT_CCF,
     )
     fill = Fill(
         fill_id="f1",
         order_id="o1",
-        broker=BrokerName.BINANCE_TSM,
+        broker=BrokerName.IBKR_UMC,
         symbol="TSM/USDT:USDT",
         side=OrderSide.SELL,
         quantity=1.0,
@@ -372,7 +372,7 @@ def seed_status_bars(path, count: int) -> None:
         start = ts()
         for index in range(count):
             state = "open" if index == count - 1 else "flat"
-            position = "long_tsm_short_qff" if state == "open" else "flat"
+            position = "long_umc_short_ccf" if state == "open" else "flat"
             connection.execute(
                 """
                 INSERT INTO bars (

@@ -5,8 +5,8 @@
 [paths]
 store_path = 'data\project_lux_live_execute.sqlite3'
 input_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff_tsm_spread_zscore_1m_taipei_qff_session_w500.csv'
-qff_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
-tsm_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\binance_tsmusdtp_1m_taipei.csv'
+ccf_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
+umc_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\binance_tsmusdtp_1m_taipei.csv'
 usdttwd_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\bitopro_usdttwd_1m_taipei.csv'
 
 [strategy]
@@ -16,14 +16,14 @@ leg_notional_twd = 1000000.0
 initial_capital_twd = 2000000.0
 max_entry_delay_minutes = 15
 zscore_window = 500
-qff_lots = 1
+ccf_lots = 1
 
 [fees]
-tsm_fee_bps = 5.0
-qff_fee_per_contract_twd = 88.0
-qff_tax_rate = 0.00002
-qff_contract_multiplier = 100.0
-tsm_contract_multiplier = 5.0
+umc_fee_bps = 5.0
+ccf_fee_per_contract_twd = 88.0
+ccf_tax_rate = 0.00002
+ccf_contract_multiplier = 100.0
+umc_contract_multiplier = 5.0
 
 [safety]
 allow_live_order = true
@@ -65,34 +65,34 @@ closed_dates = [
 polling_seconds = 1.0
 minute_finalize_delay_seconds = 1.0
 stale_seconds = 10.0
-qff_book_stale_seconds = 55.0
+ccf_book_stale_seconds = 55.0
 sync_windows_time_on_startup = true
 clock_skew_fail_seconds = 60.0
 windows_time_sync_timeout_seconds = 15.0
 max_leg_timestamp_skew_seconds = 10.0
 warmup_minutes = 500
 warmup_forward_fill_max_ratio = 0.9
-warmup_qff_max_trailing_fill_minutes = 5
-qff_product = 'QFF'
-qff_symbol = 'auto'
+warmup_ccf_max_trailing_fill_minutes = 5
+ccf_product = 'CCF'
+ccf_symbol = 'auto'
 binance_symbol = 'TSM/USDT:USDT'
 bitopro_symbol = 'USDT/TWD'
 fubon_env_path = 'env'
 taifex_use_network = true
 taifex_cache_dir = 'data\taifex_cache'
-taifex_qff_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
+taifex_ccf_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
 
 [broker_reconciliation]
 enabled = true
 fail_on_mismatch = true
-tsm_units_tolerance = 0.000001
-qff_contract_tolerance = 0
+umc_units_tolerance = 0.000001
+ccf_contract_tolerance = 0
 
 [live_execution]
 enabled = true
 require_readonly_reconciliation = true
 max_plan_age_seconds = 120
-qff_first = true
+ccf_first = true
 
 [binance_execution]
 leverage = 4
@@ -112,8 +112,8 @@ fubon_transfer_ratio = 0.20
 fubon_red_line_ratio = 0.135
 target_ratio = 0.30
 red_line_maint_multiplier = 1.3
-# 0 lets live margin checks derive the denominator from strategy.qff_lots and
-# the latest QFF price. Set a positive value only to force a fixed denominator.
+# 0 lets live margin checks derive the denominator from strategy.ccf_lots and
+# the latest CCF price. Set a positive value only to force a fixed denominator.
 leg_notional_twd = 0.0
 
 [ntfy]

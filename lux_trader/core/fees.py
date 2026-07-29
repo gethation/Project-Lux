@@ -2,31 +2,31 @@ from __future__ import annotations
 
 from ..config import FeeConfig
 from .sizing import round_half_up_nonnegative
-from .sizing import tsm_contract_twd_price
+from .sizing import umc_contract_twd_price
 
 
 def fill_costs(
     *,
-    tsm_units: float,
-    tsm_price: float,
-    qff_contracts: int,
-    qff_price: float,
+    umc_units: float,
+    umc_price: float,
+    ccf_contracts: int,
+    ccf_price: float,
     fees: FeeConfig,
 ) -> dict[str, float]:
-    tsm_fee_twd = (
-        abs(tsm_units)
-        * tsm_contract_twd_price(tsm_price, fees)
-        * fees.tsm_fee_bps
+    umc_fee_twd = (
+        abs(umc_units)
+        * umc_contract_twd_price(umc_price, fees)
+        * fees.umc_fee_bps
         / 10000.0
     )
-    qff_fee_twd = abs(qff_contracts) * fees.qff_fee_per_contract_twd
-    qff_tax_per_contract_twd = round_half_up_nonnegative(
-        qff_price * fees.qff_contract_multiplier * fees.qff_tax_rate
+    ccf_fee_twd = abs(ccf_contracts) * fees.ccf_fee_per_contract_twd
+    ccf_tax_per_contract_twd = round_half_up_nonnegative(
+        ccf_price * fees.ccf_contract_multiplier * fees.ccf_tax_rate
     )
-    qff_tax_twd = abs(qff_contracts) * qff_tax_per_contract_twd
+    ccf_tax_twd = abs(ccf_contracts) * ccf_tax_per_contract_twd
     return {
-        "tsm_fee_twd": tsm_fee_twd,
-        "qff_fee_twd": qff_fee_twd,
-        "qff_tax_twd": qff_tax_twd,
-        "total_fee_twd": tsm_fee_twd + qff_fee_twd + qff_tax_twd,
+        "umc_fee_twd": umc_fee_twd,
+        "ccf_fee_twd": ccf_fee_twd,
+        "ccf_tax_twd": ccf_tax_twd,
+        "total_fee_twd": umc_fee_twd + ccf_fee_twd + ccf_tax_twd,
     }

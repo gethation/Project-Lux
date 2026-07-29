@@ -1,6 +1,6 @@
 # Project Lux
 
-QFF/TSM pairs-trading system — a simplified rebuild of the legacy Project Lux.
+CCF/UMC pairs-trading system — a simplified rebuild of the legacy Project Lux.
 The core trading mechanism (strategy, indicators, sizing, fees, execution intent,
 reconciliation, broker integrations, SQLite audit schema) is vendored **unchanged**
 from the legacy reference implementation; only the operational shell (CLI, live
@@ -43,7 +43,7 @@ Aligned reference summary: `rows=29909`, `trade_count=66`,
 `net_pnl_twd≈261507.83`, `total_fee_twd≈68317.50`.
 
 > Note: the mechanism doc quotes an older PoC summary (`net_pnl=265481.32`). The
-> PoC rebuilt its input window on 2026-06-29, permanently dropping early QFF opens;
+> PoC rebuilt its input window on 2026-06-29, permanently dropping early CCF opens;
 > the trade set is unchanged (66 trades) and sizing/fill logic is byte-for-byte
 > identical. The committed fixture is the frozen regression baseline.
 
@@ -122,7 +122,7 @@ statuses exit fast); position-delta is the last-resort fill evidence. Payloads
 record `fill_source`, `client_order_id`, `recovery`, and `poll_errors`.
 
 The M6 two-leg minimal real-order acceptance (Fubon TMF `FITMN07` 1 lot +
-Binance TSM 0.1 unit, qff-first, pre/post reconciliation, leg timing gap,
+Binance UMC 0.1 unit, ccf-first, pre/post reconciliation, leg timing gap,
 final flat) is driven by `tests/smoke/test_live_execute_smoke.py` and MUST be
 run supervised — see [docs/M6_RUNBOOK.md](docs/M6_RUNBOOK.md). Until M6 (and a
 longer soak) passes, the system must not run unattended with real orders.

@@ -19,26 +19,26 @@ class BrokerReconciler:
     def __init__(
         self,
         *,
-        tsm_units_tolerance: float = 1e-6,
-        qff_contract_tolerance: int = 0,
+        umc_units_tolerance: float = 1e-6,
+        ccf_contract_tolerance: int = 0,
     ) -> None:
-        self.tsm_units_tolerance = float(tsm_units_tolerance)
-        self.qff_contract_tolerance = int(qff_contract_tolerance)
+        self.umc_units_tolerance = float(umc_units_tolerance)
+        self.ccf_contract_tolerance = int(ccf_contract_tolerance)
 
     def reconcile(
         self,
         *,
         strategy_state: StrategyRuntimeState | None,
         brokers: tuple[ReadOnlyBroker, ...],
-        tsm_symbol: str,
-        qff_symbol: str,
+        umc_symbol: str,
+        ccf_symbol: str,
         timestamp: datetime | None = None,
     ) -> ReconciliationReport:
         timestamp = timestamp or datetime.now().astimezone()
         expected = self.expected_from_strategy(
             strategy_state,
-            tsm_symbol=tsm_symbol,
-            qff_symbol=qff_symbol,
+            umc_symbol=umc_symbol,
+            ccf_symbol=ccf_symbol,
             timestamp=timestamp,
         )
         snapshots = []
@@ -74,16 +74,16 @@ class BrokerReconciler:
         self,
         state: StrategyRuntimeState | None,
         *,
-        tsm_symbol: str,
-        qff_symbol: str,
+        umc_symbol: str,
+        ccf_symbol: str,
         timestamp: datetime,
     ) -> ExpectedBrokerState:
         has_position = (
             state is not None
             and state.position_direction is not None
             and (
-                abs(float(state.tsm_units)) > self.tsm_units_tolerance
-                or abs(float(state.qff_contracts)) > self.qff_contract_tolerance
+                abs(float(state.umc_units)) > self.umc_units_tolerance
+                or abs(float(state.ccf_contracts)) > self.ccf_contract_tolerance
             )
         )
         if state is None or not (
@@ -92,17 +92,17 @@ class BrokerReconciler:
         ):
             return ExpectedBrokerState(
                 timestamp=timestamp,
-                tsm_symbol=tsm_symbol,
-                qff_symbol=qff_symbol,
-                expected_tsm_units=0.0,
-                expected_qff_contracts=0,
+                umc_symbol=umc_symbol,
+                ccf_symbol=ccf_symbol,
+                expected_umc_units=0.0,
+                expected_ccf_contracts=0,
             )
         return ExpectedBrokerState(
             timestamp=timestamp,
-            tsm_symbol=tsm_symbol,
-            qff_symbol=state.trading_qff_symbol or qff_symbol,
-            expected_tsm_units=state.tsm_units,
-            expected_qff_contracts=state.qff_contracts,
+            umc_symbol=umc_symbol,
+            ccf_symbol=state.trading_ccf_symbol or ccf_symbol,
+            expected_umc_units=state.umc_units,
+            expected_ccf_contracts=state.ccf_contracts,
         )
 
     def _snapshot_issues(
@@ -112,19 +112,19 @@ class BrokerReconciler:
     ) -> list[ReconciliationIssue]:
         issues: list[ReconciliationIssue] = []
         expected_symbol = (
-            expected.tsm_symbol
-            if snapshot.broker == BrokerName.BINANCE_TSM
-            else expected.qff_symbol
+            expected.umc_symbol
+            if snapshot.broker == BrokerName.IBKR_UMC
+            else expected.ccf_symbol
         )
         expected_quantity = (
-            expected.expected_tsm_units
-            if snapshot.broker == BrokerName.BINANCE_TSM
-            else float(expected.expected_qff_contracts)
+            expected.expected_umc_units
+            if snapshot.broker == BrokerName.IBKR_UMC
+            else float(expected.expected_ccf_contracts)
         )
         tolerance = (
-            self.tsm_units_tolerance
-            if snapshot.broker == BrokerName.BINANCE_TSM
-            else float(self.qff_contract_tolerance)
+            self.umc_units_tolerance
+            if snapshot.broker == BrokerName.IBKR_UMC
+            else float(self.ccf_contract_tolerance)
         )
         actual_quantity = sum(
             position.quantity

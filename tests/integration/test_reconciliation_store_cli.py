@@ -30,15 +30,15 @@ def write_config(tmp_path: Path) -> Path:
                 f"store_path = '{store_path}'",
                 "",
                 "[live_market_data]",
-                "qff_symbol = 'QFFG6'",
+                "ccf_symbol = 'CCFG6'",
                 "binance_symbol = 'TSM/USDT:USDT'",
                 f"taifex_cache_dir = '{cache_dir}'",
                 "",
                 "[broker_reconciliation]",
                 "enabled = false",
                 "fail_on_mismatch = false",
-                "tsm_units_tolerance = 0.000001",
-                "qff_contract_tolerance = 0",
+                "umc_units_tolerance = 0.000001",
+                "ccf_contract_tolerance = 0",
             ]
         ),
         encoding="utf-8",
@@ -83,11 +83,11 @@ def test_store_records_and_loads_latest_reconciliation_report(tmp_path: Path) ->
         report = BrokerReconciler().reconcile(
             strategy_state=None,
             brokers=(
-                FakeReadOnlyBroker(BrokerName.BINANCE_TSM),
-                FakeReadOnlyBroker(BrokerName.FUBON_QFF),
+                FakeReadOnlyBroker(BrokerName.IBKR_UMC),
+                FakeReadOnlyBroker(BrokerName.FUBON_CCF),
             ),
-            tsm_symbol="TSM/USDT:USDT",
-            qff_symbol="QFFG6",
+            umc_symbol="TSM/USDT:USDT",
+            ccf_symbol="CCFG6",
         )
         run_id = store.record_reconciliation_report(report)
         store.commit()
@@ -96,7 +96,7 @@ def test_store_records_and_loads_latest_reconciliation_report(tmp_path: Path) ->
         assert loaded is not None
         assert run_id == 1
         assert loaded.status == ReconciliationStatus.MATCHED
-        assert loaded.expected.qff_symbol == "QFFG6"
+        assert loaded.expected.ccf_symbol == "CCFG6"
         assert count_table(store.connection, "broker_reconciliation_runs") == 1
         assert count_table(store.connection, "broker_snapshots") == 2
         assert count_table(store.connection, "broker_reconciliation_issues") == 0

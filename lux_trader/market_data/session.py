@@ -17,11 +17,11 @@ from ..core.contracts import parse_contract_expiry, row_get, row_to_dict
 from ..core.time import TAIPEI_TZ, ensure_taipei
 from .normalization import close_series
 from .parsing import parse_optional_float, parse_timestamp
-from .types import QffContractCandidate
+from .types import CcfContractCandidate
 
 
-QFF_FORWARD_FILL_LOOKBACK = timedelta(days=14)
-QFF_MONTH_CODES = {
+CCF_FORWARD_FILL_LOOKBACK = timedelta(days=14)
+CCF_MONTH_CODES = {
     "A": 1,
     "B": 2,
     "C": 3,
@@ -45,34 +45,34 @@ def market_time(hour: int, minute: int) -> datetime.time:
     return datetime.min.replace(hour=hour, minute=minute).time()
 
 
-def build_qff_session_index(
-    qff_close: pd.Series,
+def build_ccf_session_index(
+    ccf_close: pd.Series,
     *,
     end: datetime | None = None,
 ) -> pd.DatetimeIndex:
-    qff_close = qff_close.dropna().sort_index()
-    if qff_close.empty:
+    ccf_close = ccf_close.dropna().sort_index()
+    if ccf_close.empty:
         return pd.DatetimeIndex([], tz=TAIPEI_TZ)
     end_ts = (
         pd.Timestamp(ensure_taipei(end))
         if end is not None
-        else qff_close.index.max()
+        else ccf_close.index.max()
     )
-    qff_close = qff_close.loc[qff_close.index <= end_ts]
-    if qff_close.empty:
+    ccf_close = ccf_close.loc[ccf_close.index <= end_ts]
+    if ccf_close.empty:
         return pd.DatetimeIndex([], tz=TAIPEI_TZ)
 
     pieces: list[pd.DatetimeIndex] = []
-    first_timestamp = qff_close.index.min().to_pydatetime()
+    first_timestamp = ccf_close.index.min().to_pydatetime()
     first_day = min(first_timestamp.date(), session_start_date(first_timestamp))
     last_day = end_ts.date()
     for day in pd.date_range(first_day, last_day, freq="D", tz=TAIPEI_TZ):
         day_date = day.date()
         day_mask = [
             ts.date() == day_date and in_day_session(ts.to_pydatetime())
-            for ts in qff_close.index
+            for ts in ccf_close.index
         ]
-        if qff_close.loc[day_mask].notna().any():
+        if ccf_close.loc[day_mask].notna().any():
             pieces.append(
                 pd.date_range(
                     datetime.combine(
@@ -92,9 +92,9 @@ def build_qff_session_index(
         night_mask = [
             session_start_date(ts.to_pydatetime()) == day_date
             and in_night_session(ts.to_pydatetime())
-            for ts in qff_close.index
+            for ts in ccf_close.index
         ]
-        if qff_close.loc[night_mask].notna().any():
+        if ccf_close.loc[night_mask].notna().any():
             pieces.append(
                 pd.date_range(
                     datetime.combine(
@@ -114,33 +114,33 @@ def build_qff_session_index(
     if not pieces:
         return pd.DatetimeIndex([], tz=TAIPEI_TZ)
     index = pieces[0].append(pieces[1:]).unique().sort_values()
-    index = index[(index >= qff_close.index.min()) & (index <= end_ts)]
+    index = index[(index >= ccf_close.index.min()) & (index <= end_ts)]
     return pd.DatetimeIndex(index)
 
 
-def build_qff_session_warmup_index(
-    qff_close: pd.Series,
+def build_ccf_session_warmup_index(
+    ccf_close: pd.Series,
     *,
     end: datetime,
     count: int,
 ) -> pd.DatetimeIndex:
-    session_index = build_qff_session_index(qff_close, end=end)
+    session_index = build_ccf_session_index(ccf_close, end=end)
     if len(session_index) < count:
         raise RuntimeError(
-            f"QFF session warmup has only {len(session_index)} bars, need {count}"
+            f"CCF session warmup has only {len(session_index)} bars, need {count}"
         )
     return pd.DatetimeIndex(session_index[-count:])
 
 
-def build_qff_expected_session_index(
+def build_ccf_expected_session_index(
     *,
     start: datetime,
     end: datetime,
     closed_dates: Iterable[date] = (),
 ) -> pd.DatetimeIndex:
-    """Return every QFF trading minute required by the live calendar.
+    """Return every CCF trading minute required by the live calendar.
 
-    Unlike :func:`build_qff_session_index`, this index is anchored to the
+    Unlike :func:`build_ccf_session_index`, this index is anchored to the
     requested time range rather than inferred from whatever rows a provider
     happened to return.  A wholly missing current day/night session therefore
     remains visible to warmup freshness checks instead of disappearing.
@@ -168,7 +168,7 @@ def build_qff_expected_session_index(
     return pd.DatetimeIndex(expected)
 
 
-def build_qff_expected_warmup_index(
+def build_ccf_expected_warmup_index(
     *,
     start: datetime,
     end: datetime,
@@ -176,20 +176,20 @@ def build_qff_expected_warmup_index(
     closed_dates: Iterable[date] = (),
 ) -> tuple[pd.DatetimeIndex, pd.DatetimeIndex]:
     """Return ``(last_count_minutes, full_fill_index)`` for live warmup."""
-    session_index = build_qff_expected_session_index(
+    session_index = build_ccf_expected_session_index(
         start=start,
         end=end,
         closed_dates=closed_dates,
     )
     if len(session_index) < count:
         raise RuntimeError(
-            "QFF expected-session warmup has only "
+            "CCF expected-session warmup has only "
             f"{len(session_index)} bars, need {count}"
         )
     return pd.DatetimeIndex(session_index[-count:]), session_index
 
 
-def prioritized_qff_close_frame(
+def prioritized_ccf_close_frame(
     frames: list[tuple[str, pd.DataFrame]],
 ) -> pd.DataFrame:
     combined_parts: list[pd.DataFrame] = []
@@ -217,7 +217,7 @@ def prioritized_qff_close_frame(
     return combined.drop_duplicates("timestamp", keep="last").set_index("timestamp")
 
 
-def qff_symbol_to_taifex_contract_month(
+def ccf_symbol_to_taifex_contract_month(
     symbol: str,
     *,
     reference_date: date | None = None,
@@ -227,10 +227,10 @@ def qff_symbol_to_taifex_contract_month(
     if numeric:
         return f"{numeric.group(1)}{numeric.group(2)}"
 
-    coded = re.search(r"QFF([A-L])(\d)", normalized)
+    coded = re.search(r"CCF([A-L])(\d)", normalized)
     if coded is None:
         raise RuntimeError(
-            f"Cannot derive TAIFEX contract month from QFF symbol: {symbol}"
+            f"Cannot derive TAIFEX contract month from CCF symbol: {symbol}"
         )
 
     reference = reference_date or datetime.now(TAIPEI_TZ).date()
@@ -239,18 +239,18 @@ def qff_symbol_to_taifex_contract_month(
     year = decade + year_digit
     while year < reference.year - 1:
         year += 10
-    month = QFF_MONTH_CODES[coded.group(1)]
+    month = CCF_MONTH_CODES[coded.group(1)]
     return f"{year}{month:02d}"
 
 
-def select_qff_front_month(
+def select_ccf_front_month(
     candidates: list[Any],
     *,
-    product: str = "QFF",
+    product: str = "CCF",
     today: date | None = None,
-) -> QffContractCandidate:
+) -> CcfContractCandidate:
     today = today or datetime.now(TAIPEI_TZ).date()
-    parsed: list[QffContractCandidate] = []
+    parsed: list[CcfContractCandidate] = []
     rejected: list[str] = []
 
     for row in candidates:
@@ -273,28 +273,28 @@ def select_qff_front_month(
             continue
         if expiry >= today:
             parsed.append(
-                QffContractCandidate(symbol=symbol, expiry=expiry, raw=raw)
+                CcfContractCandidate(symbol=symbol, expiry=expiry, raw=raw)
             )
 
     if not parsed:
         raise RuntimeError(
-            "Unable to select QFF front-month contract. "
+            "Unable to select CCF front-month contract. "
             f"Rejected candidates: {rejected[:10]}"
         )
     return sorted(parsed, key=lambda item: (item.expiry, item.symbol))[0]
 
 
 __all__ = [
-    "QFF_FORWARD_FILL_LOOKBACK",
-    "build_qff_session_index",
-    "build_qff_session_warmup_index",
-    "build_qff_expected_session_index",
-    "build_qff_expected_warmup_index",
+    "CCF_FORWARD_FILL_LOOKBACK",
+    "build_ccf_session_index",
+    "build_ccf_session_warmup_index",
+    "build_ccf_expected_session_index",
+    "build_ccf_expected_warmup_index",
     "floor_minute",
     "parse_optional_float",
     "parse_timestamp",
-    "prioritized_qff_close_frame",
-    "qff_symbol_to_taifex_contract_month",
-    "select_qff_front_month",
+    "prioritized_ccf_close_frame",
+    "ccf_symbol_to_taifex_contract_month",
+    "select_ccf_front_month",
 ]
 

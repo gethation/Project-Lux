@@ -41,11 +41,11 @@ FUBON_MONTH_CODES = {
 }
 FUBON_PRODUCT_ALIASES = {
     "TMF": {"TMF", "FITM"},
-    "QFF": {"QFF", "FIQFF"},
+    "CCF": {"CCF", "FICCF"},
 }
 FUBON_BROKER_PRODUCTS = {
     "FITM": "TMF",
-    "FIQFF": "QFF",
+    "FICCF": "CCF",
 }
 
 

@@ -20,7 +20,7 @@ from .models import (
     StrategyAction,
     StrategyState,
 )
-from .sizing import size_position_for_direction, tsm_contract_twd_price
+from .sizing import size_position_for_direction, umc_contract_twd_price
 
 
 def minutes_between(start: datetime, end: datetime) -> int:
@@ -29,24 +29,24 @@ def minutes_between(start: datetime, end: datetime) -> int:
 
 def entry_direction(zscore: float, entry_z: float) -> Direction | None:
     if zscore > entry_z:
-        return Direction.SHORT_TSM_LONG_QFF
+        return Direction.SHORT_UMC_LONG_CCF
     if zscore < -entry_z:
-        return Direction.LONG_TSM_SHORT_QFF
+        return Direction.LONG_UMC_SHORT_CCF
     return None
 
 
 def should_exit(zscore: float, direction: Direction, exit_z: float) -> bool:
-    if direction == Direction.SHORT_TSM_LONG_QFF:
+    if direction == Direction.SHORT_UMC_LONG_CCF:
         return zscore < -exit_z
     return zscore > exit_z
 
 
-def entry_tsm_price(bar: MarketBar) -> float:
-    return bar.tsm_entry_twd_fair if bar.tsm_entry_twd_fair is not None else bar.tsm_twd_fair
+def entry_umc_price(bar: MarketBar) -> float:
+    return bar.umc_entry_twd_fair if bar.umc_entry_twd_fair is not None else bar.umc_twd_fair
 
 
-def entry_qff_price(bar: MarketBar) -> float:
-    return bar.qff_entry_price if bar.qff_entry_price is not None else bar.qff_close_filled
+def entry_ccf_price(bar: MarketBar) -> float:
+    return bar.ccf_entry_price if bar.ccf_entry_price is not None else bar.ccf_close_filled
 
 
 @dataclass
@@ -60,21 +60,21 @@ class StrategyRuntimeState:
     exit_signal_idx: int = -1
     exit_signal_time: datetime | None = None
     exit_signal_zscore: float | None = None
-    entry_tsm: float | None = None
-    entry_qff: float | None = None
+    entry_umc: float | None = None
+    entry_ccf: float | None = None
     entry_zscore: float | None = None
-    tsm_units: float = 0.0
-    qff_units: float = 0.0
-    qff_contracts: int = 0
+    umc_units: float = 0.0
+    ccf_units: float = 0.0
+    ccf_contracts: int = 0
     actual_leg_notional_twd: float = 0.0
     realized_pnl: float = 0.0
     realized_fee_twd: float = 0.0
     running_max_equity: float = 0.0
     open_trade: dict[str, Any] | None = None
-    trading_qff_symbol: str | None = None
-    trading_qff_expiry: str | None = None
-    eligible_active_qff_symbol: str | None = None
-    eligible_active_qff_expiry: str | None = None
+    trading_ccf_symbol: str | None = None
+    trading_ccf_expiry: str | None = None
+    eligible_active_ccf_symbol: str | None = None
+    eligible_active_ccf_expiry: str | None = None
     pending_symbol_switch: bool = False
     last_warmup_symbol: str | None = None
     contract_policy_state: str | None = None
@@ -99,21 +99,21 @@ class StrategyRuntimeState:
             if self.exit_signal_time
             else None,
             "exit_signal_zscore": self.exit_signal_zscore,
-            "entry_tsm": self.entry_tsm,
-            "entry_qff": self.entry_qff,
+            "entry_umc": self.entry_umc,
+            "entry_ccf": self.entry_ccf,
             "entry_zscore": self.entry_zscore,
-            "tsm_units": self.tsm_units,
-            "qff_units": self.qff_units,
-            "qff_contracts": self.qff_contracts,
+            "umc_units": self.umc_units,
+            "ccf_units": self.ccf_units,
+            "ccf_contracts": self.ccf_contracts,
             "actual_leg_notional_twd": self.actual_leg_notional_twd,
             "realized_pnl": self.realized_pnl,
             "realized_fee_twd": self.realized_fee_twd,
             "running_max_equity": self.running_max_equity,
             "open_trade": self._serialize_trade(self.open_trade),
-            "trading_qff_symbol": self.trading_qff_symbol,
-            "trading_qff_expiry": self.trading_qff_expiry,
-            "eligible_active_qff_symbol": self.eligible_active_qff_symbol,
-            "eligible_active_qff_expiry": self.eligible_active_qff_expiry,
+            "trading_ccf_symbol": self.trading_ccf_symbol,
+            "trading_ccf_expiry": self.trading_ccf_expiry,
+            "eligible_active_ccf_symbol": self.eligible_active_ccf_symbol,
+            "eligible_active_ccf_expiry": self.eligible_active_ccf_expiry,
             "pending_symbol_switch": self.pending_symbol_switch,
             "last_warmup_symbol": self.last_warmup_symbol,
             "contract_policy_state": self.contract_policy_state,
@@ -143,12 +143,12 @@ class StrategyRuntimeState:
         state.exit_signal_idx = int(payload.get("exit_signal_idx", -1))
         state.exit_signal_time = parse_dt(payload.get("exit_signal_time"))
         state.exit_signal_zscore = payload.get("exit_signal_zscore")
-        state.entry_tsm = payload.get("entry_tsm")
-        state.entry_qff = payload.get("entry_qff")
+        state.entry_umc = payload.get("entry_umc")
+        state.entry_ccf = payload.get("entry_ccf")
         state.entry_zscore = payload.get("entry_zscore")
-        state.tsm_units = float(payload.get("tsm_units", 0.0))
-        state.qff_units = float(payload.get("qff_units", 0.0))
-        state.qff_contracts = int(payload.get("qff_contracts", 0))
+        state.umc_units = float(payload.get("umc_units", 0.0))
+        state.ccf_units = float(payload.get("ccf_units", 0.0))
+        state.ccf_contracts = int(payload.get("ccf_contracts", 0))
         state.actual_leg_notional_twd = float(
             payload.get("actual_leg_notional_twd", 0.0)
         )
@@ -156,10 +156,10 @@ class StrategyRuntimeState:
         state.realized_fee_twd = float(payload.get("realized_fee_twd", 0.0))
         state.running_max_equity = float(payload.get("running_max_equity", 0.0))
         state.open_trade = deserialize_trade(payload.get("open_trade"))
-        state.trading_qff_symbol = payload.get("trading_qff_symbol")
-        state.trading_qff_expiry = payload.get("trading_qff_expiry")
-        state.eligible_active_qff_symbol = payload.get("eligible_active_qff_symbol")
-        state.eligible_active_qff_expiry = payload.get("eligible_active_qff_expiry")
+        state.trading_ccf_symbol = payload.get("trading_ccf_symbol")
+        state.trading_ccf_expiry = payload.get("trading_ccf_expiry")
+        state.eligible_active_ccf_symbol = payload.get("eligible_active_ccf_symbol")
+        state.eligible_active_ccf_expiry = payload.get("eligible_active_ccf_expiry")
         state.pending_symbol_switch = bool(payload.get("pending_symbol_switch", False))
         state.last_warmup_symbol = payload.get("last_warmup_symbol")
         state.contract_policy_state = payload.get("contract_policy_state")
@@ -210,12 +210,12 @@ class PairStrategy:
         broker: Broker,
         state: StrategyRuntimeState | None = None,
         *,
-        tsm_symbol: str = "TSM/USDT:USDT",
+        umc_symbol: str = "TSM/USDT:USDT",
     ) -> None:
         self.strategy = strategy
         self.fees = fees
         self.broker = broker
-        self.tsm_symbol = tsm_symbol
+        self.umc_symbol = umc_symbol
         self.state = state or StrategyRuntimeState(
             running_max_equity=strategy.initial_capital_twd
         )
@@ -400,27 +400,27 @@ class PairStrategy:
             return StrategyAction.ERROR, "entry_pending_without_direction", [], []
         sizing = size_position_for_direction(
             self.state.candidate_direction,
-            entry_tsm_price(bar),
-            entry_qff_price(bar),
+            entry_umc_price(bar),
+            entry_ccf_price(bar),
             self.strategy,
             self.fees,
         )
         if sizing is None:
             self._clear_candidate()
             self.state.state = StrategyState.FLAT
-            return StrategyAction.ENTRY_CANCEL, "qff_contracts_rounded_to_zero", [], []
+            return StrategyAction.ENTRY_CANCEL, "ccf_contracts_rounded_to_zero", [], []
 
         costs = fill_costs(
-            tsm_units=sizing.tsm_units,
-            tsm_price=entry_tsm_price(bar),
-            qff_contracts=sizing.qff_contracts,
-            qff_price=entry_qff_price(bar),
+            umc_units=sizing.umc_units,
+            umc_price=entry_umc_price(bar),
+            ccf_contracts=sizing.ccf_contracts,
+            ccf_price=entry_ccf_price(bar),
             fees=self.fees,
         )
         orders, fills = self._place_entry_orders(
             bar,
-            sizing.tsm_units,
-            sizing.qff_contracts,
+            sizing.umc_units,
+            sizing.ccf_contracts,
             costs,
         )
         result = self.apply_entry_execution(
@@ -458,12 +458,12 @@ class PairStrategy:
                 None,
             )
         self.state.position_direction = self.state.candidate_direction
-        self.state.entry_tsm = entry_tsm_price(bar)
-        self.state.entry_qff = entry_qff_price(bar)
+        self.state.entry_umc = entry_umc_price(bar)
+        self.state.entry_ccf = entry_ccf_price(bar)
         self.state.entry_zscore = snapshot.zscore
-        self.state.tsm_units = sizing.tsm_units
-        self.state.qff_units = sizing.qff_units
-        self.state.qff_contracts = sizing.qff_contracts
+        self.state.umc_units = sizing.umc_units
+        self.state.ccf_units = sizing.ccf_units
+        self.state.ccf_contracts = sizing.ccf_contracts
         self.state.actual_leg_notional_twd = sizing.actual_leg_notional_twd
         self.state.realized_pnl -= costs["total_fee_twd"]
         self.state.realized_fee_twd += costs["total_fee_twd"]
@@ -476,25 +476,25 @@ class PairStrategy:
             "entry_delay_minutes": delay_minutes,
             "entry_fill_zscore": snapshot.zscore,
             "direction": self.state.position_direction.value,
-            "entry_tsm_twd_fair": entry_tsm_price(bar),
-            "entry_qff_close": entry_qff_price(bar),
+            "entry_umc_twd_fair": entry_umc_price(bar),
+            "entry_ccf_close": entry_ccf_price(bar),
             "entry_fill_price_type": "open"
-            if bar.tsm_entry_twd_fair is not None or bar.qff_entry_price is not None
+            if bar.umc_entry_twd_fair is not None or bar.ccf_entry_price is not None
             else "close",
-            "entry_qff_open_was_filled": bar.qff_entry_open_was_filled,
-            "tsm_units": sizing.tsm_units,
-            "qff_units": sizing.qff_units,
-            "qff_contracts": sizing.qff_contracts,
-            "raw_qff_contracts": sizing.raw_qff_contracts,
+            "entry_ccf_open_was_filled": bar.ccf_entry_open_was_filled,
+            "umc_units": sizing.umc_units,
+            "ccf_units": sizing.ccf_units,
+            "ccf_contracts": sizing.ccf_contracts,
+            "raw_ccf_contracts": sizing.raw_ccf_contracts,
             "leg_notional_twd": self.strategy.leg_notional_twd,
             "actual_leg_notional_twd": sizing.actual_leg_notional_twd,
-            "qff_contract_multiplier": self.fees.qff_contract_multiplier,
-            "entry_tsm_fee_twd": costs["tsm_fee_twd"],
-            "entry_qff_fee_twd": costs["qff_fee_twd"],
-            "entry_qff_tax_twd": costs["qff_tax_twd"],
+            "ccf_contract_multiplier": self.fees.ccf_contract_multiplier,
+            "entry_umc_fee_twd": costs["umc_fee_twd"],
+            "entry_ccf_fee_twd": costs["ccf_fee_twd"],
+            "entry_ccf_tax_twd": costs["ccf_tax_twd"],
             "entry_fee_twd": costs["total_fee_twd"],
-            "qff_symbol": bar.qff_symbol,
-            "qff_expiry": bar.qff_expiry,
+            "ccf_symbol": bar.ccf_symbol,
+            "ccf_expiry": bar.ccf_expiry,
             "contract_policy_state": bar.contract_policy_state,
         }
         self._clear_candidate()
@@ -521,10 +521,10 @@ class PairStrategy:
             return StrategyAction.ERROR, "exit_without_open_trade", [], [], {}
 
         costs = fill_costs(
-            tsm_units=self.state.tsm_units,
-            tsm_price=bar.tsm_twd_fair,
-            qff_contracts=self.state.qff_contracts,
-            qff_price=bar.qff_close_filled,
+            umc_units=self.state.umc_units,
+            umc_price=bar.umc_twd_fair,
+            ccf_contracts=self.state.ccf_contracts,
+            ccf_price=bar.ccf_close_filled,
             fees=self.fees,
         )
         orders, fills = self._place_exit_orders(bar, costs)
@@ -561,17 +561,17 @@ class PairStrategy:
                 {},
             )
         open_trade = self.state.open_trade
-        tsm_pnl = self.state.tsm_units * (
-            tsm_contract_twd_price(bar.tsm_twd_fair, self.fees)
-            - tsm_contract_twd_price(float(open_trade["entry_tsm_twd_fair"]), self.fees)
+        umc_pnl = self.state.umc_units * (
+            umc_contract_twd_price(bar.umc_twd_fair, self.fees)
+            - umc_contract_twd_price(float(open_trade["entry_umc_twd_fair"]), self.fees)
         )
-        qff_pnl = self.state.qff_units * (
-            bar.qff_close_filled - float(open_trade["entry_qff_close"])
+        ccf_pnl = self.state.ccf_units * (
+            bar.ccf_close_filled - float(open_trade["entry_ccf_close"])
         )
-        gross_pnl = tsm_pnl + qff_pnl
-        tsm_fee_twd = float(open_trade["entry_tsm_fee_twd"]) + costs["tsm_fee_twd"]
-        qff_fee_twd = float(open_trade["entry_qff_fee_twd"]) + costs["qff_fee_twd"]
-        qff_tax_twd = float(open_trade["entry_qff_tax_twd"]) + costs["qff_tax_twd"]
+        gross_pnl = umc_pnl + ccf_pnl
+        umc_fee_twd = float(open_trade["entry_umc_fee_twd"]) + costs["umc_fee_twd"]
+        ccf_fee_twd = float(open_trade["entry_ccf_fee_twd"]) + costs["ccf_fee_twd"]
+        ccf_tax_twd = float(open_trade["entry_ccf_tax_twd"]) + costs["ccf_tax_twd"]
         total_fee_twd = float(open_trade["entry_fee_twd"]) + costs["total_fee_twd"]
         net_pnl = gross_pnl - total_fee_twd
         signal_idx = self.state.exit_signal_idx if self.state.exit_signal_idx != -1 else bar.row_index
@@ -589,18 +589,18 @@ class PairStrategy:
             "exit_idx": bar.row_index,
             "exit_time": bar.timestamp,
             "exit_fill_zscore": snapshot.zscore,
-            "exit_tsm_twd_fair": bar.tsm_twd_fair,
-            "exit_qff_close": bar.qff_close_filled,
-            "tsm_pnl": tsm_pnl,
-            "qff_pnl": qff_pnl,
+            "exit_umc_twd_fair": bar.umc_twd_fair,
+            "exit_ccf_close": bar.ccf_close_filled,
+            "umc_pnl": umc_pnl,
+            "ccf_pnl": ccf_pnl,
             "gross_pnl_twd": gross_pnl,
-            "exit_tsm_fee_twd": costs["tsm_fee_twd"],
-            "exit_qff_fee_twd": costs["qff_fee_twd"],
-            "exit_qff_tax_twd": costs["qff_tax_twd"],
+            "exit_umc_fee_twd": costs["umc_fee_twd"],
+            "exit_ccf_fee_twd": costs["ccf_fee_twd"],
+            "exit_ccf_tax_twd": costs["ccf_tax_twd"],
             "exit_fee_twd": costs["total_fee_twd"],
-            "tsm_fee_twd": tsm_fee_twd,
-            "qff_fee_twd": qff_fee_twd,
-            "qff_tax_twd": qff_tax_twd,
+            "umc_fee_twd": umc_fee_twd,
+            "ccf_fee_twd": ccf_fee_twd,
+            "ccf_tax_twd": ccf_tax_twd,
             "total_fee_twd": total_fee_twd,
             "net_pnl_twd": net_pnl,
             "total_pnl": net_pnl,
@@ -613,12 +613,12 @@ class PairStrategy:
         self.state.state = StrategyState.FLAT
         self.state.position_direction = None
         self.state.open_trade = None
-        self.state.tsm_units = 0.0
-        self.state.qff_units = 0.0
-        self.state.qff_contracts = 0
+        self.state.umc_units = 0.0
+        self.state.ccf_units = 0.0
+        self.state.ccf_contracts = 0
         self.state.actual_leg_notional_twd = 0.0
-        self.state.entry_tsm = None
-        self.state.entry_qff = None
+        self.state.entry_umc = None
+        self.state.entry_ccf = None
         self.state.entry_zscore = None
         self.state.exit_signal_idx = -1
         self.state.exit_signal_time = None
@@ -635,14 +635,14 @@ class PairStrategy:
     def _place_entry_orders(
         self,
         bar: MarketBar,
-        tsm_units: float,
-        qff_contracts: int,
+        umc_units: float,
+        ccf_contracts: int,
         costs: dict[str, float],
     ) -> tuple[list[OrderResult], list[Fill]]:
         requests = self.build_entry_order_requests(
             bar=bar,
-            tsm_units=tsm_units,
-            qff_contracts=qff_contracts,
+            umc_units=umc_units,
+            ccf_contracts=ccf_contracts,
             costs=costs,
         )
         return self._submit_order_requests(requests)
@@ -659,19 +659,19 @@ class PairStrategy:
         self,
         *,
         bar: MarketBar,
-        tsm_units: float,
-        qff_contracts: int,
+        umc_units: float,
+        ccf_contracts: int,
         costs: dict[str, float],
     ) -> list[OrderRequest]:
         return build_pair_order_requests(
             bar=bar,
-            tsm_symbol=self.tsm_symbol,
-            tsm_units=tsm_units,
-            qff_contracts=qff_contracts,
-            tsm_price=entry_tsm_price(bar),
-            qff_price=entry_qff_price(bar),
-            tsm_fee=costs["tsm_fee_twd"],
-            qff_fee=costs["qff_fee_twd"] + costs["qff_tax_twd"],
+            umc_symbol=self.umc_symbol,
+            umc_units=umc_units,
+            ccf_contracts=ccf_contracts,
+            umc_price=entry_umc_price(bar),
+            ccf_price=entry_ccf_price(bar),
+            umc_fee=costs["umc_fee_twd"],
+            ccf_fee=costs["ccf_fee_twd"] + costs["ccf_tax_twd"],
         )
 
     def build_exit_order_requests(
@@ -682,13 +682,13 @@ class PairStrategy:
     ) -> list[OrderRequest]:
         return build_pair_order_requests(
             bar=bar,
-            tsm_symbol=self.tsm_symbol,
-            tsm_units=-self.state.tsm_units,
-            qff_contracts=-self.state.qff_contracts,
-            tsm_price=bar.tsm_twd_fair,
-            qff_price=bar.qff_close_filled,
-            tsm_fee=costs["tsm_fee_twd"],
-            qff_fee=costs["qff_fee_twd"] + costs["qff_tax_twd"],
+            umc_symbol=self.umc_symbol,
+            umc_units=-self.state.umc_units,
+            ccf_contracts=-self.state.ccf_contracts,
+            umc_price=bar.umc_twd_fair,
+            ccf_price=bar.ccf_close_filled,
+            umc_fee=costs["umc_fee_twd"],
+            ccf_fee=costs["ccf_fee_twd"] + costs["ccf_tax_twd"],
         )
 
     def mark_to_market_result(
@@ -722,11 +722,11 @@ class PairStrategy:
         trade: dict[str, Any] | None,
     ) -> BarResult:
         unrealized = 0.0
-        if self.state.position_direction is not None and self.state.entry_tsm is not None and self.state.entry_qff is not None:
-            unrealized = self.state.tsm_units * (
-                tsm_contract_twd_price(bar.tsm_twd_fair, self.fees)
-                - tsm_contract_twd_price(self.state.entry_tsm, self.fees)
-            ) + self.state.qff_units * (bar.qff_close_filled - self.state.entry_qff)
+        if self.state.position_direction is not None and self.state.entry_umc is not None and self.state.entry_ccf is not None:
+            unrealized = self.state.umc_units * (
+                umc_contract_twd_price(bar.umc_twd_fair, self.fees)
+                - umc_contract_twd_price(self.state.entry_umc, self.fees)
+            ) + self.state.ccf_units * (bar.ccf_close_filled - self.state.entry_ccf)
         equity = self.strategy.initial_capital_twd + self.state.realized_pnl + unrealized
         self.state.running_max_equity = max(self.state.running_max_equity, equity)
         drawdown = equity - self.state.running_max_equity
@@ -754,39 +754,39 @@ class PairStrategy:
 def build_pair_order_requests(
     *,
     bar: MarketBar,
-    tsm_symbol: str,
-    tsm_units: float,
-    qff_contracts: int,
-    tsm_price: float,
-    qff_price: float,
-    tsm_fee: float,
-    qff_fee: float,
+    umc_symbol: str,
+    umc_units: float,
+    ccf_contracts: int,
+    umc_price: float,
+    ccf_price: float,
+    umc_fee: float,
+    ccf_fee: float,
 ) -> list[OrderRequest]:
     return [
         OrderRequest(
-            broker=BrokerName.BINANCE_TSM,
-            symbol=tsm_symbol,
-            side=OrderSide.BUY if tsm_units > 0 else OrderSide.SELL,
-            quantity=abs(tsm_units),
-            price=tsm_price,
+            broker=BrokerName.IBKR_UMC,
+            symbol=umc_symbol,
+            side=OrderSide.BUY if umc_units > 0 else OrderSide.SELL,
+            quantity=abs(umc_units),
+            price=umc_price,
             timestamp=bar.timestamp,
             row_index=bar.row_index,
-            fee_twd=tsm_fee,
-            qff_symbol=bar.qff_symbol,
-            qff_expiry=bar.qff_expiry,
+            fee_twd=umc_fee,
+            ccf_symbol=bar.ccf_symbol,
+            ccf_expiry=bar.ccf_expiry,
             contract_policy_state=bar.contract_policy_state,
         ),
         OrderRequest(
-            broker=BrokerName.FUBON_QFF,
-            symbol=bar.qff_symbol or "QFF",
-            side=OrderSide.BUY if qff_contracts > 0 else OrderSide.SELL,
-            quantity=abs(qff_contracts),
-            price=qff_price,
+            broker=BrokerName.FUBON_CCF,
+            symbol=bar.ccf_symbol or "CCF",
+            side=OrderSide.BUY if ccf_contracts > 0 else OrderSide.SELL,
+            quantity=abs(ccf_contracts),
+            price=ccf_price,
             timestamp=bar.timestamp,
             row_index=bar.row_index,
-            fee_twd=qff_fee,
-            qff_symbol=bar.qff_symbol,
-            qff_expiry=bar.qff_expiry,
+            fee_twd=ccf_fee,
+            ccf_symbol=bar.ccf_symbol,
+            ccf_expiry=bar.ccf_expiry,
             contract_policy_state=bar.contract_policy_state,
         ),
     ]

@@ -31,22 +31,22 @@ class RealExecutionCoordinator:
         store: Any,
         binance_adapter: ExecutionAdapter,
         fubon_adapter: ExecutionAdapter,
-        qff_first: bool = True,
+        ccf_first: bool = True,
         clock: Any | None = None,
     ) -> None:
         self.store = store
         self.adapters = {
-            BrokerName.BINANCE_TSM: binance_adapter,
-            BrokerName.FUBON_QFF: fubon_adapter,
+            BrokerName.IBKR_UMC: binance_adapter,
+            BrokerName.FUBON_CCF: fubon_adapter,
         }
-        self.qff_first = bool(qff_first)
+        self.ccf_first = bool(ccf_first)
         self.clock = clock or (lambda: datetime.now().astimezone())
 
     def execute(
         self,
         plan: PairExecutionPlan,
     ) -> tuple[PairExecutionPlan, ExecutionOutcome]:
-        recorded = record_live_execution_plan(self.store, plan, qff_first=self.qff_first)
+        recorded = record_live_execution_plan(self.store, plan, ccf_first=self.ccf_first)
         if recorded.status != ExecutionPlanStatus.RECORDED:
             outcome = ExecutionOutcome(
                 plan_id=recorded.plan_id,
@@ -69,9 +69,9 @@ class RealExecutionCoordinator:
             self.store.record_execution_outcome(outcome)
             return recorded, outcome
 
-        qff_leg = single_leg(recorded, BrokerName.FUBON_QFF)
-        binance_leg = single_leg(recorded, BrokerName.BINANCE_TSM)
-        if qff_leg is None or binance_leg is None:
+        ccf_leg = single_leg(recorded, BrokerName.FUBON_CCF)
+        binance_leg = single_leg(recorded, BrokerName.IBKR_UMC)
+        if ccf_leg is None or binance_leg is None:
             outcome = ExecutionOutcome(
                 plan_id=recorded.plan_id,
                 timestamp=self.clock(),
@@ -87,7 +87,7 @@ class RealExecutionCoordinator:
         primary_leg_timings: dict[BrokerName, dict[str, Any]] = {}
         emergency_outcomes: list[ExecutionOutcome] = []
         events: list[RecordedExecutionEvent] = []
-        sequence = [qff_leg, binance_leg]
+        sequence = [ccf_leg, binance_leg]
 
         first_leg = sequence[0]
         first_outcome = self._execute_leg(
@@ -188,7 +188,7 @@ class RealExecutionCoordinator:
             checks=(),
         )
         attempt_id = None
-        if leg.broker == BrokerName.FUBON_QFF:
+        if leg.broker == BrokerName.FUBON_CCF:
             attempt_id = f"LUX-FUBON-{leg_plan.plan_id}"
             start_attempt = getattr(self.store, "start_fubon_attempt", None)
             if callable(start_attempt):
@@ -206,8 +206,8 @@ class RealExecutionCoordinator:
                         "fee_twd": leg.fee_twd,
                         "timestamp": leg.timestamp,
                         "row_index": leg.row_index,
-                        "qff_symbol": leg.qff_symbol,
-                        "qff_expiry": leg.qff_expiry,
+                        "ccf_symbol": leg.ccf_symbol,
+                        "ccf_expiry": leg.ccf_expiry,
                         "contract_policy_state": leg.contract_policy_state,
                         "order_type": leg.order_type,
                     },
@@ -455,7 +455,7 @@ class RealExecutionCoordinator:
             recommended_state=recommended_state,
             payload={
                 "adapter": "real_execution_coordinator",
-                "qff_first": self.qff_first,
+                "ccf_first": self.ccf_first,
                 "primary_outcomes": {
                     broker.value: outcome.to_jsonable()
                     for broker, outcome in primary_outcomes.items()
@@ -490,9 +490,9 @@ def record_live_execution_plan(
     store: Any,
     plan: PairExecutionPlan,
     *,
-    qff_first: bool,
+    ccf_first: bool,
 ) -> PairExecutionPlan:
-    validated = validate_live_execution_plan(plan, qff_first=qff_first)
+    validated = validate_live_execution_plan(plan, ccf_first=ccf_first)
     recorded = (
         replace(validated, status=ExecutionPlanStatus.RECORDED)
         if validated.status == ExecutionPlanStatus.VALIDATED
@@ -505,7 +505,7 @@ def record_live_execution_plan(
 def validate_live_execution_plan(
     plan: PairExecutionPlan,
     *,
-    qff_first: bool,
+    ccf_first: bool,
 ) -> PairExecutionPlan:
     checks: list[ExecutionCheck] = []
 
@@ -530,9 +530,9 @@ def validate_live_execution_plan(
         )
 
     add(
-        "qff_first_required",
-        qff_first,
-        "first live execution policy requires qff_first=true",
+        "ccf_first_required",
+        ccf_first,
+        "first live execution policy requires ccf_first=true",
     )
     add(
         "leg_count",
@@ -551,7 +551,7 @@ def validate_live_execution_plan(
         broker_counts[leg.broker] = broker_counts.get(leg.broker, 0) + 1
     add(
         "required_brokers",
-        broker_counts == {BrokerName.BINANCE_TSM: 1, BrokerName.FUBON_QFF: 1},
+        broker_counts == {BrokerName.IBKR_UMC: 1, BrokerName.FUBON_CCF: 1},
         "live execution plan must contain one Binance leg and one Fubon leg",
         payload={broker.value: count for broker, count in broker_counts.items()},
     )
@@ -587,9 +587,9 @@ def validate_live_execution_plan(
                     "actual_side": leg.side.value,
                 },
             )
-        if leg.broker == BrokerName.FUBON_QFF:
+        if leg.broker == BrokerName.FUBON_CCF:
             add(
-                "qff_quantity_integer",
+                "ccf_quantity_integer",
                 float(leg.quantity).is_integer(),
                 "Fubon futures quantity must be an integer lot",
                 broker=leg.broker,
@@ -597,12 +597,12 @@ def validate_live_execution_plan(
                 payload={"quantity": leg.quantity},
             )
             add(
-                "qff_symbol_matches",
-                not plan.qff_symbol or leg.symbol == plan.qff_symbol,
-                "Fubon leg symbol must match plan qff_symbol",
+                "ccf_symbol_matches",
+                not plan.ccf_symbol or leg.symbol == plan.ccf_symbol,
+                "Fubon leg symbol must match plan ccf_symbol",
                 broker=leg.broker,
                 symbol=leg.symbol,
-                payload={"qff_symbol": plan.qff_symbol, "symbol": leg.symbol},
+                payload={"ccf_symbol": plan.ccf_symbol, "symbol": leg.symbol},
             )
 
     return replace(
@@ -659,8 +659,8 @@ def emergency_close_plan(
         reason="emergency_close",
         decision_zscore=plan.decision_zscore,
         decision_spread_type=plan.decision_spread_type,
-        qff_symbol=plan.qff_symbol,
-        qff_expiry=plan.qff_expiry,
+        ccf_symbol=plan.ccf_symbol,
+        ccf_expiry=plan.ccf_expiry,
         contract_policy_state=plan.contract_policy_state,
         order_type=ExecutionOrderType.MARKET.value,
         price_policy=plan.price_policy,
@@ -679,8 +679,8 @@ def exposure_payload_for_leg(leg: ExecutionLeg, quantity: float) -> dict[str, An
         "symbol": leg.symbol,
         "side": leg.side.value,
         "quantity": quantity,
-        "qff_symbol": leg.qff_symbol,
-        "qff_expiry": leg.qff_expiry,
+        "ccf_symbol": leg.ccf_symbol,
+        "ccf_expiry": leg.ccf_expiry,
         "contract_policy_state": leg.contract_policy_state,
     }
 
@@ -742,13 +742,13 @@ def leg_timing_payload(
 def primary_leg_timing_gap(
     timings: dict[BrokerName, dict[str, Any]],
 ) -> dict[str, Any] | None:
-    first = timings.get(BrokerName.FUBON_QFF)
-    second = timings.get(BrokerName.BINANCE_TSM)
+    first = timings.get(BrokerName.FUBON_CCF)
+    second = timings.get(BrokerName.IBKR_UMC)
     if first is None or second is None:
         return None
     return {
-        "first_broker": BrokerName.FUBON_QFF.value,
-        "second_broker": BrokerName.BINANCE_TSM.value,
+        "first_broker": BrokerName.FUBON_CCF.value,
+        "second_broker": BrokerName.IBKR_UMC.value,
         "execute_start_gap_seconds": optional_seconds_between(
             second.get("execute_started_at"),
             first.get("execute_started_at"),

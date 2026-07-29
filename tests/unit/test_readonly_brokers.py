@@ -56,7 +56,7 @@ class FakeFutoptAccounting:
         return FakeResult(
             [
                 {
-                    "symbol": "QFFG6",
+                    "symbol": "CCFG6",
                     "buy_lot": 3,
                     "sell_lot": 1,
                 }
@@ -74,7 +74,7 @@ class FakeFutopt:
             [
                 {
                     "order_id": f"ORD-{len(self.calls)}",
-                    "symbol": "QFFG6",
+                    "symbol": "CCFG6",
                     "buy_sell": "Buy",
                     "lot": 1,
                     "status": "open",
@@ -143,9 +143,9 @@ def test_fubon_readonly_broker_fetches_margin_positions_and_orders() -> None:
     snapshot = broker.fetch_snapshot()
     broker.close()
 
-    assert snapshot.broker == BrokerName.FUBON_QFF
+    assert snapshot.broker == BrokerName.FUBON_CCF
     assert snapshot.account_id == "******789"
-    assert snapshot.positions[0].symbol == "QFFG6"
+    assert snapshot.positions[0].symbol == "CCFG6"
     assert snapshot.positions[0].quantity == 2
     assert len(snapshot.open_orders) == 2
     assert snapshot.open_orders[0].side == OrderSide.BUY
@@ -167,42 +167,42 @@ def test_fubon_requires_futopt_account() -> None:
 
 
 def test_fubon_order_normalizer_skips_final_orders() -> None:
-    assert normalize_fubon_order({"status": "filled", "symbol": "QFFG6"}) is None
-    assert normalize_fubon_order({"status": "canceled", "symbol": "QFFG6"}) is None
-    assert normalize_fubon_order({"status": "open", "symbol": "QFFG6"}) is not None
+    assert normalize_fubon_order({"status": "filled", "symbol": "CCFG6"}) is None
+    assert normalize_fubon_order({"status": "canceled", "symbol": "CCFG6"}) is None
+    assert normalize_fubon_order({"status": "open", "symbol": "CCFG6"}) is not None
 
 
 def test_fubon_position_normalizer_parses_official_lot_fields() -> None:
     position = normalize_fubon_position(
         {
-            "symbol": "FIQFF",
+            "symbol": "FICCF",
             "expiry_date": 202607,
             "buy_sell": "Buy",
             "orig_lots": 1,
             "tradable_lot": 1,
         },
-        expected_symbol="QFFG6",
+        expected_symbol="CCFG6",
     )
 
     assert position is not None
-    assert position.symbol == "QFFG6"
+    assert position.symbol == "CCFG6"
     assert position.quantity == 1
-    assert position.raw["symbol"] == "FIQFF"
+    assert position.raw["symbol"] == "FICCF"
 
 
 def test_fubon_position_normalizer_applies_sell_side_to_official_lot_fields() -> None:
     position = normalize_fubon_position(
         {
-            "symbol": "FIQFF",
+            "symbol": "FICCF",
             "expiry_date": 202607,
             "buy_sell": "Sell",
             "orig_lots": 2,
         },
-        expected_symbol="QFFG6",
+        expected_symbol="CCFG6",
     )
 
     assert position is not None
-    assert position.symbol == "QFFG6"
+    assert position.symbol == "CCFG6"
     assert position.quantity == -2
 
 
@@ -242,7 +242,7 @@ def test_binance_readonly_broker_fetches_balance_positions_and_orders() -> None:
     snapshot = broker.fetch_snapshot()
     broker.close()
 
-    assert snapshot.broker == BrokerName.BINANCE_TSM
+    assert snapshot.broker == BrokerName.IBKR_UMC
     assert snapshot.positions[0].symbol == "TSM/USDT:USDT"
     assert snapshot.positions[0].quantity == -12.5
     assert snapshot.open_orders[0].order_id == "BINANCE-1"

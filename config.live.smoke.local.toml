@@ -11,10 +11,10 @@ max_entry_delay_minutes = 15
 zscore_window = 1440
 
 [fees]
-tsm_fee_bps = 5.0
-qff_fee_per_contract_twd = 5.0
-qff_tax_rate = 0.00002
-qff_contract_multiplier = 100.0
+umc_fee_bps = 5.0
+ccf_fee_per_contract_twd = 5.0
+ccf_tax_rate = 0.00002
+ccf_contract_multiplier = 100.0
 
 [safety]
 allow_live_order = false
@@ -37,11 +37,11 @@ minute_finalize_delay_seconds = 1.0
 stale_seconds = 10.0
 max_leg_timestamp_skew_seconds = 10.0
 warmup_minutes = 1440
-qff_product = 'QFF'
-qff_symbol = 'auto'
+ccf_product = 'CCF'
+ccf_symbol = 'auto'
 binance_symbol = 'TSM/USDT:USDT'
 bitopro_symbol = 'USDT/TWD'
 fubon_env_path = 'env'
 taifex_use_network = true
 taifex_cache_dir = 'data\taifex_cache'
-taifex_qff_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
+taifex_ccf_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'

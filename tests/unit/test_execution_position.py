@@ -16,8 +16,8 @@ from lux_trader.execution.position import (
 )
 
 
-TSM_SYMBOL = "TSM/USDT:USDT"
-QFF_SYMBOL = "QFFG6"
+UMC_SYMBOL = "TSM/USDT:USDT"
+CCF_SYMBOL = "CCFG6"
 
 
 def ts() -> datetime:
@@ -46,57 +46,57 @@ def fill(
     )
 
 
-def test_position_sizing_uses_actual_signed_fill_quantities_and_qff_vwap() -> None:
+def test_position_sizing_uses_actual_signed_fill_quantities_and_ccf_vwap() -> None:
     sizing = position_sizing_from_fills(
-        Direction.SHORT_TSM_LONG_QFF,
+        Direction.SHORT_UMC_LONG_CCF,
         (
             fill(
-                BrokerName.BINANCE_TSM,
-                TSM_SYMBOL,
+                BrokerName.IBKR_UMC,
+                UMC_SYMBOL,
                 OrderSide.SELL,
                 909.0,
                 1100.0,
                 1,
             ),
             fill(
-                BrokerName.FUBON_QFF,
-                QFF_SYMBOL,
+                BrokerName.FUBON_CCF,
+                CCF_SYMBOL,
                 OrderSide.BUY,
                 4.0,
                 999.0,
                 2,
             ),
             fill(
-                BrokerName.FUBON_QFF,
-                QFF_SYMBOL,
+                BrokerName.FUBON_CCF,
+                CCF_SYMBOL,
                 OrderSide.BUY,
                 6.0,
                 1001.0,
                 3,
             ),
         ),
-        tsm_symbol=TSM_SYMBOL,
-        qff_symbol=QFF_SYMBOL,
-        qff_contract_multiplier=100.0,
+        umc_symbol=UMC_SYMBOL,
+        ccf_symbol=CCF_SYMBOL,
+        ccf_contract_multiplier=100.0,
     )
 
-    assert sizing.tsm_units == -909.0
-    assert sizing.qff_contracts == 10
-    assert sizing.qff_units == 1000.0
-    assert sizing.raw_qff_contracts == 10.0
+    assert sizing.umc_units == -909.0
+    assert sizing.ccf_contracts == 10
+    assert sizing.ccf_units == 1000.0
+    assert sizing.raw_ccf_contracts == 10.0
     assert sizing.actual_leg_notional_twd == pytest.approx(1_000_200.0)
 
 
 @pytest.mark.parametrize(
-    ("direction", "tsm_side", "qff_side"),
+    ("direction", "umc_side", "ccf_side"),
     [
         (
-            Direction.SHORT_TSM_LONG_QFF,
+            Direction.SHORT_UMC_LONG_CCF,
             OrderSide.BUY,
             OrderSide.BUY,
         ),
         (
-            Direction.LONG_TSM_SHORT_QFF,
+            Direction.LONG_UMC_SHORT_CCF,
             OrderSide.BUY,
             OrderSide.BUY,
         ),
@@ -104,40 +104,40 @@ def test_position_sizing_uses_actual_signed_fill_quantities_and_qff_vwap() -> No
 )
 def test_position_sizing_rejects_fill_sides_that_do_not_match_direction(
     direction: Direction,
-    tsm_side: OrderSide,
-    qff_side: OrderSide,
+    umc_side: OrderSide,
+    ccf_side: OrderSide,
 ) -> None:
     with pytest.raises(ExecutedPositionError, match="strategy direction"):
         position_sizing_from_fills(
             direction,
             (
                 fill(
-                    BrokerName.BINANCE_TSM,
-                    TSM_SYMBOL,
-                    tsm_side,
+                    BrokerName.IBKR_UMC,
+                    UMC_SYMBOL,
+                    umc_side,
                     10.0,
                     100.0,
                     1,
                 ),
                 fill(
-                    BrokerName.FUBON_QFF,
-                    QFF_SYMBOL,
-                    qff_side,
+                    BrokerName.FUBON_CCF,
+                    CCF_SYMBOL,
+                    ccf_side,
                     1.0,
                     1000.0,
                     2,
                 ),
             ),
-            tsm_symbol=TSM_SYMBOL,
-            qff_symbol=QFF_SYMBOL,
-            qff_contract_multiplier=100.0,
+            umc_symbol=UMC_SYMBOL,
+            ccf_symbol=CCF_SYMBOL,
+            ccf_contract_multiplier=100.0,
         )
 
 
-def test_position_sizing_rejects_missing_leg_and_fractional_qff_lot() -> None:
-    tsm_fill = fill(
-        BrokerName.BINANCE_TSM,
-        TSM_SYMBOL,
+def test_position_sizing_rejects_missing_leg_and_fractional_ccf_lot() -> None:
+    umc_fill = fill(
+        BrokerName.IBKR_UMC,
+        UMC_SYMBOL,
         OrderSide.SELL,
         10.0,
         100.0,
@@ -145,28 +145,28 @@ def test_position_sizing_rejects_missing_leg_and_fractional_qff_lot() -> None:
     )
     with pytest.raises(ExecutedPositionError, match="missing Fubon"):
         position_sizing_from_fills(
-            Direction.SHORT_TSM_LONG_QFF,
-            (tsm_fill,),
-            tsm_symbol=TSM_SYMBOL,
-            qff_symbol=QFF_SYMBOL,
-            qff_contract_multiplier=100.0,
+            Direction.SHORT_UMC_LONG_CCF,
+            (umc_fill,),
+            umc_symbol=UMC_SYMBOL,
+            ccf_symbol=CCF_SYMBOL,
+            ccf_contract_multiplier=100.0,
         )
 
     with pytest.raises(ExecutedPositionError, match="integer lots"):
         position_sizing_from_fills(
-            Direction.SHORT_TSM_LONG_QFF,
+            Direction.SHORT_UMC_LONG_CCF,
             (
-                tsm_fill,
+                umc_fill,
                 fill(
-                    BrokerName.FUBON_QFF,
-                    QFF_SYMBOL,
+                    BrokerName.FUBON_CCF,
+                    CCF_SYMBOL,
                     OrderSide.BUY,
                     1.5,
                     1000.0,
                     2,
                 ),
             ),
-            tsm_symbol=TSM_SYMBOL,
-            qff_symbol=QFF_SYMBOL,
-            qff_contract_multiplier=100.0,
+            umc_symbol=UMC_SYMBOL,
+            ccf_symbol=CCF_SYMBOL,
+            ccf_contract_multiplier=100.0,
         )

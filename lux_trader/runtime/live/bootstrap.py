@@ -11,7 +11,7 @@ from typing import Any, Callable
 from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
 from lux_trader.brokers import PaperBroker
 from lux_trader.config import AppConfig
-from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, QffContractSelection
+from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, CcfContractSelection
 from lux_trader.core.calendar import live_session_status
 from lux_trader.execution.intent import (
     ExecutionPlanType,
@@ -29,11 +29,11 @@ from lux_trader.execution.price_policy import apply_live_touch_market_price_poli
 from lux_trader.integrations.binance.market_data import BinanceMarketData
 from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
-from lux_trader.integrations.fubon.market_data import FubonQffMarketData
-from lux_trader.integrations.fubon.market_data_process import FubonQffMarketDataProcess
+from lux_trader.integrations.fubon.market_data import FubonCcfMarketData
+from lux_trader.integrations.fubon.market_data_process import FubonCcfMarketDataProcess
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
-from lux_trader.integrations.taifex.downloader import TaifexQffTradeDownloader
+from lux_trader.integrations.taifex.downloader import TaifexCcfTradeDownloader
 from lux_trader.core.fees import fill_costs
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.execution.gate import (
@@ -41,21 +41,21 @@ from lux_trader.execution.gate import (
     evaluate_live_execution_gate,
 )
 from lux_trader.market_data import (
-    CsvQffWarmupProvider,
+    CsvCcfWarmupProvider,
     LiveMinuteBarBuilder,
     LiveQuoteSet,
     OhlcvProvider,
-    QFF_FORWARD_FILL_LOOKBACK,
-    QffWarmupSourceReport,
-    QffWarmupProvider,
+    CCF_FORWARD_FILL_LOOKBACK,
+    CcfWarmupSourceReport,
+    CcfWarmupProvider,
     QuoteProvider,
     WarmupBuilder,
-    build_qff_session_index,
-    build_qff_session_warmup_index,
-    build_qff_warmup_source_report,
+    build_ccf_session_index,
+    build_ccf_session_warmup_index,
+    build_ccf_warmup_source_report,
     floor_minute,
     parse_timestamp,
-    prioritized_qff_close_frame,
+    prioritized_ccf_close_frame,
 )
 from lux_trader.store import SQLiteStore
 from lux_trader.core.models import Direction, IndicatorSnapshot, MarketBar, StrategyAction, StrategyState
@@ -74,8 +74,8 @@ from lux_trader.core.time import ensure_taipei
 
 from lux_trader.runtime.live.contracts import (
     initialize_contract_state,
-    resolve_qff_contract,
-    subscribe_qff_books_if_supported,
+    resolve_ccf_contract,
+    subscribe_ccf_books_if_supported,
 )
 from lux_trader.runtime.live.warmup import load_or_build_live_indicator
 
@@ -88,21 +88,21 @@ class WindowsTimeSyncResult:
 
 @dataclass(frozen=True)
 class LiveProviderSet:
-    qff: QuoteProvider | FubonQffMarketData
-    tsm: QuoteProvider
+    ccf: QuoteProvider | FubonCcfMarketData
+    umc: QuoteProvider
     usdttwd: QuoteProvider
-    close_qff_on_exit: bool
+    close_ccf_on_exit: bool
 
 
 @dataclass(frozen=True)
 class LiveRuntimeContext:
     started_at: datetime
-    qff_provider: QuoteProvider | FubonQffMarketData
-    tsm_provider: QuoteProvider
+    ccf_provider: QuoteProvider | FubonCcfMarketData
+    umc_provider: QuoteProvider
     usdttwd_provider: QuoteProvider
-    qff_provider_to_close: Any | None
-    qff_symbol: str
-    qff_expiry: str | None
+    ccf_provider_to_close: Any | None
+    ccf_symbol: str
+    ccf_expiry: str | None
     strategy: PairStrategy
     indicator: IndicatorEngine
     seed_bars: list[MarketBar]
@@ -113,23 +113,23 @@ class LiveRuntimeContext:
 def open_live_quote_providers(
     config: AppConfig,
     *,
-    qff_provider: QuoteProvider | FubonQffMarketData | None,
-    tsm_provider: QuoteProvider | None,
+    ccf_provider: QuoteProvider | FubonCcfMarketData | None,
+    umc_provider: QuoteProvider | None,
     usdttwd_provider: QuoteProvider | None,
     reporter: Any,
     started_at: datetime,
 ) -> LiveProviderSet:
     reporter.event(started_at, "startup", "init_fubon")
-    qff = qff_provider or FubonQffMarketDataProcess(config.live.fubon_env_path)
+    ccf = ccf_provider or FubonCcfMarketDataProcess(config.live.fubon_env_path)
     reporter.event(started_at, "startup", "init_binance")
-    tsm = tsm_provider or BinanceMarketData()
+    umc = umc_provider or BinanceMarketData()
     reporter.event(started_at, "startup", "init_bitopro")
     usdttwd = usdttwd_provider or BitoProMarketData()
     return LiveProviderSet(
-        qff=qff,
-        tsm=tsm,
+        ccf=ccf,
+        umc=umc,
         usdttwd=usdttwd,
-        close_qff_on_exit=qff_provider is None,
+        close_ccf_on_exit=ccf_provider is None,
     )
 
 
@@ -156,7 +156,7 @@ def build_live_strategy(
         config.fees,
         PaperBroker(),
         state=strategy_state,
-        tsm_symbol=config.live.binance_symbol,
+        umc_symbol=config.live.binance_symbol,
     )
 
 
@@ -171,7 +171,7 @@ def build_live_minute_builder(
         ),
         closed_dates=config.trading_calendar.closed_dates,
     )
-    builder.last_qff_close = seed_bars[-1].qff_close_filled
+    builder.last_ccf_close = seed_bars[-1].ccf_close_filled
     return builder
 
 
@@ -311,7 +311,7 @@ def warn_market_fetch_failure_once_per_minute(
 
 
 def fetch_quote_or_cached(
-    provider: QuoteProvider | FubonQffMarketData,
+    provider: QuoteProvider | FubonCcfMarketData,
     symbol: str,
     source: str,
     cache: dict[str, Any],
@@ -340,8 +340,8 @@ def prepare_live_runtime(
     store: SQLiteStore,
     resume: bool,
     skip_warmup: bool,
-    qff_provider: QuoteProvider | FubonQffMarketData | None,
-    tsm_provider: QuoteProvider | None,
+    ccf_provider: QuoteProvider | FubonCcfMarketData | None,
+    umc_provider: QuoteProvider | None,
     usdttwd_provider: QuoteProvider | None,
     reporter: Any,
     started_at: datetime,
@@ -350,25 +350,25 @@ def prepare_live_runtime(
     reporter.event(started_at, "startup", "store_ready")
     providers = open_live_quote_providers(
         config,
-        qff_provider=qff_provider,
-        tsm_provider=tsm_provider,
+        ccf_provider=ccf_provider,
+        umc_provider=umc_provider,
         usdttwd_provider=usdttwd_provider,
         reporter=reporter,
         started_at=started_at,
     )
-    qff_provider = providers.qff
-    tsm_provider = providers.tsm
+    ccf_provider = providers.ccf
+    umc_provider = providers.umc
     usdttwd_provider = providers.usdttwd
-    qff_provider_to_close = (
-        qff_provider if providers.close_qff_on_exit else None
+    ccf_provider_to_close = (
+        ccf_provider if providers.close_ccf_on_exit else None
     )
-    reporter.event(started_at, "startup", "resolve_qff")
-    initial_contract = resolve_qff_contract(
+    reporter.event(started_at, "startup", "resolve_ccf")
+    initial_contract = resolve_ccf_contract(
         config,
-        qff_provider,
+        ccf_provider,
         now=started_at,
     )
-    reporter.event(started_at, "startup", f"qff={initial_contract.symbol}")
+    reporter.event(started_at, "startup", f"ccf={initial_contract.symbol}")
 
     strategy_state = load_or_create_strategy_state(
         store,
@@ -376,11 +376,11 @@ def prepare_live_runtime(
         config=config,
     )
     initialize_contract_state(strategy_state, initial_contract)
-    qff_symbol = strategy_state.trading_qff_symbol or initial_contract.symbol
-    qff_expiry = strategy_state.trading_qff_expiry or initial_contract.expiry
-    subscribe_qff_books_if_supported(
-        qff_provider,
-        qff_symbol,
+    ccf_symbol = strategy_state.trading_ccf_symbol or initial_contract.symbol
+    ccf_expiry = strategy_state.trading_ccf_expiry or initial_contract.expiry
+    subscribe_ccf_books_if_supported(
+        ccf_provider,
+        ccf_symbol,
         reporter,
         started_at,
     )
@@ -388,11 +388,11 @@ def prepare_live_runtime(
     indicator, seed_bars = load_or_build_live_indicator(
         store,
         config,
-        qff_symbol=qff_symbol,
-        qff_expiry=qff_expiry,
+        ccf_symbol=ccf_symbol,
+        ccf_expiry=ccf_expiry,
         policy_state=strategy_state.contract_policy_state or "active",
-        qff_provider=qff_provider,
-        tsm_provider=tsm_provider,
+        ccf_provider=ccf_provider,
+        umc_provider=umc_provider,
         usdttwd_provider=usdttwd_provider,
         end=started_at,
         # A resumed strategy keeps its persisted position/open-trade/PnL state,
@@ -410,12 +410,12 @@ def prepare_live_runtime(
     reporter.event(started_at, "startup", f"seed_ready_{len(seed_bars)}")
     return LiveRuntimeContext(
         started_at=started_at,
-        qff_provider=qff_provider,
-        tsm_provider=tsm_provider,
+        ccf_provider=ccf_provider,
+        umc_provider=umc_provider,
         usdttwd_provider=usdttwd_provider,
-        qff_provider_to_close=qff_provider_to_close,
-        qff_symbol=qff_symbol,
-        qff_expiry=qff_expiry,
+        ccf_provider_to_close=ccf_provider_to_close,
+        ccf_symbol=ccf_symbol,
+        ccf_expiry=ccf_expiry,
         strategy=build_live_strategy(config, strategy_state),
         indicator=indicator,
         seed_bars=seed_bars,

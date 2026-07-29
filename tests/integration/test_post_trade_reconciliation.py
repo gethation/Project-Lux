@@ -24,8 +24,8 @@ from lux_trader.store import SQLiteStore
 from lux_trader.core.strategy import StrategyRuntimeState
 
 
-SYMBOL_TSM = "TSM/USDT:USDT"
-SYMBOL_QFF = "QFFG6"
+SYMBOL_UMC = "TSM/USDT:USDT"
+SYMBOL_CCF = "CCFG6"
 
 
 def ts() -> datetime:
@@ -71,32 +71,32 @@ def order_and_fill(
 def open_strategy() -> StrategyRuntimeState:
     return StrategyRuntimeState(
         state=StrategyState.OPEN,
-        position_direction=Direction.SHORT_TSM_LONG_QFF,
-        tsm_units=-100.0,
-        qff_contracts=2,
-        trading_qff_symbol=SYMBOL_QFF,
+        position_direction=Direction.SHORT_UMC_LONG_CCF,
+        umc_units=-100.0,
+        ccf_contracts=2,
+        trading_ccf_symbol=SYMBOL_CCF,
     )
 
 
 def matching_brokers() -> tuple[FakeReadOnlyBroker, FakeReadOnlyBroker]:
     return (
         FakeReadOnlyBroker(
-            BrokerName.BINANCE_TSM,
+            BrokerName.IBKR_UMC,
             positions=(
                 BrokerPositionSnapshot(
-                    broker=BrokerName.BINANCE_TSM,
-                    symbol=SYMBOL_TSM,
+                    broker=BrokerName.IBKR_UMC,
+                    symbol=SYMBOL_UMC,
                     quantity=-100.0,
                 ),
             ),
             fetched_at=ts(),
         ),
         FakeReadOnlyBroker(
-            BrokerName.FUBON_QFF,
+            BrokerName.FUBON_CCF,
             positions=(
                 BrokerPositionSnapshot(
-                    broker=BrokerName.FUBON_QFF,
-                    symbol=SYMBOL_QFF,
+                    broker=BrokerName.FUBON_CCF,
+                    symbol=SYMBOL_CCF,
                     quantity=2.0,
                 ),
             ),
@@ -111,14 +111,14 @@ def test_post_trade_reconciliation_matches_broker_and_recorded_fills(tmp_path) -
         store.initialize()
         for order, fill in (
             order_and_fill(
-                broker=BrokerName.BINANCE_TSM,
-                symbol=SYMBOL_TSM,
+                broker=BrokerName.IBKR_UMC,
+                symbol=SYMBOL_UMC,
                 side=OrderSide.SELL,
                 quantity=100.0,
             ),
             order_and_fill(
-                broker=BrokerName.FUBON_QFF,
-                symbol=SYMBOL_QFF,
+                broker=BrokerName.FUBON_CCF,
+                symbol=SYMBOL_CCF,
                 side=OrderSide.BUY,
                 quantity=2.0,
             ),
@@ -130,8 +130,8 @@ def test_post_trade_reconciliation_matches_broker_and_recorded_fills(tmp_path) -
             store=store,
             strategy_state=open_strategy(),
             brokers=matching_brokers(),
-            tsm_symbol=SYMBOL_TSM,
-            qff_symbol=SYMBOL_QFF,
+            umc_symbol=SYMBOL_UMC,
+            ccf_symbol=SYMBOL_CCF,
             timestamp=ts(),
         )
 
@@ -148,8 +148,8 @@ def test_post_trade_reconciliation_warns_when_recorded_fills_do_not_match_state(
     try:
         store.initialize()
         order, fill = order_and_fill(
-            broker=BrokerName.BINANCE_TSM,
-            symbol=SYMBOL_TSM,
+            broker=BrokerName.IBKR_UMC,
+            symbol=SYMBOL_UMC,
             side=OrderSide.SELL,
             quantity=100.0,
         )
@@ -160,8 +160,8 @@ def test_post_trade_reconciliation_warns_when_recorded_fills_do_not_match_state(
             store=store,
             strategy_state=open_strategy(),
             brokers=matching_brokers(),
-            tsm_symbol=SYMBOL_TSM,
-            qff_symbol=SYMBOL_QFF,
+            umc_symbol=SYMBOL_UMC,
+            ccf_symbol=SYMBOL_CCF,
             timestamp=ts(),
         )
 
@@ -172,7 +172,7 @@ def test_post_trade_reconciliation_warns_when_recorded_fills_do_not_match_state(
             if issue.issue_type == "recorded_fill_position_mismatch"
         ]
         assert len(fill_issues) == 1
-        assert fill_issues[0].broker == BrokerName.FUBON_QFF
+        assert fill_issues[0].broker == BrokerName.FUBON_CCF
         assert fill_issues[0].expected_quantity == pytest.approx(2.0)
         assert fill_issues[0].actual_quantity == pytest.approx(0.0)
     finally:

@@ -24,8 +24,8 @@ class LiveQuote:
 
 @dataclass(frozen=True)
 class LiveQuoteSet:
-    qff: LiveQuote
-    tsm: LiveQuote
+    ccf: LiveQuote
+    umc: LiveQuote
     usdttwd: LiveQuote
 
 
@@ -38,18 +38,18 @@ class MinuteBuildResult:
 
 
 @dataclass(frozen=True)
-class QffContractCandidate:
+class CcfContractCandidate:
     symbol: str
     expiry: date
     raw: dict[str, Any]
 
 
 @dataclass(frozen=True)
-class QffWarmupSourceReport:
+class CcfWarmupSourceReport:
     frame: pd.DataFrame
     start: datetime
     end: datetime
-    qff_fetch_start: datetime
+    ccf_fetch_start: datetime
     source_rows: dict[str, int]
     source_used_counts: dict[str, int]
     null_count: int
@@ -73,7 +73,7 @@ class OhlcvProvider(Protocol):
         ...
 
 
-class QffWarmupProvider(Protocol):
+class CcfWarmupProvider(Protocol):
     def fetch_1m(
         self,
         symbol: str,

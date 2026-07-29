@@ -29,28 +29,28 @@ def test_business_days_between_excludes_today_and_includes_expiry() -> None:
 def test_expiry_buffer_selects_front_contract_when_buffer_is_satisfied() -> None:
     selected = make_policy().select_active(
         [
-            {"symbol": "QFFG6", "endDate": "2026-07-15"},
-            {"symbol": "QFFH6", "endDate": "2026-08-19"},
+            {"symbol": "CCFG6", "endDate": "2026-07-15"},
+            {"symbol": "CCFH6", "endDate": "2026-08-19"},
         ],
-        product="QFF",
+        product="CCF",
         now=datetime.fromisoformat("2026-07-08T09:00:00+08:00"),
     )
 
-    assert selected.symbol == "QFFG6"
+    assert selected.symbol == "CCFG6"
     assert selected.business_days_to_expiry == 5
 
 
 def test_expiry_buffer_switches_to_next_contract_when_front_has_four_days_left() -> None:
     selected = make_policy().select_active(
         [
-            {"symbol": "QFFG6", "endDate": "2026-07-15"},
-            {"symbol": "QFFH6", "endDate": "2026-08-19"},
+            {"symbol": "CCFG6", "endDate": "2026-07-15"},
+            {"symbol": "CCFH6", "endDate": "2026-08-19"},
         ],
-        product="QFF",
+        product="CCF",
         now=datetime.fromisoformat("2026-07-09T09:00:00+08:00"),
     )
 
-    assert selected.symbol == "QFFH6"
+    assert selected.symbol == "CCFH6"
 
 
 def test_force_exit_deadline_is_previous_business_day_at_1335() -> None:

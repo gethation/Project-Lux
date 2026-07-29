@@ -142,9 +142,9 @@ def format_status_state(state: str, position: str) -> str:
     if state_text != "OPEN":
         return state_text
     position_text = str(position).lower()
-    if position_text == "long_tsm_short_qff":
+    if position_text == "long_umc_short_ccf":
         return "LONG"
-    if position_text == "short_tsm_long_qff":
+    if position_text == "short_umc_long_ccf":
         return "SHORT"
     return state_text
 

@@ -1,4 +1,4 @@
-from .downloader import TaifexQffTradeDownloader
+from .downloader import TaifexCcfTradeDownloader
 
-__all__ = ["TaifexQffTradeDownloader"]
+__all__ = ["TaifexCcfTradeDownloader"]
 

@@ -49,8 +49,8 @@ def reconcile(
     return BrokerReconciler().reconcile(
         strategy_state=state,
         brokers=brokers,
-        tsm_symbol="TSM/USDT:USDT",
-        qff_symbol="QFFG6",
+        umc_symbol="TSM/USDT:USDT",
+        ccf_symbol="CCFG6",
         timestamp=ts(),
     )
 
@@ -58,22 +58,22 @@ def reconcile(
 def test_flat_state_with_zero_broker_positions_matches() -> None:
     report = reconcile(
         StrategyRuntimeState(state=StrategyState.FLAT),
-        FakeReadOnlyBroker(BrokerName.BINANCE_TSM, fetched_at=ts()),
-        FakeReadOnlyBroker(BrokerName.FUBON_QFF, fetched_at=ts()),
+        FakeReadOnlyBroker(BrokerName.IBKR_UMC, fetched_at=ts()),
+        FakeReadOnlyBroker(BrokerName.FUBON_CCF, fetched_at=ts()),
     )
 
     assert report.status == ReconciliationStatus.MATCHED
     assert report.issues == ()
-    assert report.expected.expected_tsm_units == 0.0
-    assert report.expected.expected_qff_contracts == 0
+    assert report.expected.expected_umc_units == 0.0
+    assert report.expected.expected_ccf_contracts == 0
 
 
 def test_flat_state_with_nonzero_broker_position_warns() -> None:
     report = reconcile(
         StrategyRuntimeState(state=StrategyState.FLAT),
         FakeReadOnlyBroker(
-            BrokerName.BINANCE_TSM,
-            positions=(position(BrokerName.BINANCE_TSM, "TSM/USDT:USDT", 12.0),),
+            BrokerName.IBKR_UMC,
+            positions=(position(BrokerName.IBKR_UMC, "TSM/USDT:USDT", 12.0),),
             fetched_at=ts(),
         ),
     )
@@ -87,22 +87,22 @@ def test_flat_state_with_nonzero_broker_position_warns() -> None:
 def test_open_short_position_matches_signed_broker_quantities() -> None:
     state = StrategyRuntimeState(
         state=StrategyState.OPEN,
-        position_direction=Direction.SHORT_TSM_LONG_QFF,
-        tsm_units=-2150.5,
-        qff_contracts=4,
-        trading_qff_symbol="QFFG6",
+        position_direction=Direction.SHORT_UMC_LONG_CCF,
+        umc_units=-2150.5,
+        ccf_contracts=4,
+        trading_ccf_symbol="CCFG6",
     )
 
     report = reconcile(
         state,
         FakeReadOnlyBroker(
-            BrokerName.BINANCE_TSM,
-            positions=(position(BrokerName.BINANCE_TSM, "TSM/USDT:USDT", -2150.5),),
+            BrokerName.IBKR_UMC,
+            positions=(position(BrokerName.IBKR_UMC, "TSM/USDT:USDT", -2150.5),),
             fetched_at=ts(),
         ),
         FakeReadOnlyBroker(
-            BrokerName.FUBON_QFF,
-            positions=(position(BrokerName.FUBON_QFF, "QFFG6", 4),),
+            BrokerName.FUBON_CCF,
+            positions=(position(BrokerName.FUBON_CCF, "CCFG6", 4),),
             fetched_at=ts(),
         ),
     )
@@ -111,26 +111,26 @@ def test_open_short_position_matches_signed_broker_quantities() -> None:
     assert report.issues == ()
 
 
-def test_tsm_quantity_mismatch_warns_when_over_tolerance() -> None:
+def test_umc_quantity_mismatch_warns_when_over_tolerance() -> None:
     state = StrategyRuntimeState(
         state=StrategyState.OPEN,
-        position_direction=Direction.SHORT_TSM_LONG_QFF,
-        tsm_units=-100.0,
-        qff_contracts=1,
-        trading_qff_symbol="QFFG6",
+        position_direction=Direction.SHORT_UMC_LONG_CCF,
+        umc_units=-100.0,
+        ccf_contracts=1,
+        trading_ccf_symbol="CCFG6",
     )
 
-    report = BrokerReconciler(tsm_units_tolerance=1e-6).reconcile(
+    report = BrokerReconciler(umc_units_tolerance=1e-6).reconcile(
         strategy_state=state,
         brokers=(
             FakeReadOnlyBroker(
-                BrokerName.BINANCE_TSM,
-                positions=(position(BrokerName.BINANCE_TSM, "TSM/USDT:USDT", -99.0),),
+                BrokerName.IBKR_UMC,
+                positions=(position(BrokerName.IBKR_UMC, "TSM/USDT:USDT", -99.0),),
                 fetched_at=ts(),
             ),
         ),
-        tsm_symbol="TSM/USDT:USDT",
-        qff_symbol="QFFG6",
+        umc_symbol="TSM/USDT:USDT",
+        ccf_symbol="CCFG6",
         timestamp=ts(),
     )
 
@@ -140,20 +140,20 @@ def test_tsm_quantity_mismatch_warns_when_over_tolerance() -> None:
     assert report.issues[0].actual_quantity == pytest.approx(-99.0)
 
 
-def test_qff_contract_mismatch_warns() -> None:
+def test_ccf_contract_mismatch_warns() -> None:
     state = StrategyRuntimeState(
         state=StrategyState.EXIT_PENDING,
-        position_direction=Direction.LONG_TSM_SHORT_QFF,
-        tsm_units=100.0,
-        qff_contracts=-2,
-        trading_qff_symbol="QFFG6",
+        position_direction=Direction.LONG_UMC_SHORT_CCF,
+        umc_units=100.0,
+        ccf_contracts=-2,
+        trading_ccf_symbol="CCFG6",
     )
 
     report = reconcile(
         state,
         FakeReadOnlyBroker(
-            BrokerName.FUBON_QFF,
-            positions=(position(BrokerName.FUBON_QFF, "QFFG6", -1),),
+            BrokerName.FUBON_CCF,
+            positions=(position(BrokerName.FUBON_CCF, "CCFG6", -1),),
             fetched_at=ts(),
         ),
     )
@@ -168,22 +168,22 @@ def test_open_order_warns_even_when_position_matches() -> None:
     report = reconcile(
         StrategyRuntimeState(state=StrategyState.FLAT),
         FakeReadOnlyBroker(
-            BrokerName.FUBON_QFF,
-            open_orders=(open_order(BrokerName.FUBON_QFF, "QFFG6", 1),),
+            BrokerName.FUBON_CCF,
+            open_orders=(open_order(BrokerName.FUBON_CCF, "CCFG6", 1),),
             fetched_at=ts(),
         ),
     )
 
     assert report.status == ReconciliationStatus.WARNING
     assert report.issues[0].issue_type == "unexpected_open_order"
-    assert report.issues[0].symbol == "QFFG6"
+    assert report.issues[0].symbol == "CCFG6"
 
 
 def test_broker_fetch_error_marks_report_error() -> None:
     report = reconcile(
         StrategyRuntimeState(state=StrategyState.FLAT),
         FakeReadOnlyBroker(
-            BrokerName.BINANCE_TSM,
+            BrokerName.IBKR_UMC,
             fetch_error=RuntimeError("private api unavailable"),
         ),
     )
@@ -196,26 +196,26 @@ def test_broker_fetch_error_marks_report_error() -> None:
 def test_paused_state_with_position_still_expects_open_exposure() -> None:
     state = StrategyRuntimeState(
         state=StrategyState.PAUSED,
-        position_direction=Direction.SHORT_TSM_LONG_QFF,
-        tsm_units=-2150.5,
-        qff_contracts=4,
-        trading_qff_symbol="QFFG6",
+        position_direction=Direction.SHORT_UMC_LONG_CCF,
+        umc_units=-2150.5,
+        ccf_contracts=4,
+        trading_ccf_symbol="CCFG6",
     )
 
     report = reconcile(
         state,
         FakeReadOnlyBroker(
-            BrokerName.BINANCE_TSM,
-            positions=(position(BrokerName.BINANCE_TSM, "TSM/USDT:USDT", -2150.5),),
+            BrokerName.IBKR_UMC,
+            positions=(position(BrokerName.IBKR_UMC, "TSM/USDT:USDT", -2150.5),),
             fetched_at=ts(),
         ),
         FakeReadOnlyBroker(
-            BrokerName.FUBON_QFF,
-            positions=(position(BrokerName.FUBON_QFF, "QFFG6", 4),),
+            BrokerName.FUBON_CCF,
+            positions=(position(BrokerName.FUBON_CCF, "CCFG6", 4),),
             fetched_at=ts(),
         ),
     )
 
     assert report.status == ReconciliationStatus.MATCHED
-    assert report.expected.expected_tsm_units == pytest.approx(-2150.5)
-    assert report.expected.expected_qff_contracts == 4
+    assert report.expected.expected_umc_units == pytest.approx(-2150.5)
+    assert report.expected.expected_ccf_contracts == 4

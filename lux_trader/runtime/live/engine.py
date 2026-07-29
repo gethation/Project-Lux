@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
 from lux_trader.config import AppConfig
-from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, QffContractSelection
+from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, CcfContractSelection
 from lux_trader.core.calendar import live_session_status
 from lux_trader.execution.intent import (
     ExecutionPlanType,
@@ -27,10 +27,10 @@ from lux_trader.execution.price_policy import apply_live_touch_market_price_poli
 from lux_trader.integrations.binance.market_data import BinanceMarketData
 from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
-from lux_trader.integrations.fubon.market_data import FubonQffMarketData
+from lux_trader.integrations.fubon.market_data import FubonCcfMarketData
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
-from lux_trader.integrations.taifex.downloader import TaifexQffTradeDownloader
+from lux_trader.integrations.taifex.downloader import TaifexCcfTradeDownloader
 from lux_trader.core.fees import fill_costs
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.execution.gate import (
@@ -40,21 +40,21 @@ from lux_trader.execution.gate import (
 from lux_trader.margin.display import AccountDisplay, AccountDisplayProvider
 from lux_trader.margin.monitor import MarginMonitor, READONLY_BROKER_ENV
 from lux_trader.market_data import (
-    CsvQffWarmupProvider,
+    CsvCcfWarmupProvider,
     LiveMinuteBarBuilder,
     LiveQuoteSet,
     OhlcvProvider,
-    QFF_FORWARD_FILL_LOOKBACK,
-    QffWarmupSourceReport,
-    QffWarmupProvider,
+    CCF_FORWARD_FILL_LOOKBACK,
+    CcfWarmupSourceReport,
+    CcfWarmupProvider,
     QuoteProvider,
     WarmupBuilder,
-    build_qff_session_index,
-    build_qff_session_warmup_index,
-    build_qff_warmup_source_report,
+    build_ccf_session_index,
+    build_ccf_session_warmup_index,
+    build_ccf_warmup_source_report,
     floor_minute,
     parse_timestamp,
-    prioritized_qff_close_frame,
+    prioritized_ccf_close_frame,
 )
 from lux_trader.store import SQLiteStore
 from lux_trader.core.models import Direction, IndicatorSnapshot, MarketBar, StrategyAction, StrategyState
@@ -78,22 +78,22 @@ from lux_trader.runtime.live.bootstrap import (
     run_live_startup_preflight,
 )
 from lux_trader.runtime.live.contracts import (
-    QFF_RECONNECT_GRACE_SECONDS,
-    QFF_WATCHDOG_SECONDS,
-    QffContractResolution,
+    CCF_RECONNECT_GRACE_SECONDS,
+    CCF_WATCHDOG_SECONDS,
+    CcfContractResolution,
     cancel_entry_pending_for_contract_switch,
     mark_pending_contract_switch_if_needed,
-    qff_book_age_seconds,
-    qff_book_is_fresh_for_signal,
-    resolve_qff_contract,
-    reconnect_qff_provider_if_supported,
+    ccf_book_age_seconds,
+    ccf_book_is_fresh_for_signal,
+    resolve_ccf_contract,
+    reconnect_ccf_provider_if_supported,
     resolve_force_exit_reason,
-    restart_qff_books_if_supported,
+    restart_ccf_books_if_supported,
     should_switch_contract_before_processing,
-    subscribe_qff_books_if_supported,
+    subscribe_ccf_books_if_supported,
     switch_to_contract,
-    teardown_qff_books_if_supported,
-    unsubscribe_qff_books_if_supported,
+    teardown_ccf_books_if_supported,
+    unsubscribe_ccf_books_if_supported,
     update_eligible_contract_state,
 )
 from lux_trader.runtime.live.modes import (
@@ -111,7 +111,7 @@ class LiveDryRunResult:
     bars_processed: int
     skipped_minutes: int
     plans_recorded: int
-    qff_symbol: str
+    ccf_symbol: str
 
 
 @dataclass(frozen=True)
@@ -120,7 +120,7 @@ class LiveRuntimeResult:
     bars_processed: int
     skipped_minutes: int
     plans_recorded: int
-    qff_symbol: str
+    ccf_symbol: str
 
 
 class LiveRuntime:
@@ -129,8 +129,8 @@ class LiveRuntime:
         config: AppConfig,
         *,
         handler: LiveModeHandler,
-        qff_provider: QuoteProvider | FubonQffMarketData | None = None,
-        tsm_provider: QuoteProvider | None = None,
+        ccf_provider: QuoteProvider | FubonCcfMarketData | None = None,
+        umc_provider: QuoteProvider | None = None,
         usdttwd_provider: QuoteProvider | None = None,
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], None] | None = None,
@@ -139,8 +139,8 @@ class LiveRuntime:
     ) -> None:
         self.config = config
         self.handler = handler
-        self.qff_provider = qff_provider
-        self.tsm_provider = tsm_provider
+        self.ccf_provider = ccf_provider
+        self.umc_provider = umc_provider
         self.usdttwd_provider = usdttwd_provider
         self._uses_default_clock = clock is None
         self.clock = clock or (lambda: datetime.now().astimezone())
@@ -171,8 +171,8 @@ class LiveRuntime:
         live_run_id: int | None = None
         margin_monitor: MarginMonitor | None = None
         account_display: AccountDisplayProvider | None = None
-        qff_provider_to_close: Any | None = None
-        qff_symbol = ""
+        ccf_provider_to_close: Any | None = None
+        ccf_symbol = ""
         stats = LiveRuntimeStats()
         try:
             if reset_store:
@@ -189,19 +189,19 @@ class LiveRuntime:
                 store=store,
                 resume=resume,
                 skip_warmup=skip_warmup,
-                qff_provider=self.qff_provider,
-                tsm_provider=self.tsm_provider,
+                ccf_provider=self.ccf_provider,
+                umc_provider=self.umc_provider,
                 usdttwd_provider=self.usdttwd_provider,
                 reporter=self.reporter,
                 started_at=started_at,
                 auto_warmup_context=self.handler.auto_warmup_context,
             )
-            qff_provider = runtime.qff_provider
-            tsm_provider = runtime.tsm_provider
+            ccf_provider = runtime.ccf_provider
+            umc_provider = runtime.umc_provider
             usdttwd_provider = runtime.usdttwd_provider
-            qff_provider_to_close = runtime.qff_provider_to_close
-            qff_symbol = runtime.qff_symbol
-            qff_expiry = runtime.qff_expiry
+            ccf_provider_to_close = runtime.ccf_provider_to_close
+            ccf_symbol = runtime.ccf_symbol
+            ccf_expiry = runtime.ccf_expiry
             strategy = runtime.strategy
             indicator = runtime.indicator
             seed_bars = runtime.seed_bars
@@ -209,8 +209,8 @@ class LiveRuntime:
             next_row_index = runtime.next_row_index
             self.handler.on_runtime_ready(
                 store,
-                qff_symbol=qff_symbol,
-                qff_expiry=qff_expiry,
+                ccf_symbol=ccf_symbol,
+                ccf_expiry=ccf_expiry,
             )
             if resume:
                 # After a restart, verify any restored open position against the
@@ -220,8 +220,8 @@ class LiveRuntime:
                     strategy=strategy,
                     indicator=indicator,
                     row_index=max(next_row_index - 1, 0),
-                    qff_symbol=qff_symbol,
-                    qff_expiry=qff_expiry,
+                    ccf_symbol=ccf_symbol,
+                    ccf_expiry=ccf_expiry,
                     reporter=self.reporter,
                     timestamp=runtime.started_at,
                 )
@@ -229,7 +229,7 @@ class LiveRuntime:
             live_run_id = store.start_live_run(
                 started_at=runtime.started_at,
                 mode=self.handler.mode,
-                qff_symbol=qff_symbol,
+                ccf_symbol=ccf_symbol,
                 payload={"resume": resume, "skip_warmup": skip_warmup},
             )
             store.commit()
@@ -269,10 +269,10 @@ class LiveRuntime:
                 clock=self.clock,
             )
             last_non_trading_event_minute: datetime | None = None
-            qff_books_torn_down_for_non_trading = False
-            qff_reconnecting_until: datetime | None = None
-            last_qff_books_restart_at: datetime | None = None
-            last_qff_reconnect_warning_minute: datetime | None = None
+            ccf_books_torn_down_for_non_trading = False
+            ccf_reconnecting_until: datetime | None = None
+            last_ccf_books_restart_at: datetime | None = None
+            last_ccf_reconnect_warning_minute: datetime | None = None
             last_quotes: dict[str, Any] = {}
             last_fetch_warning_minute: dict[str, datetime] = {}
 
@@ -283,11 +283,11 @@ class LiveRuntime:
                     self.config.trading_calendar.closed_dates,
                 )
                 if not session_status.is_trading:
-                    if not qff_books_torn_down_for_non_trading:
-                        teardown_qff_books_if_supported(qff_provider)
-                        qff_books_torn_down_for_non_trading = True
-                        qff_reconnecting_until = None
-                        last_qff_books_restart_at = None
+                    if not ccf_books_torn_down_for_non_trading:
+                        teardown_ccf_books_if_supported(ccf_provider)
+                        ccf_books_torn_down_for_non_trading = True
+                        ccf_reconnecting_until = None
+                        last_ccf_books_restart_at = None
                     builder.reset_current_minute()
                     self.reporter.live_non_trading(
                         observed_at,
@@ -318,7 +318,7 @@ class LiveRuntime:
                 # Broker accounting endpoints can be unavailable during the
                 # post-session settlement window. Defer due checks until the
                 # first trading iteration instead of querying while closed.
-                if qff_books_torn_down_for_non_trading:
+                if ccf_books_torn_down_for_non_trading:
                     notify_trading_session = getattr(
                         self.reporter,
                         "trading_session",
@@ -333,39 +333,39 @@ class LiveRuntime:
                     reporter=self.reporter,
                 )
 
-                if qff_books_torn_down_for_non_trading:
+                if ccf_books_torn_down_for_non_trading:
                     # Re-login first so the session starts on a fresh marketdata
                     # token, then restart the books on the new session.
-                    reconnect_qff_provider_if_supported(
-                        qff_provider,
+                    reconnect_ccf_provider_if_supported(
+                        ccf_provider,
                         self.reporter,
                         observed_at,
                     )
-                    last_qff_books_restart_at = restart_qff_books_if_supported(
-                        qff_provider,
-                        qff_symbol,
+                    last_ccf_books_restart_at = restart_ccf_books_if_supported(
+                        ccf_provider,
+                        ccf_symbol,
                         self.reporter,
                         observed_at,
-                        last_restart_at=last_qff_books_restart_at,
+                        last_restart_at=last_ccf_books_restart_at,
                     )
-                    qff_reconnecting_until = observed_at + timedelta(
-                        seconds=QFF_RECONNECT_GRACE_SECONDS
+                    ccf_reconnecting_until = observed_at + timedelta(
+                        seconds=CCF_RECONNECT_GRACE_SECONDS
                     )
-                    qff_books_torn_down_for_non_trading = False
+                    ccf_books_torn_down_for_non_trading = False
 
-                qff_quote = fetch_quote_or_cached(
-                    qff_provider,
-                    qff_symbol,
-                    "qff",
+                ccf_quote = fetch_quote_or_cached(
+                    ccf_provider,
+                    ccf_symbol,
+                    "ccf",
                     last_quotes,
                     self.reporter,
                     observed_at,
                     last_fetch_warning_minute,
                 )
-                tsm_quote = fetch_quote_or_cached(
-                    tsm_provider,
+                umc_quote = fetch_quote_or_cached(
+                    umc_provider,
                     self.config.live.binance_symbol,
-                    "tsm",
+                    "umc",
                     last_quotes,
                     self.reporter,
                     observed_at,
@@ -380,7 +380,7 @@ class LiveRuntime:
                     observed_at,
                     last_fetch_warning_minute,
                 )
-                if qff_quote is None or tsm_quote is None or usdttwd_quote is None:
+                if ccf_quote is None or umc_quote is None or usdttwd_quote is None:
                     fetch_key = "quote_set"
                     warning_minute = floor_minute(observed_at)
                     if last_fetch_warning_minute.get(fetch_key) != warning_minute:
@@ -394,66 +394,66 @@ class LiveRuntime:
                     self._sleep_if_needed(stats.iterations, max_iterations)
                     continue
                 quote_set = LiveQuoteSet(
-                    qff=qff_quote,
-                    tsm=tsm_quote,
+                    ccf=ccf_quote,
+                    umc=umc_quote,
                     usdttwd=usdttwd_quote,
                 )
-                qff_reconnecting = (
-                    qff_reconnecting_until is not None
-                    and observed_at <= qff_reconnecting_until
-                    and not qff_book_is_fresh_for_signal(
-                        quote_set.qff,
+                ccf_reconnecting = (
+                    ccf_reconnecting_until is not None
+                    and observed_at <= ccf_reconnecting_until
+                    and not ccf_book_is_fresh_for_signal(
+                        quote_set.ccf,
                         observed_at,
                         self.config,
                     )
                 )
-                if qff_book_is_fresh_for_signal(quote_set.qff, observed_at, self.config):
-                    qff_reconnecting_until = None
-                    qff_reconnecting = False
-                elif qff_book_age_seconds(quote_set.qff, observed_at) > QFF_WATCHDOG_SECONDS:
-                    restarted_at = restart_qff_books_if_supported(
-                        qff_provider,
-                        qff_symbol,
+                if ccf_book_is_fresh_for_signal(quote_set.ccf, observed_at, self.config):
+                    ccf_reconnecting_until = None
+                    ccf_reconnecting = False
+                elif ccf_book_age_seconds(quote_set.ccf, observed_at) > CCF_WATCHDOG_SECONDS:
+                    restarted_at = restart_ccf_books_if_supported(
+                        ccf_provider,
+                        ccf_symbol,
                         self.reporter,
                         observed_at,
-                        last_restart_at=last_qff_books_restart_at,
+                        last_restart_at=last_ccf_books_restart_at,
                     )
-                    if restarted_at != last_qff_books_restart_at:
-                        qff_reconnecting_until = observed_at + timedelta(
-                            seconds=QFF_RECONNECT_GRACE_SECONDS
+                    if restarted_at != last_ccf_books_restart_at:
+                        ccf_reconnecting_until = observed_at + timedelta(
+                            seconds=CCF_RECONNECT_GRACE_SECONDS
                         )
-                        qff_reconnecting = True
-                    last_qff_books_restart_at = restarted_at
+                        ccf_reconnecting = True
+                    last_ccf_books_restart_at = restarted_at
                 live_spread_snapshot = estimate_tradable_spreads(
                     quote_set,
                     observed_at,
                     indicator,
                     stale_seconds=self.config.live.stale_seconds,
-                    qff_book_stale_seconds=self.config.live.qff_book_stale_seconds,
-                    last_qff_close=builder.last_qff_close,
+                    ccf_book_stale_seconds=self.config.live.ccf_book_stale_seconds,
+                    last_ccf_close=builder.last_ccf_close,
                 )
-                if qff_reconnecting and (
+                if ccf_reconnecting and (
                     live_spread_snapshot.short_spread is None
                     or live_spread_snapshot.long_spread is None
                 ):
                     live_spread_snapshot = replace(
                         live_spread_snapshot,
-                        missing_reason="qff_reconnecting",
+                        missing_reason="ccf_reconnecting",
                     )
                     warning_minute = floor_minute(observed_at)
-                    if last_qff_reconnect_warning_minute != warning_minute:
+                    if last_ccf_reconnect_warning_minute != warning_minute:
                         self.reporter.warn(
                             observed_at,
-                            "qff_reconnecting",
+                            "ccf_reconnecting",
                             "skip_signal",
                         )
-                        last_qff_reconnect_warning_minute = warning_minute
+                        last_ccf_reconnect_warning_minute = warning_minute
                 self.reporter.live(
                     observed_at,
                     live_spread_snapshot,
                     strategy.state,
                 )
-                for quote in (quote_set.qff, quote_set.tsm, quote_set.usdttwd):
+                for quote in (quote_set.ccf, quote_set.umc, quote_set.usdttwd):
                     store.record_market_tick(quote, observed_at)
 
                 build_result = None
@@ -486,11 +486,11 @@ class LiveRuntime:
                         switch_result = self._process_finalized_bar(
                             store=store,
                             build_result=build_result,
-                            qff_provider=qff_provider,
-                            tsm_provider=tsm_provider,
+                            ccf_provider=ccf_provider,
+                            umc_provider=umc_provider,
                             usdttwd_provider=usdttwd_provider,
-                            qff_symbol=qff_symbol,
-                            qff_expiry=qff_expiry,
+                            ccf_symbol=ccf_symbol,
+                            ccf_expiry=ccf_expiry,
                             strategy=strategy,
                             indicator=indicator,
                             seed_bars=seed_bars,
@@ -499,12 +499,12 @@ class LiveRuntime:
                             stats=stats,
                             max_iterations=max_iterations,
                             account_display=account_display,
-                            signal_block_override="qff_reconnecting"
-                            if qff_reconnecting
+                            signal_block_override="ccf_reconnecting"
+                            if ccf_reconnecting
                             else None,
                         )
-                        qff_symbol = switch_result["qff_symbol"]
-                        qff_expiry = switch_result["qff_expiry"]
+                        ccf_symbol = switch_result["ccf_symbol"]
+                        ccf_expiry = switch_result["ccf_expiry"]
                         indicator = switch_result["indicator"]
                         seed_bars = switch_result["seed_bars"]
                         builder = switch_result["builder"]
@@ -534,7 +534,7 @@ class LiveRuntime:
                 bars_processed=stats.bars_processed,
                 skipped_minutes=stats.skipped_minutes,
                 plans_recorded=stats.plans_recorded,
-                qff_symbol=qff_symbol,
+                ccf_symbol=ccf_symbol,
             )
         finally:
             if live_run_id is not None:
@@ -553,18 +553,18 @@ class LiveRuntime:
                 margin_monitor.close()
             store.close()
             self.handler.close()
-            close_provider_quietly(qff_provider_to_close)
+            close_provider_quietly(ccf_provider_to_close)
 
     def _process_finalized_bar(
         self,
         *,
         store: SQLiteStore,
         build_result: Any,
-        qff_provider: QuoteProvider | FubonQffMarketData,
-        tsm_provider: QuoteProvider,
+        ccf_provider: QuoteProvider | FubonCcfMarketData,
+        umc_provider: QuoteProvider,
         usdttwd_provider: QuoteProvider,
-        qff_symbol: str,
-        qff_expiry: str | None,
+        ccf_symbol: str,
+        ccf_expiry: str | None,
         strategy: PairStrategy,
         indicator: IndicatorEngine,
         seed_bars: list[MarketBar],
@@ -578,8 +578,8 @@ class LiveRuntime:
         bar = replace(
             build_result.bar,
             row_index=next_row_index,
-            qff_symbol=qff_symbol,
-            qff_expiry=qff_expiry,
+            ccf_symbol=ccf_symbol,
+            ccf_expiry=ccf_expiry,
             contract_policy_state=strategy.state.contract_policy_state or "active",
         )
         if store.bar_exists_for_timestamp(bar.timestamp):
@@ -595,8 +595,8 @@ class LiveRuntime:
                 "live minute already processed",
             )
             return {
-                "qff_symbol": qff_symbol,
-                "qff_expiry": qff_expiry,
+                "ccf_symbol": ccf_symbol,
+                "ccf_expiry": ccf_expiry,
                 "indicator": indicator,
                 "seed_bars": seed_bars,
                 "builder": builder,
@@ -605,9 +605,9 @@ class LiveRuntime:
             }
 
         try:
-            eligible_contract = resolve_qff_contract(
+            eligible_contract = resolve_ccf_contract(
                 self.config,
-                qff_provider,
+                ccf_provider,
                 now=bar.timestamp,
             )
         except Exception as exc:
@@ -617,7 +617,7 @@ class LiveRuntime:
             eligible_contract = None
             self.reporter.warn(
                 bar.timestamp,
-                "qff_contract",
+                "ccf_contract",
                 f"resolve_failed:{type(exc).__name__}",
             )
         if eligible_contract is not None:
@@ -625,14 +625,14 @@ class LiveRuntime:
             if should_switch_contract_before_processing(
                 strategy.state, eligible_contract
             ):
-                qff_symbol, qff_expiry, indicator, seed_bars, builder = (
+                ccf_symbol, ccf_expiry, indicator, seed_bars, builder = (
                     self._switch_contract_before_processing(
                         store=store,
                         bar=bar,
-                        qff_provider=qff_provider,
-                        tsm_provider=tsm_provider,
+                        ccf_provider=ccf_provider,
+                        umc_provider=umc_provider,
                         usdttwd_provider=usdttwd_provider,
-                        qff_symbol=qff_symbol,
+                        ccf_symbol=ccf_symbol,
                         strategy=strategy,
                         eligible_contract=eligible_contract,
                     )
@@ -642,8 +642,8 @@ class LiveRuntime:
                 stats.iterations += 1
                 self._sleep_if_needed(stats.iterations, max_iterations)
                 return {
-                    "qff_symbol": qff_symbol,
-                    "qff_expiry": qff_expiry,
+                    "ccf_symbol": ccf_symbol,
+                    "ccf_expiry": ccf_expiry,
                     "indicator": indicator,
                     "seed_bars": seed_bars,
                     "builder": builder,
@@ -701,8 +701,8 @@ class LiveRuntime:
                 strategy.state,
                 bar.timestamp,
             ),
-            qff_symbol=qff_symbol,
-            qff_expiry=qff_expiry,
+            ccf_symbol=ccf_symbol,
+            ccf_expiry=ccf_expiry,
         )
         stats.plans_recorded += mode_result.plans_recorded
         result = mode_result.result
@@ -742,15 +742,15 @@ class LiveRuntime:
             )
         store.save_state(bar.row_index, bar.timestamp, strategy.state, indicator)
         if self.handler.complete_contract_switch_after_flat:
-            qff_symbol, qff_expiry, indicator, seed_bars, builder = (
+            ccf_symbol, ccf_expiry, indicator, seed_bars, builder = (
                 self._complete_contract_switch_after_flat(
                     store=store,
                     bar=bar,
-                    qff_provider=qff_provider,
-                    tsm_provider=tsm_provider,
+                    ccf_provider=ccf_provider,
+                    umc_provider=umc_provider,
                     usdttwd_provider=usdttwd_provider,
-                    qff_symbol=qff_symbol,
-                    qff_expiry=qff_expiry,
+                    ccf_symbol=ccf_symbol,
+                    ccf_expiry=ccf_expiry,
                     indicator=indicator,
                     seed_bars=seed_bars,
                     builder=builder,
@@ -759,8 +759,8 @@ class LiveRuntime:
             )
         stats.bars_processed += 1
         return {
-            "qff_symbol": qff_symbol,
-            "qff_expiry": qff_expiry,
+            "ccf_symbol": ccf_symbol,
+            "ccf_expiry": ccf_expiry,
             "indicator": indicator,
             "seed_bars": seed_bars,
             "builder": builder,
@@ -773,12 +773,12 @@ class LiveRuntime:
         *,
         store: SQLiteStore,
         bar: MarketBar,
-        qff_provider: QuoteProvider | FubonQffMarketData,
-        tsm_provider: QuoteProvider,
+        ccf_provider: QuoteProvider | FubonCcfMarketData,
+        umc_provider: QuoteProvider,
         usdttwd_provider: QuoteProvider,
-        qff_symbol: str,
+        ccf_symbol: str,
         strategy: PairStrategy,
-        eligible_contract: QffContractResolution,
+        eligible_contract: CcfContractResolution,
     ) -> tuple[
         str,
         str | None,
@@ -793,47 +793,47 @@ class LiveRuntime:
                 bar.row_index,
                 bar.timestamp,
                 "entry_cancel_contract_switch",
-                "pending entry canceled before QFF contract switch",
+                "pending entry canceled before CCF contract switch",
                 {
-                    "old_qff_symbol": qff_symbol,
-                    "new_qff_symbol": eligible_contract.symbol,
+                    "old_ccf_symbol": ccf_symbol,
+                    "new_ccf_symbol": eligible_contract.symbol,
                 },
             )
         self.reporter.event(
             bar.timestamp,
             "contract_switch",
-            f"{qff_symbol}->{eligible_contract.symbol}",
+            f"{ccf_symbol}->{eligible_contract.symbol}",
         )
         store.record_event(
             bar.row_index,
             bar.timestamp,
             "contract_switch_detected",
-            "flat strategy switching to eligible QFF contract",
+            "flat strategy switching to eligible CCF contract",
             {
-                "old_qff_symbol": qff_symbol,
-                "new_qff_symbol": eligible_contract.symbol,
+                "old_ccf_symbol": ccf_symbol,
+                "new_ccf_symbol": eligible_contract.symbol,
             },
         )
-        unsubscribe_qff_books_if_supported(qff_provider, qff_symbol)
-        qff_symbol, qff_expiry, indicator, seed_bars = switch_to_contract(
+        unsubscribe_ccf_books_if_supported(ccf_provider, ccf_symbol)
+        ccf_symbol, ccf_expiry, indicator, seed_bars = switch_to_contract(
             store,
             self.config,
             strategy.state,
             eligible_contract,
-            qff_provider=qff_provider,
-            tsm_provider=tsm_provider,
+            ccf_provider=ccf_provider,
+            umc_provider=umc_provider,
             usdttwd_provider=usdttwd_provider,
             end=bar.timestamp,
         )
-        subscribe_qff_books_if_supported(
-            qff_provider,
-            qff_symbol,
+        subscribe_ccf_books_if_supported(
+            ccf_provider,
+            ccf_symbol,
             self.reporter,
             bar.timestamp,
         )
         return (
-            qff_symbol,
-            qff_expiry,
+            ccf_symbol,
+            ccf_expiry,
             indicator,
             seed_bars,
             build_live_minute_builder(self.config, seed_bars),
@@ -844,11 +844,11 @@ class LiveRuntime:
         *,
         store: SQLiteStore,
         bar: MarketBar,
-        qff_provider: QuoteProvider | FubonQffMarketData,
-        tsm_provider: QuoteProvider,
+        ccf_provider: QuoteProvider | FubonCcfMarketData,
+        umc_provider: QuoteProvider,
         usdttwd_provider: QuoteProvider,
-        qff_symbol: str,
-        qff_expiry: str | None,
+        ccf_symbol: str,
+        ccf_expiry: str | None,
         indicator: IndicatorEngine,
         seed_bars: list[MarketBar],
         builder: LiveMinuteBarBuilder,
@@ -863,29 +863,29 @@ class LiveRuntime:
         if not (
             strategy.state.state == StrategyState.FLAT
             and strategy.state.pending_symbol_switch
-            and strategy.state.eligible_active_qff_symbol
+            and strategy.state.eligible_active_ccf_symbol
         ):
-            return qff_symbol, qff_expiry, indicator, seed_bars, builder
+            return ccf_symbol, ccf_expiry, indicator, seed_bars, builder
 
-        completed_contract = QffContractResolution(
-            symbol=strategy.state.eligible_active_qff_symbol,
-            expiry=strategy.state.eligible_active_qff_expiry,
+        completed_contract = CcfContractResolution(
+            symbol=strategy.state.eligible_active_ccf_symbol,
+            expiry=strategy.state.eligible_active_ccf_expiry,
             policy_state="active",
         )
-        unsubscribe_qff_books_if_supported(qff_provider, qff_symbol)
-        qff_symbol, qff_expiry, indicator, seed_bars = switch_to_contract(
+        unsubscribe_ccf_books_if_supported(ccf_provider, ccf_symbol)
+        ccf_symbol, ccf_expiry, indicator, seed_bars = switch_to_contract(
             store,
             self.config,
             strategy.state,
             completed_contract,
-            qff_provider=qff_provider,
-            tsm_provider=tsm_provider,
+            ccf_provider=ccf_provider,
+            umc_provider=umc_provider,
             usdttwd_provider=usdttwd_provider,
             end=bar.timestamp,
         )
-        subscribe_qff_books_if_supported(
-            qff_provider,
-            qff_symbol,
+        subscribe_ccf_books_if_supported(
+            ccf_provider,
+            ccf_symbol,
             self.reporter,
             bar.timestamp,
         )
@@ -893,14 +893,14 @@ class LiveRuntime:
             bar.row_index,
             bar.timestamp,
             "contract_switch_completed",
-            "QFF contract switched after flat state",
-            {"qff_symbol": qff_symbol},
+            "CCF contract switched after flat state",
+            {"ccf_symbol": ccf_symbol},
         )
-        self.reporter.event(bar.timestamp, "contract_switch_done", qff_symbol)
+        self.reporter.event(bar.timestamp, "contract_switch_done", ccf_symbol)
         store.save_state(bar.row_index, bar.timestamp, strategy.state, indicator)
         return (
-            qff_symbol,
-            qff_expiry,
+            ccf_symbol,
+            ccf_expiry,
             indicator,
             seed_bars,
             build_live_minute_builder(self.config, seed_bars),
@@ -920,16 +920,16 @@ class LiveRuntime:
             if self.config.margin_management.leg_notional_twd > 0
             else self.config.strategy.leg_notional_twd
         )
-        qff_price = getattr(bar, "qff_close_filled", None)
-        tsm_price = getattr(bar, "tsm_twd_fair", None)
-        contracts = int(getattr(state, "qff_contracts", 0) or 0)
-        if contracts != 0 and qff_price:
-            return abs(contracts) * self.config.fees.qff_contract_multiplier * qff_price
-        if tsm_price and qff_price:
+        ccf_price = getattr(bar, "ccf_close_filled", None)
+        umc_price = getattr(bar, "umc_twd_fair", None)
+        contracts = int(getattr(state, "ccf_contracts", 0) or 0)
+        if contracts != 0 and ccf_price:
+            return abs(contracts) * self.config.fees.ccf_contract_multiplier * ccf_price
+        if umc_price and ccf_price:
             sizing = size_position_for_direction(
-                Direction.LONG_TSM_SHORT_QFF,
-                tsm_price,
-                qff_price,
+                Direction.LONG_UMC_SHORT_CCF,
+                umc_price,
+                ccf_price,
                 self.config.strategy,
                 self.config.fees,
             )
@@ -951,8 +951,8 @@ class LiveDryRunRunner:
         self,
         config: AppConfig,
         *,
-        qff_provider: QuoteProvider | FubonQffMarketData | None = None,
-        tsm_provider: QuoteProvider | None = None,
+        ccf_provider: QuoteProvider | FubonCcfMarketData | None = None,
+        umc_provider: QuoteProvider | None = None,
         usdttwd_provider: QuoteProvider | None = None,
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], None] | None = None,
@@ -961,8 +961,8 @@ class LiveDryRunRunner:
         self.runtime = LiveRuntime(
             config,
             handler=DryRunLiveModeHandler(config),
-            qff_provider=qff_provider,
-            tsm_provider=tsm_provider,
+            ccf_provider=ccf_provider,
+            umc_provider=umc_provider,
             usdttwd_provider=usdttwd_provider,
             clock=clock,
             sleeper=sleeper,
@@ -988,7 +988,7 @@ class LiveDryRunRunner:
             bars_processed=result.bars_processed,
             skipped_minutes=result.skipped_minutes,
             plans_recorded=result.plans_recorded,
-            qff_symbol=result.qff_symbol,
+            ccf_symbol=result.ccf_symbol,
         )
 
 
@@ -997,8 +997,8 @@ class LiveExecuteRunner:
         self,
         config: AppConfig,
         *,
-        qff_provider: QuoteProvider | FubonQffMarketData | None = None,
-        tsm_provider: QuoteProvider | None = None,
+        ccf_provider: QuoteProvider | FubonCcfMarketData | None = None,
+        umc_provider: QuoteProvider | None = None,
         usdttwd_provider: QuoteProvider | None = None,
         binance_adapter: Any | None = None,
         fubon_adapter: Any | None = None,
@@ -1017,8 +1017,8 @@ class LiveExecuteRunner:
                 readonly_brokers=readonly_brokers,
                 post_trade_reconciler=post_trade_reconciler,
             ),
-            qff_provider=qff_provider,
-            tsm_provider=tsm_provider,
+            ccf_provider=ccf_provider,
+            umc_provider=umc_provider,
             usdttwd_provider=usdttwd_provider,
             clock=clock,
             sleeper=sleeper,
@@ -1063,8 +1063,8 @@ def build_tradable_snapshot_for_bar(
         bar.timestamp + timedelta(minutes=1),
         indicator,
         stale_seconds=config.live.stale_seconds,
-        qff_book_stale_seconds=config.live.qff_book_stale_seconds,
-        last_qff_close=bar.qff_close_filled,
+        ccf_book_stale_seconds=config.live.ccf_book_stale_seconds,
+        last_ccf_close=bar.ccf_close_filled,
     )
     return replace(
         tradable_snapshot,
@@ -1126,7 +1126,7 @@ def build_live_decision_snapshot(
         )
 
     if state.state == StrategyState.OPEN and state.position_direction is not None:
-        if state.position_direction == Direction.SHORT_TSM_LONG_QFF:
+        if state.position_direction == Direction.SHORT_UMC_LONG_CCF:
             decision_type = "longSpread"
             decision_spread = tradable_snapshot.long_spread
             decision_zscore = tradable_snapshot.long_zscore

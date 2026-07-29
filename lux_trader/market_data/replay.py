@@ -23,20 +23,31 @@ def optional_float(value: object) -> float | None:
     return float(parsed)
 
 
+# The PoC owns the replay CSV's column names, and it emits the same qff_/tsm_
+# headers for BOTH pairs -- the CCF/UMC pipeline
+# (scripts/calculate_ccf_umc_spread_1m.py) reuses them verbatim. They are an
+# external contract, not our naming, so they stay put while every identifier
+# on this side of the boundary is ccf_/umc_. Renaming them here would only
+# break the ability to read the PoC's own output.
+CSV_CCF_CLOSE = "qff_close"
+CSV_CCF_CLOSE_FILLED = "qff_close_filled"
+CSV_UMC_TWD_FAIR = "tsm_twd_fair"
+
+
 class CsvReplayMarketData:
     def __init__(
         self,
         csv_path: Path,
         calendar: TradingCalendar | None = None,
         *,
-        qff_ohlcv_path: Path | None = None,
-        tsm_ohlcv_path: Path | None = None,
+        ccf_ohlcv_path: Path | None = None,
+        umc_ohlcv_path: Path | None = None,
         usdttwd_ohlcv_path: Path | None = None,
     ) -> None:
         self.csv_path = csv_path
         self.calendar = calendar or TradingCalendar()
-        self.qff_ohlcv_path = qff_ohlcv_path
-        self.tsm_ohlcv_path = tsm_ohlcv_path
+        self.ccf_ohlcv_path = ccf_ohlcv_path
+        self.umc_ohlcv_path = umc_ohlcv_path
         self.usdttwd_ohlcv_path = usdttwd_ohlcv_path
 
     def load(self) -> list[MarketBar]:
@@ -46,9 +57,9 @@ class CsvReplayMarketData:
         frame = pd.read_csv(self.csv_path)
         required = {
             "timestamp",
-            "qff_close",
-            "qff_close_filled",
-            "tsm_twd_fair",
+            CSV_CCF_CLOSE,
+            CSV_CCF_CLOSE_FILLED,
+            CSV_UMC_TWD_FAIR,
             "spread",
             "spread_zscore",
             "zscore_valid",
@@ -70,60 +81,60 @@ class CsvReplayMarketData:
             raise RuntimeError("Input timestamps must be unique and sorted")
         _ = expected  # Session-only PoC inputs are intentionally not continuous.
 
-        qff_entry_open = None
-        qff_entry_open_was_filled = None
-        tsm_twd_fair_open = None
+        ccf_entry_open = None
+        ccf_entry_open_was_filled = None
+        umc_twd_fair_open = None
         if (
-            self.qff_ohlcv_path is not None
-            and self.tsm_ohlcv_path is not None
+            self.ccf_ohlcv_path is not None
+            and self.umc_ohlcv_path is not None
             and self.usdttwd_ohlcv_path is not None
         ):
-            qff_open = read_open_series(self.qff_ohlcv_path, "qff").reindex(index)
-            tsm_open = read_open_series(self.tsm_ohlcv_path, "tsm").reindex(index)
+            ccf_open = read_open_series(self.ccf_ohlcv_path, "ccf").reindex(index)
+            umc_open = read_open_series(self.umc_ohlcv_path, "umc").reindex(index)
             usd_open = read_open_series(self.usdttwd_ohlcv_path, "usdttwd").reindex(index)
-            if tsm_open.isna().any() or usd_open.isna().any():
-                first_missing = tsm_open[tsm_open.isna()].index.union(
+            if umc_open.isna().any() or usd_open.isna().any():
+                first_missing = umc_open[umc_open.isna()].index.union(
                     usd_open[usd_open.isna()].index
                 )[0]
                 raise RuntimeError(f"Replay entry open series missing at {first_missing}")
-            qff_filled = pd.Series(
-                pd.to_numeric(frame["qff_close_filled"], errors="coerce").to_numpy(),
+            ccf_filled = pd.Series(
+                pd.to_numeric(frame[CSV_CCF_CLOSE_FILLED], errors="coerce").to_numpy(),
                 index=index,
             )
-            qff_entry_open = qff_open.fillna(qff_filled)
-            qff_entry_open_was_filled = qff_open.isna()
-            tsm_twd_fair_open = tsm_open * usd_open / 5.0
+            ccf_entry_open = ccf_open.fillna(ccf_filled)
+            ccf_entry_open_was_filled = ccf_open.isna()
+            umc_twd_fair_open = umc_open * usd_open / 5.0
 
         bars: list[MarketBar] = []
         for row_index, row in frame.iterrows():
-            qff_close = optional_float(row["qff_close"])
-            qff_close_filled = optional_float(row["qff_close_filled"])
-            tsm_twd_fair = optional_float(row["tsm_twd_fair"])
+            ccf_close = optional_float(row[CSV_CCF_CLOSE])
+            ccf_close_filled = optional_float(row[CSV_CCF_CLOSE_FILLED])
+            umc_twd_fair = optional_float(row[CSV_UMC_TWD_FAIR])
             spread = optional_float(row["spread"])
-            if qff_close_filled is None or tsm_twd_fair is None or spread is None:
+            if ccf_close_filled is None or umc_twd_fair is None or spread is None:
                 raise RuntimeError(f"Invalid market data at row {row_index}")
             bars.append(
                 MarketBar(
                     row_index=int(row_index),
                     timestamp=timestamps.iloc[row_index].to_pydatetime(),
-                    qff_close=qff_close,
-                    qff_close_filled=qff_close_filled,
-                    tsm_twd_fair=tsm_twd_fair,
+                    ccf_close=ccf_close,
+                    ccf_close_filled=ccf_close_filled,
+                    umc_twd_fair=umc_twd_fair,
                     spread=spread,
-                    qff_entry_price=(
-                        float(qff_entry_open.iloc[row_index])
-                        if qff_entry_open is not None
+                    ccf_entry_price=(
+                        float(ccf_entry_open.iloc[row_index])
+                        if ccf_entry_open is not None
                         else None
                     ),
-                    tsm_entry_twd_fair=(
-                        float(tsm_twd_fair_open.iloc[row_index])
-                        if tsm_twd_fair_open is not None
+                    umc_entry_twd_fair=(
+                        float(umc_twd_fair_open.iloc[row_index])
+                        if umc_twd_fair_open is not None
                         else None
                     ),
-                    qff_was_filled=qff_close is None,
-                    qff_entry_open_was_filled=(
-                        bool(qff_entry_open_was_filled.iloc[row_index])
-                        if qff_entry_open_was_filled is not None
+                    ccf_was_filled=ccf_close is None,
+                    ccf_entry_open_was_filled=(
+                        bool(ccf_entry_open_was_filled.iloc[row_index])
+                        if ccf_entry_open_was_filled is not None
                         else False
                     ),
                     expected_zscore=optional_float(row["spread_zscore"]),

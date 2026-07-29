@@ -75,20 +75,20 @@ def fetch_margin_snapshot(broker: ReadOnlyBroker) -> BrokerAccountSnapshot:
 
 
 def resolve_margin_leg_notional_twd(config: AppConfig, store: Any | None = None) -> float | None:
-    qff_lots = config.strategy.qff_lots
-    if qff_lots is None:
+    ccf_lots = config.strategy.ccf_lots
+    if ccf_lots is None:
         return None
     price = None
     if store is not None:
-        loader = getattr(store, "load_latest_qff_close_filled", None)
+        loader = getattr(store, "load_latest_ccf_close_filled", None)
         if callable(loader):
-            qff_symbol = config.live.qff_symbol
-            price = None if qff_symbol == "auto" else loader(qff_symbol=qff_symbol)
+            ccf_symbol = config.live.ccf_symbol
+            price = None if ccf_symbol == "auto" else loader(ccf_symbol=ccf_symbol)
             if price is None:
                 price = loader()
     if price is None or price <= 0:
         return None
-    return qff_lots * config.fees.qff_contract_multiplier * price
+    return ccf_lots * config.fees.ccf_contract_multiplier * price
 
 
 class MarginCheckService:

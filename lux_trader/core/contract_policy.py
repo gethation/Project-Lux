@@ -10,7 +10,7 @@ from .time import TAIPEI_TZ
 
 
 @dataclass(frozen=True)
-class QffContractSelection:
+class CcfContractSelection:
     symbol: str
     expiry: date
     raw: dict[str, Any]
@@ -28,9 +28,9 @@ class ExpiryBufferContractPolicy:
         *,
         product: str,
         now: datetime | None = None,
-    ) -> QffContractSelection:
+    ) -> CcfContractSelection:
         now = ensure_policy_time(now)
-        parsed: list[QffContractSelection] = []
+        parsed: list[CcfContractSelection] = []
         rejected: list[str] = []
         for candidate in candidates:
             raw = row_to_dict(candidate)
@@ -48,7 +48,7 @@ class ExpiryBufferContractPolicy:
             remaining = business_days_between(now.date(), expiry, self.holidays)
             if remaining >= self.config.min_business_days_to_expiry:
                 parsed.append(
-                    QffContractSelection(
+                    CcfContractSelection(
                         symbol=symbol,
                         expiry=expiry,
                         raw=raw,
@@ -58,7 +58,7 @@ class ExpiryBufferContractPolicy:
 
         if not parsed:
             raise RuntimeError(
-                "Unable to select QFF active contract with expiry buffer. "
+                "Unable to select CCF active contract with expiry buffer. "
                 f"Rejected candidates: {rejected[:10]}"
             )
         return sorted(parsed, key=lambda item: (item.expiry, item.symbol))[0]

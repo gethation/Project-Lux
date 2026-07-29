@@ -188,8 +188,8 @@ class SQLiteStore:
             request.quantity,
             request.price,
             order.status.value,
-            request.qff_symbol,
-            request.qff_expiry,
+            request.ccf_symbol,
+            request.ccf_expiry,
             request.contract_policy_state,
             payload_json,
         )
@@ -208,7 +208,7 @@ class SQLiteStore:
             """
             INSERT INTO orders (
                 order_id, row_index, timestamp, broker, symbol, side,
-                quantity, price, status, qff_symbol, qff_expiry,
+                quantity, price, status, ccf_symbol, ccf_expiry,
                 contract_policy_state, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -231,8 +231,8 @@ class SQLiteStore:
             fill.quantity,
             fill.price,
             fill.fee_twd,
-            fill.qff_symbol,
-            fill.qff_expiry,
+            fill.ccf_symbol,
+            fill.ccf_expiry,
             fill.contract_policy_state,
             payload_json,
         )
@@ -251,7 +251,7 @@ class SQLiteStore:
             """
             INSERT INTO fills (
                 fill_id, order_id, row_index, timestamp, broker, symbol,
-                side, quantity, price, fee_twd, qff_symbol, qff_expiry,
+                side, quantity, price, fee_twd, ccf_symbol, ccf_expiry,
                 contract_policy_state, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -261,8 +261,8 @@ class SQLiteStore:
     def load_recorded_fill_exposure(
         self,
         *,
-        tsm_symbol: str,
-        qff_symbol: str,
+        umc_symbol: str,
+        ccf_symbol: str,
     ) -> dict[BrokerName, float]:
         rows = self.connection.execute(
             """
@@ -280,15 +280,15 @@ class SQLiteStore:
             GROUP BY broker
             """,
             (
-                BrokerName.BINANCE_TSM.value,
-                tsm_symbol,
-                BrokerName.FUBON_QFF.value,
-                qff_symbol,
+                BrokerName.IBKR_UMC.value,
+                umc_symbol,
+                BrokerName.FUBON_CCF.value,
+                ccf_symbol,
             ),
         ).fetchall()
         exposure = {
-            BrokerName.BINANCE_TSM: 0.0,
-            BrokerName.FUBON_QFF: 0.0,
+            BrokerName.IBKR_UMC: 0.0,
+            BrokerName.FUBON_CCF: 0.0,
         }
         for row in rows:
             exposure[BrokerName(str(row["broker"]))] = float(row["quantity"] or 0.0)
@@ -321,10 +321,10 @@ class SQLiteStore:
         recovery_id: str,
         created_at: datetime,
         row_index: int,
-        qff_symbol: str,
-        tsm_symbol: str,
-        tsm_adjustment: float,
-        qff_adjustment: float,
+        ccf_symbol: str,
+        umc_symbol: str,
+        umc_adjustment: float,
+        ccf_adjustment: float,
         reason: str,
         original_state: StrategyRuntimeState,
     ) -> None:
@@ -332,30 +332,30 @@ class SQLiteStore:
             """
             INSERT INTO pending_manual_closes (
                 recovery_id, created_at, settled_at, status, row_index,
-                qff_symbol, reason, original_state_json, settlement_json
+                ccf_symbol, reason, original_state_json, settlement_json
             ) VALUES (?, ?, NULL, 'pending', ?, ?, ?, ?, NULL)
             """,
             (
                 recovery_id,
                 timestamp_text(created_at),
                 row_index,
-                qff_symbol,
+                ccf_symbol,
                 reason,
                 json.dumps(original_state.to_jsonable(), default=json_default),
             ),
         )
         adjustments = (
             (
-                f"{recovery_id}:BINANCE_TSM",
-                BrokerName.BINANCE_TSM.value,
-                tsm_symbol,
-                float(tsm_adjustment),
+                f"{recovery_id}:IBKR_UMC",
+                BrokerName.IBKR_UMC.value,
+                umc_symbol,
+                float(umc_adjustment),
             ),
             (
-                f"{recovery_id}:FUBON_QFF",
-                BrokerName.FUBON_QFF.value,
-                qff_symbol,
-                float(qff_adjustment),
+                f"{recovery_id}:FUBON_CCF",
+                BrokerName.FUBON_CCF.value,
+                ccf_symbol,
+                float(ccf_adjustment),
             ),
         )
         for adjustment_id, broker, symbol, quantity in adjustments:
@@ -398,18 +398,18 @@ class SQLiteStore:
             "entry_delay_minutes",
             "entry_fill_zscore",
             "direction",
-            "entry_tsm_twd_fair",
-            "entry_qff_close",
-            "tsm_units",
-            "qff_units",
-            "qff_contracts",
-            "raw_qff_contracts",
+            "entry_umc_twd_fair",
+            "entry_ccf_close",
+            "umc_units",
+            "ccf_units",
+            "ccf_contracts",
+            "raw_ccf_contracts",
             "leg_notional_twd",
             "actual_leg_notional_twd",
-            "qff_contract_multiplier",
-            "entry_tsm_fee_twd",
-            "entry_qff_fee_twd",
-            "entry_qff_tax_twd",
+            "ccf_contract_multiplier",
+            "entry_umc_fee_twd",
+            "entry_ccf_fee_twd",
+            "entry_ccf_tax_twd",
             "entry_fee_twd",
             "exit_signal_idx",
             "exit_signal_time",
@@ -417,25 +417,25 @@ class SQLiteStore:
             "exit_idx",
             "exit_time",
             "exit_fill_zscore",
-            "exit_tsm_twd_fair",
-            "exit_qff_close",
-            "tsm_pnl",
-            "qff_pnl",
+            "exit_umc_twd_fair",
+            "exit_ccf_close",
+            "umc_pnl",
+            "ccf_pnl",
             "gross_pnl_twd",
-            "exit_tsm_fee_twd",
-            "exit_qff_fee_twd",
-            "exit_qff_tax_twd",
+            "exit_umc_fee_twd",
+            "exit_ccf_fee_twd",
+            "exit_ccf_tax_twd",
             "exit_fee_twd",
-            "tsm_fee_twd",
-            "qff_fee_twd",
-            "qff_tax_twd",
+            "umc_fee_twd",
+            "ccf_fee_twd",
+            "ccf_tax_twd",
             "total_fee_twd",
             "net_pnl_twd",
             "total_pnl",
             "exit_reason",
             "holding_minutes",
-            "qff_symbol",
-            "qff_expiry",
+            "ccf_symbol",
+            "ccf_expiry",
             "contract_policy_state",
         ]
         values = [payload.get(column) for column in columns]
@@ -473,13 +473,13 @@ class SQLiteStore:
                 row_index, timestamp, spread, spread_mean, spread_std,
                 spread_zscore, zscore_valid, entry_allowed, close_allowed,
                 friday_night_close_only, weekend_session_close_only,
-                friday_session_end_force_close, qff_close_filled, tsm_twd_fair,
-                qff_was_filled, qff_entry_price, tsm_entry_twd_fair,
-                qff_entry_open_was_filled,
-                qff_symbol, qff_expiry, contract_policy_state,
+                friday_session_end_force_close, ccf_close_filled, umc_twd_fair,
+                ccf_was_filled, ccf_entry_price, umc_entry_twd_fair,
+                ccf_entry_open_was_filled,
+                ccf_symbol, ccf_expiry, contract_policy_state,
                 short_spread, short_zscore, long_spread, long_zscore,
                 decision_spread_type, decision_zscore,
-                state, position, tsm_units, qff_units, qff_contracts,
+                state, position, umc_units, ccf_units, ccf_contracts,
                 actual_leg_notional_twd, realized_pnl, realized_fee_twd,
                 unrealized_pnl, equity, running_max_equity, drawdown_twd,
                 drawdown_pct
@@ -498,14 +498,14 @@ class SQLiteStore:
                 int(snapshot.friday_night_close_only),
                 int(snapshot.weekend_session_close_only),
                 int(snapshot.friday_session_end_force_close),
-                bar.qff_close_filled,
-                bar.tsm_twd_fair,
-                int(bar.qff_was_filled),
-                bar.qff_entry_price,
-                bar.tsm_entry_twd_fair,
-                int(bar.qff_entry_open_was_filled),
-                bar.qff_symbol,
-                bar.qff_expiry,
+                bar.ccf_close_filled,
+                bar.umc_twd_fair,
+                int(bar.ccf_was_filled),
+                bar.ccf_entry_price,
+                bar.umc_entry_twd_fair,
+                int(bar.ccf_entry_open_was_filled),
+                bar.ccf_symbol,
+                bar.ccf_expiry,
                 bar.contract_policy_state,
                 short_spread,
                 short_zscore,
@@ -515,9 +515,9 @@ class SQLiteStore:
                 decision_zscore,
                 strategy.state.value,
                 position,
-                strategy.tsm_units,
-                strategy.qff_units,
-                strategy.qff_contracts,
+                strategy.umc_units,
+                strategy.ccf_units,
+                strategy.ccf_contracts,
                 strategy.actual_leg_notional_twd,
                 strategy.realized_pnl,
                 strategy.realized_fee_twd,
@@ -531,8 +531,8 @@ class SQLiteStore:
         self.connection.execute(
             """
             INSERT INTO positions (
-                row_index, timestamp, state, direction, tsm_units, qff_units,
-                qff_contracts, actual_leg_notional_twd, realized_pnl,
+                row_index, timestamp, state, direction, umc_units, ccf_units,
+                ccf_contracts, actual_leg_notional_twd, realized_pnl,
                 unrealized_pnl, equity
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -541,9 +541,9 @@ class SQLiteStore:
                 timestamp_text(bar.timestamp),
                 strategy.state.value,
                 position,
-                strategy.tsm_units,
-                strategy.qff_units,
-                strategy.qff_contracts,
+                strategy.umc_units,
+                strategy.ccf_units,
+                strategy.ccf_contracts,
                 strategy.actual_leg_notional_twd,
                 strategy.realized_pnl,
                 unrealized_pnl,
@@ -575,20 +575,20 @@ class SQLiteStore:
         self.connection.executemany(
             """
             INSERT OR REPLACE INTO warmup_bars (
-                timestamp, qff_close, qff_close_filled, tsm_twd_fair, spread,
-                qff_was_filled, qff_symbol, qff_expiry, contract_policy_state
+                timestamp, ccf_close, ccf_close_filled, umc_twd_fair, spread,
+                ccf_was_filled, ccf_symbol, ccf_expiry, contract_policy_state
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     timestamp_text(bar.timestamp),
-                    bar.qff_close,
-                    bar.qff_close_filled,
-                    bar.tsm_twd_fair,
+                    bar.ccf_close,
+                    bar.ccf_close_filled,
+                    bar.umc_twd_fair,
                     bar.spread,
-                    int(bar.qff_was_filled),
-                    bar.qff_symbol,
-                    bar.qff_expiry,
+                    int(bar.ccf_was_filled),
+                    bar.ccf_symbol,
+                    bar.ccf_expiry,
                     bar.contract_policy_state,
                 )
                 for bar in bars
@@ -603,23 +603,23 @@ class SQLiteStore:
         self,
         limit: int,
         *,
-        qff_symbol: str | None = None,
+        ccf_symbol: str | None = None,
     ) -> list[MarketBar]:
         rows = []
         warmup_where = ""
         warmup_params: tuple[Any, ...] = ()
         bars_where = ""
         bars_params: tuple[Any, ...] = ()
-        if qff_symbol is not None:
-            warmup_where = "WHERE qff_symbol = ?"
-            warmup_params = (qff_symbol,)
-            bars_where = "WHERE qff_symbol = ?"
-            bars_params = (qff_symbol,)
+        if ccf_symbol is not None:
+            warmup_where = "WHERE ccf_symbol = ?"
+            warmup_params = (ccf_symbol,)
+            bars_where = "WHERE ccf_symbol = ?"
+            bars_params = (ccf_symbol,)
         rows.extend(
             self.connection.execute(
                 f"""
-                SELECT timestamp, qff_close, qff_close_filled, tsm_twd_fair, spread,
-                       qff_was_filled, qff_symbol, qff_expiry, contract_policy_state
+                SELECT timestamp, ccf_close, ccf_close_filled, umc_twd_fair, spread,
+                       ccf_was_filled, ccf_symbol, ccf_expiry, contract_policy_state
                 FROM warmup_bars
                 {warmup_where}
                 """,
@@ -629,9 +629,9 @@ class SQLiteStore:
         rows.extend(
             self.connection.execute(
                 f"""
-                SELECT timestamp, qff_close_filled AS qff_close,
-                       qff_close_filled, tsm_twd_fair, spread,
-                       qff_was_filled, qff_symbol, qff_expiry, contract_policy_state
+                SELECT timestamp, ccf_close_filled AS ccf_close,
+                       ccf_close_filled, umc_twd_fair, spread,
+                       ccf_was_filled, ccf_symbol, ccf_expiry, contract_policy_state
                 FROM bars
                 {bars_where}
                 """,
@@ -644,63 +644,63 @@ class SQLiteStore:
             MarketBar(
                 row_index=index - len(ordered),
                 timestamp=datetime.fromisoformat(timestamp),
-                qff_close=row["qff_close"],
-                qff_close_filled=float(row["qff_close_filled"]),
-                tsm_twd_fair=float(row["tsm_twd_fair"]),
+                ccf_close=row["ccf_close"],
+                ccf_close_filled=float(row["ccf_close_filled"]),
+                umc_twd_fair=float(row["umc_twd_fair"]),
                 spread=float(row["spread"]),
-                qff_was_filled=bool(row["qff_was_filled"]),
-                qff_symbol=row["qff_symbol"],
-                qff_expiry=row["qff_expiry"],
+                ccf_was_filled=bool(row["ccf_was_filled"]),
+                ccf_symbol=row["ccf_symbol"],
+                ccf_expiry=row["ccf_expiry"],
                 contract_policy_state=row["contract_policy_state"],
             )
             for index, (timestamp, row) in enumerate(ordered)
         ]
 
-    def load_latest_qff_close_filled(self, *, qff_symbol: str | None = None) -> float | None:
+    def load_latest_ccf_close_filled(self, *, ccf_symbol: str | None = None) -> float | None:
         warmup_where = ""
         warmup_params: tuple[Any, ...] = ()
         bars_where = ""
         bars_params: tuple[Any, ...] = ()
-        if qff_symbol is not None:
-            warmup_where = "WHERE qff_symbol = ?"
-            warmup_params = (qff_symbol,)
-            bars_where = "WHERE qff_symbol = ?"
-            bars_params = (qff_symbol,)
+        if ccf_symbol is not None:
+            warmup_where = "WHERE ccf_symbol = ?"
+            warmup_params = (ccf_symbol,)
+            bars_where = "WHERE ccf_symbol = ?"
+            bars_params = (ccf_symbol,)
         rows = self.connection.execute(
             f"""
-            SELECT qff_close_filled
+            SELECT ccf_close_filled
             FROM (
-                SELECT timestamp, qff_close_filled FROM warmup_bars {warmup_where}
+                SELECT timestamp, ccf_close_filled FROM warmup_bars {warmup_where}
                 UNION ALL
-                SELECT timestamp, qff_close_filled FROM bars {bars_where}
+                SELECT timestamp, ccf_close_filled FROM bars {bars_where}
             )
             ORDER BY timestamp DESC
             LIMIT 1
             """,
             (*warmup_params, *bars_params),
         ).fetchone()
-        if rows is None or rows["qff_close_filled"] is None:
+        if rows is None or rows["ccf_close_filled"] is None:
             return None
-        return float(rows["qff_close_filled"])
+        return float(rows["ccf_close_filled"])
 
     def start_live_run(
         self,
         *,
         started_at: datetime,
         mode: str,
-        qff_symbol: str | None,
+        ccf_symbol: str | None,
         payload: dict[str, Any] | None = None,
     ) -> int:
         cursor = self.connection.execute(
             """
             INSERT INTO live_runs (
-                started_at, mode, qff_symbol, status, payload_json
+                started_at, mode, ccf_symbol, status, payload_json
             ) VALUES (?, ?, ?, ?, ?)
             """,
             (
                 timestamp_text(started_at),
                 mode,
-                qff_symbol,
+                ccf_symbol,
                 "running",
                 json.dumps(payload or {}, default=json_default),
             ),
@@ -950,7 +950,7 @@ class SQLiteStore:
                 SUM(friday_night_close_only) AS friday_night_close_only_minutes,
                 SUM(weekend_session_close_only) AS weekend_session_close_only_minutes,
                 SUM(friday_session_end_force_close) AS friday_session_end_force_close_minutes,
-                SUM(qff_was_filled) AS qff_forward_filled_session_minutes,
+                SUM(ccf_was_filled) AS ccf_forward_filled_session_minutes,
                 SUM(CASE WHEN position != 'flat' THEN 1 ELSE 0 END) AS exposure_minutes,
                 MIN(drawdown_twd) AS max_drawdown_twd,
                 MIN(drawdown_pct) AS max_drawdown_pct
@@ -971,9 +971,9 @@ class SQLiteStore:
                 SUM(gross_pnl_twd) AS gross_pnl_twd,
                 SUM(net_pnl_twd) AS net_pnl_twd,
                 SUM(total_fee_twd) AS total_fee_twd,
-                SUM(tsm_fee_twd) AS total_tsm_fee_twd,
-                SUM(qff_fee_twd) AS total_qff_fee_twd,
-                SUM(qff_tax_twd) AS total_qff_tax_twd,
+                SUM(umc_fee_twd) AS total_umc_fee_twd,
+                SUM(ccf_fee_twd) AS total_ccf_fee_twd,
+                SUM(ccf_tax_twd) AS total_ccf_tax_twd,
                 SUM(CASE WHEN exit_reason = 'friday_session_end' THEN 1 ELSE 0 END) AS friday_session_forced_exits,
                 SUM(holding_minutes) AS exposure_elapsed_minutes,
                 AVG(total_pnl) AS avg_trade_pnl_twd
@@ -1005,13 +1005,13 @@ class SQLiteStore:
                 "exit_z": strategy.exit_z,
                 "zscore_window": strategy.zscore_window,
                 "leg_notional_twd": strategy.leg_notional_twd,
-                "qff_lots": strategy.qff_lots,
+                "ccf_lots": strategy.ccf_lots,
                 "initial_capital_twd": strategy.initial_capital_twd,
                 "max_entry_delay_minutes": strategy.max_entry_delay_minutes,
-                "tsm_fee_bps": fees.tsm_fee_bps,
-                "qff_fee_per_contract_twd": fees.qff_fee_per_contract_twd,
-                "qff_tax_rate": fees.qff_tax_rate,
-                "qff_contract_multiplier": fees.qff_contract_multiplier,
+                "umc_fee_bps": fees.umc_fee_bps,
+                "ccf_fee_per_contract_twd": fees.ccf_fee_per_contract_twd,
+                "ccf_tax_rate": fees.ccf_tax_rate,
+                "ccf_contract_multiplier": fees.ccf_contract_multiplier,
             },
             "rows": int(bar_count),
             "start": start_text,
@@ -1027,8 +1027,8 @@ class SQLiteStore:
             "friday_session_end_force_close_minutes": int(
                 bar_stats["friday_session_end_force_close_minutes"] or 0
             ),
-            "qff_forward_filled_session_minutes": int(
-                bar_stats["qff_forward_filled_session_minutes"] or 0
+            "ccf_forward_filled_session_minutes": int(
+                bar_stats["ccf_forward_filled_session_minutes"] or 0
             ),
             "trade_count": trade_count,
             "friday_session_forced_exits": int(
@@ -1043,9 +1043,9 @@ class SQLiteStore:
             "gross_pnl_twd": float(trade_stats["gross_pnl_twd"] or 0.0),
             "net_pnl_twd": float(trade_stats["net_pnl_twd"] or 0.0),
             "total_fee_twd": float(trade_stats["total_fee_twd"] or 0.0),
-            "total_tsm_fee_twd": float(trade_stats["total_tsm_fee_twd"] or 0.0),
-            "total_qff_fee_twd": float(trade_stats["total_qff_fee_twd"] or 0.0),
-            "total_qff_tax_twd": float(trade_stats["total_qff_tax_twd"] or 0.0),
+            "total_umc_fee_twd": float(trade_stats["total_umc_fee_twd"] or 0.0),
+            "total_ccf_fee_twd": float(trade_stats["total_ccf_fee_twd"] or 0.0),
+            "total_ccf_tax_twd": float(trade_stats["total_ccf_tax_twd"] or 0.0),
             "return_pct": float(total_pnl / strategy.initial_capital_twd),
             "gross_profit_twd": gross_profit,
             "gross_loss_twd": gross_loss,

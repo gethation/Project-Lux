@@ -62,7 +62,7 @@ def seed_pending_entry_state(config: AppConfig) -> StrategyRuntimeState:
     candidate_time = floor_minute(datetime.now(TAIPEI_TZ))
     state = StrategyRuntimeState(
         state=StrategyState.ENTRY_PENDING,
-        candidate_direction=Direction.SHORT_TSM_LONG_QFF,
+        candidate_direction=Direction.SHORT_UMC_LONG_CCF,
         candidate_idx=0,
         candidate_time=candidate_time,
         candidate_zscore=config.strategy.entry_z + 0.5,
@@ -118,13 +118,13 @@ def record_real_readonly_reconciliation(
     )
     try:
         report = BrokerReconciler(
-            tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
-            qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
+            umc_units_tolerance=config.broker_reconciliation.umc_units_tolerance,
+            ccf_contract_tolerance=config.broker_reconciliation.ccf_contract_tolerance,
         ).reconcile(
             strategy_state=state,
             brokers=brokers,
-            tsm_symbol=config.live.binance_symbol,
-            qff_symbol=config.live.qff_symbol,
+            umc_symbol=config.live.binance_symbol,
+            ccf_symbol=config.live.ccf_symbol,
         )
     finally:
         for broker in brokers:
@@ -196,7 +196,7 @@ def test_real_live_dry_run_simulates_entry_exit_and_resume() -> None:
                 "SELECT source, COUNT(*) FROM market_ticks GROUP BY source"
             ).fetchall()
         }
-        assert {"fubon_qff", "binanceusdm", "bitopro"}.issubset(source_counts)
+        assert {"fubon_ccf", "binanceusdm", "bitopro"}.issubset(source_counts)
 
         latest_plan = connection.execute(
             """

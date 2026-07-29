@@ -10,7 +10,7 @@ import pytest
 
 from lux_trader.integrations.fubon.market_data_process import (
     FubonMarketDataWorkerTimeout,
-    FubonQffMarketDataProcess,
+    FubonCcfMarketDataProcess,
 )
 
 
@@ -40,7 +40,7 @@ def _first_init_hangs_worker(
                 time.sleep(30.0)
                 continue
             if operation == "fetch_candidates":
-                _send_ok(connection, [{"symbol": "QFFH6"}])
+                _send_ok(connection, [{"symbol": "CCFH6"}])
             else:
                 _send_ok(connection)
             if operation == "close":
@@ -87,7 +87,7 @@ def _always_hangs_worker(
 
 def test_initial_realtime_timeout_terminates_and_rebuilds_worker(tmp_path) -> None:
     marker = tmp_path / "first-worker.txt"
-    provider = FubonQffMarketDataProcess(
+    provider = FubonCcfMarketDataProcess(
         marker,
         init_timeout_seconds=2.0,
         terminate_timeout_seconds=0.5,
@@ -99,14 +99,14 @@ def test_initial_realtime_timeout_terminates_and_rebuilds_worker(tmp_path) -> No
         first_pid = int(marker.read_text(encoding="utf-8"))
         assert provider.worker_pid is not None
         assert provider.worker_pid != first_pid
-        assert provider.fetch_candidates("QFF") == [{"symbol": "QFFH6"}]
+        assert provider.fetch_candidates("CCF") == [{"symbol": "CCFH6"}]
     finally:
         provider.close()
 
 
 def test_reconnect_timeout_terminates_and_rebuilds_worker(tmp_path) -> None:
     marker = tmp_path / "first-worker.txt"
-    provider = FubonQffMarketDataProcess(
+    provider = FubonCcfMarketDataProcess(
         marker,
         init_timeout_seconds=2.0,
         terminate_timeout_seconds=0.5,
@@ -126,7 +126,7 @@ def test_reconnect_timeout_terminates_and_rebuilds_worker(tmp_path) -> None:
 
 
 def test_replacement_worker_timeout_is_bounded_and_leaves_no_worker(tmp_path) -> None:
-    provider = FubonQffMarketDataProcess(
+    provider = FubonCcfMarketDataProcess(
         tmp_path / "unused.txt",
         init_timeout_seconds=1.0,
         terminate_timeout_seconds=0.5,

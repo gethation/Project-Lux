@@ -45,15 +45,15 @@ def write_config(tmp_path: Path, *, allow_live_order: bool = False) -> Path:
                 f"allow_live_order = {str(allow_live_order).lower()}",
                 "",
                 "[live_market_data]",
-                "qff_symbol = 'QFFG6'",
+                "ccf_symbol = 'CCFG6'",
                 "binance_symbol = 'TSM/USDT:USDT'",
                 f"taifex_cache_dir = '{cache_dir}'",
                 "",
                 "[broker_reconciliation]",
                 "enabled = false",
                 "fail_on_mismatch = false",
-                "tsm_units_tolerance = 0.000001",
-                "qff_contract_tolerance = 0",
+                "umc_units_tolerance = 0.000001",
+                "ccf_contract_tolerance = 0",
             ]
         ),
         encoding="utf-8",
@@ -73,10 +73,10 @@ def seed_state(
         store.initialize()
         runtime = StrategyRuntimeState(state=state)
         if with_position:
-            runtime.position_direction = Direction.SHORT_TSM_LONG_QFF
-            runtime.tsm_units = -100.0
-            runtime.qff_contracts = 2
-            runtime.trading_qff_symbol = "QFFG6"
+            runtime.position_direction = Direction.SHORT_UMC_LONG_CCF
+            runtime.umc_units = -100.0
+            runtime.ccf_contracts = 2
+            runtime.trading_ccf_symbol = "CCFG6"
         store.save_state(0, ts(), runtime, IndicatorEngine(window=500))
         store.commit()
     finally:
@@ -103,15 +103,15 @@ def seed_recorded_exposure(config_path: Path) -> None:
         for order_id, broker, symbol, side, quantity in (
             (
                 "entry-binance",
-                BrokerName.BINANCE_TSM,
+                BrokerName.IBKR_UMC,
                 config.live.binance_symbol,
                 OrderSide.SELL,
                 100.0,
             ),
             (
                 "entry-fubon",
-                BrokerName.FUBON_QFF,
-                "QFFG6",
+                BrokerName.FUBON_CCF,
+                "CCFG6",
                 OrderSide.BUY,
                 2.0,
             ),
@@ -124,7 +124,7 @@ def seed_recorded_exposure(config_path: Path) -> None:
                 price=1.0,
                 timestamp=ts(),
                 row_index=0,
-                qff_symbol="QFFG6",
+                ccf_symbol="CCFG6",
             )
             store.record_order(
                 OrderResult(order_id=order_id, request=request, status=OrderStatus.FILLED)
@@ -141,7 +141,7 @@ def seed_recorded_exposure(config_path: Path) -> None:
                     fee_twd=0.0,
                     timestamp=ts(),
                     row_index=0,
-                    qff_symbol="QFFG6",
+                    ccf_symbol="CCFG6",
                 )
             )
         store.commit()
@@ -184,8 +184,8 @@ def test_live_status_reports_paused_position(tmp_path: Path, capsys) -> None:
 
     output = capsys.readouterr().out
     assert "strategy_state: paused" in output
-    assert "direction=short_tsm_long_qff" in output
-    assert "qff_contracts=2" in output
+    assert "direction=short_umc_long_ccf" in output
+    assert "ccf_contracts=2" in output
     assert "ACTION: strategy is PAUSED" in output
 
 
@@ -206,8 +206,8 @@ def test_recover_manual_flat_dry_run_does_not_change_state(
     assert command_recover_manual_flat(args) == 0
     state = load_persisted_state(config_path)
     assert state.state == StrategyState.PAUSED
-    assert state.tsm_units == -100.0
-    assert state.qff_contracts == 2
+    assert state.umc_units == -100.0
+    assert state.ccf_contracts == 2
     assert "Dry-run only" in capsys.readouterr().out
 
 
@@ -240,16 +240,16 @@ def test_recover_manual_flat_apply_offsets_ledger_and_remains_paused(
         assert resume is not None
         assert resume.strategy.state == StrategyState.PAUSED
         assert resume.strategy.position_direction is None
-        assert resume.strategy.tsm_units == 0.0
-        assert resume.strategy.qff_contracts == 0
+        assert resume.strategy.umc_units == 0.0
+        assert resume.strategy.ccf_contracts == 0
         assert resume.strategy.pnl_status == "pending"
         assert store.load_pending_manual_close() is not None
         exposure = store.load_recorded_fill_exposure(
-            tsm_symbol=config.live.binance_symbol,
-            qff_symbol="QFFG6",
+            umc_symbol=config.live.binance_symbol,
+            ccf_symbol="CCFG6",
         )
-        assert exposure[BrokerName.BINANCE_TSM] == 0.0
-        assert exposure[BrokerName.FUBON_QFF] == 0.0
+        assert exposure[BrokerName.IBKR_UMC] == 0.0
+        assert exposure[BrokerName.FUBON_CCF] == 0.0
     finally:
         store.close()
     assert "strategy remains PAUSED" in capsys.readouterr().out
@@ -294,7 +294,7 @@ def test_recover_manual_flat_refuses_nonflat_broker(
         ["recover-manual-flat", "--config", str(config_path), "--readonly"]
     )
     assert command_recover_manual_flat(args) == 1
-    assert load_persisted_state(config_path).tsm_units == -100.0
+    assert load_persisted_state(config_path).umc_units == -100.0
 
 
 # --- clear-pause ----------------------------------------------------------

@@ -179,7 +179,7 @@ def binance_leg(
     quantity: float = 0.01,
 ) -> ExecutionLeg:
     return ExecutionLeg(
-        broker=BrokerName.BINANCE_TSM,
+        broker=BrokerName.IBKR_UMC,
         symbol=symbol,
         side=side,
         quantity=quantity,
@@ -200,7 +200,7 @@ def execution_plan(
     return PairExecutionPlan(
         plan_id=f"PLAN-{plan_type.value}",
         plan_type=plan_type,
-        direction=Direction.LONG_TSM_SHORT_QFF,
+        direction=Direction.LONG_UMC_SHORT_CCF,
         timestamp=ts(),
         row_index=1,
         legs=(
@@ -615,14 +615,14 @@ def write_config(
                 f"allow_live_order = {str(allow_live_order).lower()}",
                 "",
                 "[live_market_data]",
-                "qff_symbol = 'QFFG6'",
+                "ccf_symbol = 'CCFG6'",
                 f"binance_symbol = '{SYMBOL}'",
                 "fubon_env_path = '.env'",
                 f"taifex_cache_dir = '{(tmp_path / 'taifex').as_posix()}'",
                 "",
                 "[live_execution]",
                 f"enabled = {str(live_execution_enabled).lower()}",
-                "qff_first = true",
+                "ccf_first = true",
             ]
         ),
         encoding="utf-8",

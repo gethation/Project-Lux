@@ -22,9 +22,9 @@ from lux_trader.reconciliation import (
 )
 
 
-def reconciliation_qff_symbol(config: object, strategy_state: object) -> str:
-    trading_symbol = getattr(strategy_state, "trading_qff_symbol", None)
-    return str(trading_symbol or config.live.qff_symbol)
+def reconciliation_ccf_symbol(config: object, strategy_state: object) -> str:
+    trading_symbol = getattr(strategy_state, "trading_ccf_symbol", None)
+    return str(trading_symbol or config.live.ccf_symbol)
 
 
 def build_fake_reconciliation_brokers(
@@ -35,62 +35,62 @@ def build_fake_reconciliation_brokers(
     timestamp: datetime,
 ) -> tuple[FakeReadOnlyBroker, FakeReadOnlyBroker]:
     reconciler = BrokerReconciler(
-        tsm_units_tolerance=config.broker_reconciliation.tsm_units_tolerance,
-        qff_contract_tolerance=config.broker_reconciliation.qff_contract_tolerance,
+        umc_units_tolerance=config.broker_reconciliation.umc_units_tolerance,
+        ccf_contract_tolerance=config.broker_reconciliation.ccf_contract_tolerance,
     )
     expected = reconciler.expected_from_strategy(
         strategy_state,
-        tsm_symbol=config.live.binance_symbol,
-        qff_symbol=reconciliation_qff_symbol(config, strategy_state),
+        umc_symbol=config.live.binance_symbol,
+        ccf_symbol=reconciliation_ccf_symbol(config, strategy_state),
         timestamp=timestamp,
     )
     if fake_case == "error":
         return (
             FakeReadOnlyBroker(
-                BrokerName.BINANCE_TSM,
+                BrokerName.IBKR_UMC,
                 fetch_error=RuntimeError("fake broker fetch failed"),
             ),
-            FakeReadOnlyBroker(BrokerName.FUBON_QFF, fetched_at=timestamp),
+            FakeReadOnlyBroker(BrokerName.FUBON_CCF, fetched_at=timestamp),
         )
 
-    tsm_quantity = expected.expected_tsm_units
-    qff_quantity = float(expected.expected_qff_contracts)
+    umc_quantity = expected.expected_umc_units
+    ccf_quantity = float(expected.expected_ccf_contracts)
     if fake_case == "mismatch":
-        qff_quantity = qff_quantity + 1.0 if qff_quantity != 0 else 1.0
+        ccf_quantity = ccf_quantity + 1.0 if ccf_quantity != 0 else 1.0
 
-    tsm_positions = (
+    umc_positions = (
         (
             BrokerPositionSnapshot(
-                broker=BrokerName.BINANCE_TSM,
+                broker=BrokerName.IBKR_UMC,
                 symbol=config.live.binance_symbol,
-                quantity=tsm_quantity,
+                quantity=umc_quantity,
             ),
         )
-        if tsm_quantity != 0
+        if umc_quantity != 0
         else ()
     )
-    qff_positions = (
+    ccf_positions = (
         (
             BrokerPositionSnapshot(
-                broker=BrokerName.FUBON_QFF,
-                symbol=expected.qff_symbol,
-                quantity=qff_quantity,
+                broker=BrokerName.FUBON_CCF,
+                symbol=expected.ccf_symbol,
+                quantity=ccf_quantity,
             ),
         )
-        if qff_quantity != 0
+        if ccf_quantity != 0
         else ()
     )
     return (
         FakeReadOnlyBroker(
-            BrokerName.BINANCE_TSM,
+            BrokerName.IBKR_UMC,
             account_id="FAKE-BINANCE",
-            positions=tsm_positions,
+            positions=umc_positions,
             fetched_at=timestamp,
         ),
         FakeReadOnlyBroker(
-            BrokerName.FUBON_QFF,
+            BrokerName.FUBON_CCF,
             account_id="FAKE-FUBON",
-            positions=qff_positions,
+            positions=ccf_positions,
             fetched_at=timestamp,
         ),
     )
@@ -103,15 +103,15 @@ def build_fake_execution_plan(
     timestamp: datetime,
     row_index: int,
 ):
-    qff_symbol = str(config.live.qff_symbol)
-    if qff_symbol.lower() == "auto":
-        qff_symbol = "QFFG6"
+    ccf_symbol = str(config.live.ccf_symbol)
+    if ccf_symbol.lower() == "auto":
+        ccf_symbol = "CCFG6"
     binance_side = OrderSide.SELL
     if fake_case == "rejected":
         binance_side = OrderSide.BUY
     requests = (
         OrderRequest(
-            broker=BrokerName.BINANCE_TSM,
+            broker=BrokerName.IBKR_UMC,
             symbol=config.live.binance_symbol,
             side=binance_side,
             quantity=125.5,
@@ -119,27 +119,27 @@ def build_fake_execution_plan(
             timestamp=timestamp,
             row_index=row_index,
             fee_twd=12.3,
-            qff_symbol=qff_symbol,
-            qff_expiry="2026-02-18",
+            ccf_symbol=ccf_symbol,
+            ccf_expiry="2026-02-18",
             contract_policy_state="fake",
         ),
         OrderRequest(
-            broker=BrokerName.FUBON_QFF,
-            symbol=qff_symbol,
+            broker=BrokerName.FUBON_CCF,
+            symbol=ccf_symbol,
             side=OrderSide.BUY,
             quantity=3,
             price=1180.0,
             timestamp=timestamp,
             row_index=row_index,
             fee_twd=45.6,
-            qff_symbol=qff_symbol,
-            qff_expiry="2026-02-18",
+            ccf_symbol=ccf_symbol,
+            ccf_expiry="2026-02-18",
             contract_policy_state="fake",
         ),
     )
     return pair_execution_plan_from_order_requests(
         plan_type=ExecutionPlanType.ENTRY,
-        direction=Direction.SHORT_TSM_LONG_QFF,
+        direction=Direction.SHORT_UMC_LONG_CCF,
         requests=requests,
         reason=f"fake_{fake_case}",
         decision_zscore=2.14,

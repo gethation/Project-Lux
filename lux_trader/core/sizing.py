@@ -14,47 +14,47 @@ def round_half_up_nonnegative(value: float) -> int:
 
 def size_position_for_direction(
     direction: Direction,
-    tsm_price: float,
-    qff_price: float,
+    umc_price: float,
+    ccf_price: float,
     strategy: StrategyConfig,
     fees: FeeConfig,
 ) -> PositionSizing | None:
-    if strategy.qff_lots is not None:
-        raw_qff_contracts = float(strategy.qff_lots)
-        qff_contract_count = strategy.qff_lots
+    if strategy.ccf_lots is not None:
+        raw_ccf_contracts = float(strategy.ccf_lots)
+        ccf_contract_count = strategy.ccf_lots
     else:
-        raw_qff_contracts = strategy.leg_notional_twd / (
-            qff_price * fees.qff_contract_multiplier
+        raw_ccf_contracts = strategy.leg_notional_twd / (
+            ccf_price * fees.ccf_contract_multiplier
         )
-        qff_contract_count = round_half_up_nonnegative(raw_qff_contracts)
-    if qff_contract_count == 0:
+        ccf_contract_count = round_half_up_nonnegative(raw_ccf_contracts)
+    if ccf_contract_count == 0:
         return None
 
     actual_leg_notional_twd = (
-        qff_contract_count * fees.qff_contract_multiplier * qff_price
+        ccf_contract_count * fees.ccf_contract_multiplier * ccf_price
     )
-    tsm_units = actual_leg_notional_twd / tsm_contract_twd_price(tsm_price, fees)
-    qff_units = qff_contract_count * fees.qff_contract_multiplier
+    umc_units = actual_leg_notional_twd / umc_contract_twd_price(umc_price, fees)
+    ccf_units = ccf_contract_count * fees.ccf_contract_multiplier
 
-    if direction == Direction.SHORT_TSM_LONG_QFF:
+    if direction == Direction.SHORT_UMC_LONG_CCF:
         return PositionSizing(
-            tsm_units=-tsm_units,
-            qff_units=qff_units,
-            qff_contracts=qff_contract_count,
-            raw_qff_contracts=raw_qff_contracts,
+            umc_units=-umc_units,
+            ccf_units=ccf_units,
+            ccf_contracts=ccf_contract_count,
+            raw_ccf_contracts=raw_ccf_contracts,
             actual_leg_notional_twd=actual_leg_notional_twd,
         )
     return PositionSizing(
-        tsm_units=tsm_units,
-        qff_units=-qff_units,
-        qff_contracts=-qff_contract_count,
-        raw_qff_contracts=raw_qff_contracts,
+        umc_units=umc_units,
+        ccf_units=-ccf_units,
+        ccf_contracts=-ccf_contract_count,
+        raw_ccf_contracts=raw_ccf_contracts,
         actual_leg_notional_twd=actual_leg_notional_twd,
     )
 
 
-def tsm_contract_twd_price(tsm_twd_fair: float, fees: FeeConfig) -> float:
-    multiplier = float(fees.tsm_contract_multiplier)
+def umc_contract_twd_price(umc_twd_fair: float, fees: FeeConfig) -> float:
+    multiplier = float(fees.umc_contract_multiplier)
     if multiplier <= 0:
-        raise ValueError(f"Expected a positive TSM contract multiplier, got {multiplier}")
-    return tsm_twd_fair * multiplier
+        raise ValueError(f"Expected a positive UMC contract multiplier, got {multiplier}")
+    return umc_twd_fair * multiplier

@@ -150,8 +150,8 @@ def is_weekend_force_exit_bar(
     True when ``timestamp`` is a trading minute within ``grace_minutes`` of the end
     of the last trading session before a market break that crosses into a new ISO
     week (a weekend, or a weekend extended by a Monday/holiday). The live loop uses
-    this to flatten an open position before QFF is frozen over the weekend while the
-    Binance TSM perpetual keeps trading 24/7 — the uncovered-leg gap risk the PoC
+    this to flatten an open position before CCF is frozen over the weekend while the
+    Binance UMC perpetual keeps trading 24/7 — the uncovered-leg gap risk the PoC
     strategy always closes out.
 
     Known limitation: a holiday on the *Friday* itself is not covered, because the
@@ -176,7 +176,7 @@ def is_weekend_force_exit_bar(
 
 
 class TradingCalendar:
-    """QFF replay calendar that mirrors the PoC active-session masks."""
+    """CCF replay calendar that mirrors the PoC active-session masks."""
 
     def annotate(self, bars: Iterable[MarketBar]) -> list[MarketBar]:
         rows = list(bars)
@@ -184,7 +184,7 @@ class TradingCalendar:
         night_active: set[datetime.date] = set()
 
         for bar in rows:
-            if bar.qff_close is None:
+            if bar.ccf_close is None:
                 continue
             if in_day_session(bar.timestamp):
                 day_active.add(bar.timestamp.date())

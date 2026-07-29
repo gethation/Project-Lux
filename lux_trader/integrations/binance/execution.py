@@ -47,7 +47,7 @@ class BinanceExecutionPreflight:
 
 
 class BinanceTsmExecutionAdapter:
-    broker = BrokerName.BINANCE_TSM
+    broker = BrokerName.IBKR_UMC
 
     def __init__(
         self,
@@ -475,9 +475,9 @@ class BinanceTsmExecutionAdapter:
         self,
         plan: PairExecutionPlan,
     ) -> tuple[ExecutionLeg | None, str | None]:
-        matches = [leg for leg in plan.legs if leg.broker == BrokerName.BINANCE_TSM]
+        matches = [leg for leg in plan.legs if leg.broker == BrokerName.IBKR_UMC]
         if len(matches) != 1:
-            return None, "plan must contain exactly one Binance TSM leg"
+            return None, "plan must contain exactly one Binance UMC leg"
         leg = matches[0]
         if plan.order_type != ExecutionOrderType.MARKET.value:
             return leg, "plan order_type must be market"
@@ -561,8 +561,8 @@ class BinanceTsmExecutionAdapter:
                     fee_twd=leg.fee_twd,
                     timestamp=self.clock(),
                     row_index=leg.row_index,
-                    qff_symbol=leg.qff_symbol,
-                    qff_expiry=leg.qff_expiry,
+                    ccf_symbol=leg.ccf_symbol,
+                    ccf_expiry=leg.ccf_expiry,
                     contract_policy_state=leg.contract_policy_state,
                 ),
             )

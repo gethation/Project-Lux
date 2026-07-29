@@ -7,8 +7,8 @@ from typing import Any
 
 
 class Direction(StrEnum):
-    SHORT_TSM_LONG_QFF = "short_tsm_long_qff"
-    LONG_TSM_SHORT_QFF = "long_tsm_short_qff"
+    SHORT_UMC_LONG_CCF = "short_umc_long_ccf"
+    LONG_UMC_SHORT_CCF = "long_umc_short_ccf"
 
 
 class StrategyState(StrEnum):
@@ -33,8 +33,8 @@ class OrderStatus(StrEnum):
 
 
 class BrokerName(StrEnum):
-    FUBON_QFF = "FUBON_QFF"
-    BINANCE_TSM = "BINANCE_TSM"
+    FUBON_CCF = "FUBON_CCF"
+    IBKR_UMC = "IBKR_UMC"
 
 
 class StrategyAction(StrEnum):
@@ -54,14 +54,14 @@ class StrategyAction(StrEnum):
 class MarketBar:
     row_index: int
     timestamp: datetime
-    qff_close: float | None
-    qff_close_filled: float
-    tsm_twd_fair: float
+    ccf_close: float | None
+    ccf_close_filled: float
+    umc_twd_fair: float
     spread: float
-    qff_entry_price: float | None = None
-    tsm_entry_twd_fair: float | None = None
-    qff_was_filled: bool = False
-    qff_entry_open_was_filled: bool = False
+    ccf_entry_price: float | None = None
+    umc_entry_twd_fair: float | None = None
+    ccf_was_filled: bool = False
+    ccf_entry_open_was_filled: bool = False
     expected_zscore: float | None = None
     expected_zscore_valid: bool | None = None
     entry_allowed: bool = False
@@ -69,8 +69,8 @@ class MarketBar:
     friday_night_close_only: bool = False
     weekend_session_close_only: bool = False
     friday_session_end_force_close: bool = False
-    qff_symbol: str | None = None
-    qff_expiry: str | None = None
+    ccf_symbol: str | None = None
+    ccf_expiry: str | None = None
     contract_policy_state: str | None = None
 
 
@@ -91,21 +91,21 @@ class IndicatorSnapshot:
 
 @dataclass(frozen=True)
 class PositionSizing:
-    tsm_units: float
-    qff_units: float
-    qff_contracts: int
-    raw_qff_contracts: float
+    umc_units: float
+    ccf_units: float
+    ccf_contracts: int
+    raw_ccf_contracts: float
     actual_leg_notional_twd: float
 
 
 @dataclass(frozen=True)
 class Position:
     direction: Direction
-    tsm_units: float
-    qff_units: float
-    qff_contracts: int
-    entry_tsm_twd_fair: float
-    entry_qff_close: float
+    umc_units: float
+    ccf_units: float
+    ccf_contracts: int
+    entry_umc_twd_fair: float
+    entry_ccf_close: float
     entry_time: datetime
     entry_zscore: float | None
 
@@ -128,8 +128,8 @@ class OrderRequest:
     timestamp: datetime
     row_index: int
     fee_twd: float = 0.0
-    qff_symbol: str | None = None
-    qff_expiry: str | None = None
+    ccf_symbol: str | None = None
+    ccf_expiry: str | None = None
     contract_policy_state: str | None = None
     order_type: str = "market"
     expected_price: float | None = None
@@ -158,8 +158,8 @@ class Fill:
     fee_twd: float
     timestamp: datetime
     row_index: int
-    qff_symbol: str | None = None
-    qff_expiry: str | None = None
+    ccf_symbol: str | None = None
+    ccf_expiry: str | None = None
     contract_policy_state: str | None = None
 
 
