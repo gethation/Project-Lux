@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import date
 
+from .core.calendar import DEFAULT_WEEKEND_POLICY, validate_weekend_policy
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,6 +20,10 @@ class StrategyConfig:
     max_entry_delay_minutes: int
     zscore_window: int
     ccf_lots: int | None = None
+    # See core.calendar: 'none' is the measured-correct rule for CCF/UMC, where
+    # both venues close over the weekend. Only the legacy QFF/TSM replay fixture
+    # sets 'flat'.
+    weekend_policy: str = DEFAULT_WEEKEND_POLICY
 
 
 @dataclass(frozen=True)
@@ -207,6 +213,10 @@ def load_config(path: Path) -> AppConfig:
             ccf_lots=optional_positive_int(
                 strategy.get("ccf_lots"),
                 "strategy.ccf_lots",
+            ),
+            weekend_policy=validate_weekend_policy(
+                strategy.get("weekend_policy", DEFAULT_WEEKEND_POLICY),
+                field="strategy.weekend_policy",
             ),
         ),
         fees=FeeConfig(

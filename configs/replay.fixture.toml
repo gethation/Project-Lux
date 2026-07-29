@@ -1,10 +1,14 @@
-# Deterministic replay config pinned to the committed fixture snapshot under
+# LEGACY QFF/TSM replay config, pinned to the committed fixture snapshot under
 # tests/fixtures/replay/. Run from the repository root:
 #   conda run -n Quant python -m lux_trader replay --config configs/replay.fixture.toml --reset-store
 #   conda run -n Quant python -m lux_trader summary --config configs/replay.fixture.toml
 #
-# This is the frozen M1 reference (post-2026-06-29 PoC data window). Aligned
-# summary: trade_count=66, net_pnl_twd=261507.82918..., total_fee_twd=68317.4968...
+# Aligned summary: trade_count=66, net_pnl_twd=261507.82918...,
+# total_fee_twd=68317.4968...
+#
+# This is NOT the CCF/UMC strategy -- it is QFF vs Binance TSM, kept only as a
+# tripwire proving that the rebuild did not move the numbers. Phase C of
+# docs/CCF_UMC_PLAN.md replaces it with a CCF/UMC golden and deletes this file.
 [paths]
 # input_csv is resolved relative to the current working directory (repo root),
 # not the config directory; keep CLI invocations rooted at the repo.
@@ -21,6 +25,9 @@ leg_notional_twd = 1000000.0
 initial_capital_twd = 2000000.0
 max_entry_delay_minutes = 15
 zscore_window = 500
+# Explicit: this golden was produced under the weekend rules and only reproduces
+# under 'flat'. The project default is 'none'.
+weekend_policy = 'flat'
 
 [fees]
 umc_fee_bps = 5.0

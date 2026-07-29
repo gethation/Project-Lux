@@ -262,6 +262,7 @@ def should_force_exit_for_weekend(
     return is_weekend_force_exit_bar(
         timestamp,
         config.trading_calendar.closed_dates,
+        weekend_policy=config.strategy.weekend_policy,
     )
 
 

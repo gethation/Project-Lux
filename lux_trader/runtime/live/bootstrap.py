@@ -171,6 +171,7 @@ def build_live_minute_builder(
             config.live.max_leg_timestamp_skew_seconds
         ),
         closed_dates=config.trading_calendar.closed_dates,
+        weekend_policy=config.strategy.weekend_policy,
     )
     builder.last_ccf_close = seed_bars[-1].ccf_close_filled
     return builder

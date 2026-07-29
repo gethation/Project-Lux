@@ -75,6 +75,10 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             initial_capital_twd=2_000_000.0,
             max_entry_delay_minutes=15,
             zscore_window=500,
+            # Explicit, not inherited: the QFF/TSM golden was produced under the
+            # weekend rules, so it only reproduces under 'flat'. The project
+            # default is 'none'.
+            weekend_policy="flat",
         ),
         fees=FeeConfig(
             umc_fee_bps=5.0,

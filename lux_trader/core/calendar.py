@@ -20,6 +20,48 @@ NIGHT_END = 5 * 60
 # and tolerates a short data gap at the very end of the session.
 WEEKEND_FORCE_EXIT_GRACE_MINUTES = 5
 
+# Which of the two weekend rules applies to the last trading session of each ISO
+# week. Same vocabulary as the PoC's --weekend-policy so backtest and live agree.
+#
+#   flat      no entries in that session, and force-close on its final bar
+#   no-entry  keep the entry ban, drop the force-close
+#   none      neither rule
+#
+# CCF/UMC runs 'none'. The rule was inherited from QFF/TSM, where Binance's
+# perpetual traded through the weekend while TAIFEX froze, leaving one leg
+# uncovered. TAIFEX and NYSE both close, so there is no such exposure here, and
+# removing it measured +19.7% net with an IDENTICAL max drawdown -- consistently
+# across 1m, 5m and 15m sampling, three independent datasets. Removing it is
+# deleting a mis-transplanted rule, not loosening risk control.
+#
+# 'flat' survives only to keep the legacy QFF/TSM replay golden reproducible as
+# a refactor tripwire. Phase C deletes it along with that fixture.
+WEEKEND_POLICY_FLAT = "flat"
+WEEKEND_POLICY_NO_ENTRY = "no-entry"
+WEEKEND_POLICY_NONE = "none"
+WEEKEND_POLICIES = (
+    WEEKEND_POLICY_FLAT,
+    WEEKEND_POLICY_NO_ENTRY,
+    WEEKEND_POLICY_NONE,
+)
+DEFAULT_WEEKEND_POLICY = WEEKEND_POLICY_NONE
+
+
+def validate_weekend_policy(value: str, *, field: str = "weekend_policy") -> str:
+    policy = str(value).strip().lower()
+    if policy not in WEEKEND_POLICIES:
+        allowed = ", ".join(repr(name) for name in WEEKEND_POLICIES)
+        raise ValueError(f"{field} must be one of {allowed}; got {value!r}")
+    return policy
+
+
+def weekend_force_close_enabled(policy: str) -> bool:
+    return policy == WEEKEND_POLICY_FLAT
+
+
+def weekend_entry_ban_enabled(policy: str) -> bool:
+    return policy in {WEEKEND_POLICY_FLAT, WEEKEND_POLICY_NO_ENTRY}
+
 
 @dataclass(frozen=True)
 class LiveSessionStatus:
@@ -144,6 +186,7 @@ def is_weekend_force_exit_bar(
     closed_dates: Iterable[date] = (),
     *,
     grace_minutes: int = WEEKEND_FORCE_EXIT_GRACE_MINUTES,
+    weekend_policy: str = DEFAULT_WEEKEND_POLICY,
 ) -> bool:
     """Live equivalent of the PoC ``friday_session_end_force_close`` mask.
 
@@ -166,6 +209,8 @@ def is_weekend_force_exit_bar(
     grace window never lands on a processed bar. See the follow-up note in the
     weekend force-close design.
     """
+    if not weekend_force_close_enabled(validate_weekend_policy(weekend_policy)):
+        return False
     closed = set(closed_dates)
     if not _is_live_session_trading(timestamp, closed):
         return False
@@ -182,7 +227,10 @@ def is_weekend_force_exit_bar(
 
 
 class TradingCalendar:
-    """CCF replay calendar that mirrors the PoC active-session masks."""
+    """TAIFEX replay calendar that mirrors the PoC active-session masks."""
+
+    def __init__(self, weekend_policy: str = DEFAULT_WEEKEND_POLICY) -> None:
+        self.weekend_policy = validate_weekend_policy(weekend_policy)
 
     def annotate(self, bars: Iterable[MarketBar]) -> list[MarketBar]:
         rows = list(bars)
@@ -210,24 +258,34 @@ class TradingCalendar:
             session_key = f"{session_kind}:{session_start.isoformat()}"
             raw_masks.append((close_allowed, friday_night, False, session_key))
 
-        force_close = compute_week_end_force_close(rows, raw_masks)
-        weekend_close_only_sessions = {
-            raw_masks[index][3] for index, marked in enumerate(force_close) if marked
+        # Both rules key off the same week-end detection, so it is computed once
+        # and gated separately: 'no-entry' still needs the session set even
+        # though it drops the force-close.
+        week_end_bars = compute_week_end_force_close(rows, raw_masks)
+        week_end_sessions = {
+            raw_masks[index][3] for index, marked in enumerate(week_end_bars) if marked
         }
+        apply_force_close = weekend_force_close_enabled(self.weekend_policy)
+        apply_entry_ban = weekend_entry_ban_enabled(self.weekend_policy)
 
         annotated: list[MarketBar] = []
         for index, bar in enumerate(rows):
             close_allowed, friday_night, _, session_key = raw_masks[index]
-            weekend_close_only = close_allowed and session_key in weekend_close_only_sessions
-            close_only = friday_night or weekend_close_only
+            weekend_close_only = (
+                apply_entry_ban and close_allowed and session_key in week_end_sessions
+            )
+            friday_night_close_only = apply_entry_ban and close_allowed and friday_night
+            close_only = friday_night_close_only or weekend_close_only
             annotated.append(
                 replace(
                     bar,
                     close_allowed=close_allowed,
                     entry_allowed=close_allowed and not close_only,
-                    friday_night_close_only=close_allowed and friday_night,
+                    friday_night_close_only=friday_night_close_only,
                     weekend_session_close_only=weekend_close_only,
-                    friday_session_end_force_close=force_close[index],
+                    friday_session_end_force_close=(
+                        week_end_bars[index] if apply_force_close else False
+                    ),
                 )
             )
         return annotated
@@ -260,13 +318,18 @@ def annotate_live_bar(bar: MarketBar) -> MarketBar:
 def annotate_live_bar_with_closed_dates(
     bar: MarketBar,
     closed_dates: Iterable[date],
+    *,
+    weekend_policy: str = DEFAULT_WEEKEND_POLICY,
 ) -> MarketBar:
     status = live_session_status(bar.timestamp, closed_dates)
+    close_only = status.is_close_only and weekend_entry_ban_enabled(
+        validate_weekend_policy(weekend_policy)
+    )
     return replace(
         bar,
         close_allowed=status.is_trading,
-        entry_allowed=status.is_trading and not status.is_close_only,
-        friday_night_close_only=status.is_trading and status.is_close_only,
+        entry_allowed=status.is_trading and not close_only,
+        friday_night_close_only=status.is_trading and close_only,
         weekend_session_close_only=False,
         friday_session_end_force_close=False,
     )

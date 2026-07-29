@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .brokers import PaperBroker
 from .config import AppConfig
+from .core.calendar import TradingCalendar
 from .core.indicator import IndicatorEngine, validate_expected_zscore
 from .market_data import CsvReplayMarketData
 from .store import SQLiteStore
@@ -45,6 +46,7 @@ class SystemRunner:
 
             bars = CsvReplayMarketData(
                 self.config.input_csv,
+                TradingCalendar(self.config.strategy.weekend_policy),
                 ccf_ohlcv_path=self.config.ccf_ohlcv_csv,
                 umc_ohlcv_path=self.config.umc_ohlcv_csv,
                 usd_twd_ohlcv_path=self.config.usd_twd_ohlcv_csv,

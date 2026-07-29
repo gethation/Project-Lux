@@ -3,7 +3,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 
-from ..core.calendar import annotate_live_bar_with_closed_dates
+from ..core.calendar import (
+    DEFAULT_WEEKEND_POLICY,
+    annotate_live_bar_with_closed_dates,
+    validate_weekend_policy,
+)
 from ..core.models import MarketBar
 from ..core.time import ensure_taipei
 from .session import floor_minute
@@ -17,10 +21,12 @@ class LiveMinuteBarBuilder:
         stale_seconds: float,
         max_leg_timestamp_skew_seconds: float,
         closed_dates: Iterable[date] = (),
+        weekend_policy: str = DEFAULT_WEEKEND_POLICY,
     ) -> None:
         self.stale_seconds = stale_seconds
         self.max_leg_timestamp_skew_seconds = max_leg_timestamp_skew_seconds
         self.closed_dates = tuple(closed_dates)
+        self.weekend_policy = validate_weekend_policy(weekend_policy)
         self.current_minute: datetime | None = None
         self.current_quotes: dict[str, LiveQuote] = {}
         self.last_ccf_close: float | None = None
@@ -133,6 +139,7 @@ class LiveMinuteBarBuilder:
                     spread=spread,
                 ),
                 self.closed_dates,
+                weekend_policy=self.weekend_policy,
             ),
             quote_set=quote_set,
         )

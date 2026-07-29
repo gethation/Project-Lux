@@ -9,6 +9,10 @@ leg_notional_twd = 1000000.0
 initial_capital_twd = 2000000.0
 max_entry_delay_minutes = 15
 zscore_window = 500
+# flat | no-entry | none. 'none' (the default) is correct for CCF/UMC: TAIFEX
+# and NYSE both close over the weekend, so neither the last-session entry ban
+# nor the force-close applies. Only the legacy QFF/TSM fixture uses 'flat'.
+weekend_policy = 'none'
 
 [fees]
 umc_fee_bps = 5.0

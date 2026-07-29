@@ -28,17 +28,17 @@ def make_bar(index: int, timestamp: datetime, ccf_close: float | None = 100.0) -
     )
 
 
-def test_friday_night_is_close_only() -> None:
+def test_friday_night_is_close_only_under_flat() -> None:
     friday_night = datetime.fromisoformat("2026-06-12T17:25:00+08:00")
-    bars = TradingCalendar().annotate([make_bar(0, friday_night)])
+    bars = TradingCalendar("flat").annotate([make_bar(0, friday_night)])
 
     assert bars[0].close_allowed
     assert not bars[0].entry_allowed
     assert bars[0].friday_night_close_only
 
 
-def test_weekend_session_is_close_only_and_marks_force_close() -> None:
-    bars = TradingCalendar().annotate(
+def test_weekend_session_is_close_only_and_marks_force_close_under_flat() -> None:
+    bars = TradingCalendar("flat").annotate(
         [
             make_bar(0, datetime.fromisoformat("2026-06-12T13:43:00+08:00")),
             make_bar(1, datetime.fromisoformat("2026-06-12T17:25:00+08:00")),
@@ -52,6 +52,50 @@ def test_weekend_session_is_close_only_and_marks_force_close() -> None:
     assert bars[1].weekend_session_close_only
     assert bars[2].friday_session_end_force_close
     assert bars[3].entry_allowed
+
+
+# The CCF/UMC default. Both venues close over the weekend, so neither rule
+# applies; measured +19.7% net at an identical max drawdown across three
+# sampling frequencies. See docs/CCF_UMC_PLAN.md.
+def test_default_weekend_policy_none_drops_both_rules() -> None:
+    bars = TradingCalendar().annotate(
+        [
+            make_bar(0, datetime.fromisoformat("2026-06-12T13:43:00+08:00")),
+            make_bar(1, datetime.fromisoformat("2026-06-12T17:25:00+08:00")),
+            make_bar(2, datetime.fromisoformat("2026-06-12T17:26:00+08:00")),
+            make_bar(3, datetime.fromisoformat("2026-06-15T08:45:00+08:00")),
+        ]
+    )
+
+    assert bars[1].close_allowed
+    assert bars[1].entry_allowed
+    assert not bars[1].friday_night_close_only
+    assert not bars[1].weekend_session_close_only
+    assert not bars[2].friday_session_end_force_close
+    assert bars[3].entry_allowed
+
+
+def test_weekend_policy_no_entry_keeps_the_ban_and_drops_the_force_close() -> None:
+    # The Monday bar is load-bearing: a session is only the week's last one if a
+    # later close-allowed bar falls in a new ISO week.
+    bars = TradingCalendar("no-entry").annotate(
+        [
+            make_bar(0, datetime.fromisoformat("2026-06-12T13:43:00+08:00")),
+            make_bar(1, datetime.fromisoformat("2026-06-12T17:25:00+08:00")),
+            make_bar(2, datetime.fromisoformat("2026-06-12T17:26:00+08:00")),
+            make_bar(3, datetime.fromisoformat("2026-06-15T08:45:00+08:00")),
+        ]
+    )
+
+    assert not bars[1].entry_allowed
+    assert bars[1].weekend_session_close_only
+    assert not bars[2].friday_session_end_force_close
+    assert bars[3].entry_allowed
+
+
+def test_unknown_weekend_policy_is_rejected() -> None:
+    with pytest.raises(ValueError, match="weekend_policy must be one of"):
+        TradingCalendar("flatten")
 
 
 def test_live_calendar_closed_date_blocks_day_and_night_sessions() -> None:
@@ -115,15 +159,29 @@ def test_weekend_force_exit_fires_in_grace_window_at_friday_session_end() -> Non
     # 2026-06-19 is a Friday; its night session runs into 2026-06-20 (Sat) 05:00,
     # after which CCF is frozen until Monday 2026-06-22.
     assert is_weekend_force_exit_bar(
-        datetime.fromisoformat("2026-06-20T04:57:00+08:00")
+        datetime.fromisoformat("2026-06-20T04:57:00+08:00"),
+        weekend_policy="flat",
     )
     # Exactly grace_minutes (5) before the 05:00 end still counts; one minute more
     # does not.
     assert is_weekend_force_exit_bar(
-        datetime.fromisoformat("2026-06-20T04:55:00+08:00")
+        datetime.fromisoformat("2026-06-20T04:55:00+08:00"),
+        weekend_policy="flat",
     )
     assert not is_weekend_force_exit_bar(
-        datetime.fromisoformat("2026-06-20T04:54:00+08:00")
+        datetime.fromisoformat("2026-06-20T04:54:00+08:00"),
+        weekend_policy="flat",
+    )
+
+
+def test_weekend_force_exit_never_fires_under_the_default_policy() -> None:
+    # Same bar as above, default policy: no force-exit at all.
+    assert not is_weekend_force_exit_bar(
+        datetime.fromisoformat("2026-06-20T04:57:00+08:00")
+    )
+    assert not is_weekend_force_exit_bar(
+        datetime.fromisoformat("2026-06-20T04:57:00+08:00"),
+        weekend_policy="no-entry",
     )
 
 
@@ -152,6 +210,7 @@ def test_weekend_force_exit_covers_monday_holiday_long_weekend() -> None:
     assert is_weekend_force_exit_bar(
         datetime.fromisoformat("2026-06-20T04:57:00+08:00"),
         (date(2026, 6, 22),),
+        weekend_policy="flat",
     )
 
 
