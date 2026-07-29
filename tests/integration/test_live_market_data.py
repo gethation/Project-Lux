@@ -242,7 +242,7 @@ class FakeFubonIntraday:
                     "symbol": kwargs.get("symbol"),
                     "closePrice": 2410.0,
                     "lastTrade": {"bid": 2409.0, "ask": 2411.0},
-                    "lastUpdated": "2026-06-18T08:45:01+08:00",
+                    "lastUpdated": "2026-06-18T02:45:01+08:00",
                 }
             },
         )
@@ -611,7 +611,7 @@ def test_live_runtime_skips_clock_preflight_when_clock_is_injected(
         ccf_provider=ccf,
         umc_provider=umc,
         usd_twd_provider=usd,
-        clock=lambda: ts("2026-06-23T08:45:00+08:00"),
+        clock=lambda: ts("2026-06-23T02:45:00+08:00"),
         sleeper=lambda _: None,
     ).run(max_iterations=0, skip_warmup=True)
 
@@ -628,23 +628,23 @@ def dry_run_warmup_rows() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     return (
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 100.0),
-                ("2026-06-18T04:59:00+08:00", 100.0),
-                ("2026-06-18T05:00:00+08:00", 100.0),
+                ("2026-06-18T02:42:00+08:00", 100.0),
+                ("2026-06-18T02:43:00+08:00", 100.0),
+                ("2026-06-18T02:44:00+08:00", 100.0),
             ]
         ),
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 20.0),
-                ("2026-06-18T04:59:00+08:00", 20.0),
-                ("2026-06-18T05:00:00+08:00", 20.0),
+                ("2026-06-18T02:42:00+08:00", 20.0),
+                ("2026-06-18T02:43:00+08:00", 20.0),
+                ("2026-06-18T02:44:00+08:00", 20.0),
             ]
         ),
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 25.0),
-                ("2026-06-18T04:59:00+08:00", 25.0),
-                ("2026-06-18T05:00:00+08:00", 25.0),
+                ("2026-06-18T02:42:00+08:00", 25.0),
+                ("2026-06-18T02:43:00+08:00", 25.0),
+                ("2026-06-18T02:44:00+08:00", 25.0),
             ]
         ),
     )
@@ -654,7 +654,7 @@ def seed_warmup_bars(config: AppConfig) -> None:
     bars = [
         MarketBar(
             row_index=index,
-            timestamp=ts(f"2026-06-18T08:4{index}:00+08:00"),
+            timestamp=ts(f"2026-06-18T02:4{index}:00+08:00"),
             ccf_close=100.0,
             ccf_close_filled=100.0,
             umc_twd_fair=100.0 + index,
@@ -798,10 +798,13 @@ def test_live_runtime_tears_down_ccf_books_during_non_trading_and_restarts_on_op
 ) -> None:
     config = small_live_config(tmp_path)
     seed_warmup_bars(config)
+    # In session -> out -> in again, on the PAIR's clock. On Tuesday 06-23 that
+    # is 03:58 (tail of Monday's US session), 04:01 (RTH has closed; TAIFEX is
+    # still open but the pair is not), then 21:30 (Tuesday's US open).
     ccf, umc, usd = dry_run_quote_providers(
         [
-            "2026-06-23T04:58:01+08:00",
-            "2026-06-23T08:45:00+08:00",
+            "2026-06-23T03:58:01+08:00",
+            "2026-06-23T21:30:00+08:00",
         ]
     )
     trading_session_events: list[datetime] = []
@@ -817,11 +820,11 @@ def test_live_runtime_tears_down_ccf_books_during_non_trading_and_restarts_on_op
         usd_twd_provider=usd,
         clock=dry_run_clock(
             [
-                "2026-06-23T04:58:00+08:00",
-                "2026-06-23T04:58:01+08:00",
-                "2026-06-23T05:01:00+08:00",
-                "2026-06-23T08:45:00+08:00",
-                "2026-06-23T08:45:01+08:00",
+                "2026-06-23T03:58:00+08:00",
+                "2026-06-23T03:58:01+08:00",
+                "2026-06-23T04:01:00+08:00",
+                "2026-06-23T21:30:00+08:00",
+                "2026-06-23T21:30:01+08:00",
             ]
         ),
         sleeper=lambda _: None,
@@ -832,7 +835,7 @@ def test_live_runtime_tears_down_ccf_books_during_non_trading_and_restarts_on_op
     assert ccf.teardown_books_calls == 1
     assert ccf.restart_books_calls == ["CCFG6"]
     assert ccf.quote_calls == ["CCFG6", "CCFG6"]
-    assert trading_session_events == [ts("2026-06-23T08:45:00+08:00")]
+    assert trading_session_events == [ts("2026-06-23T21:30:00+08:00")]
 
 
 def test_live_runtime_ccf_watchdog_restarts_once_with_backoff(tmp_path) -> None:
@@ -842,25 +845,25 @@ def test_live_runtime_ccf_watchdog_restarts_once_with_backoff(tmp_path) -> None:
     ccf = FakeCcfProvider(
         ccf_rows,
         quotes=[
-            quote("ccf", "2026-06-23T08:40:00+08:00", 100.0, bid=99.9, ask=100.1),
-            quote("ccf", "2026-06-23T08:40:00+08:00", 100.0, bid=99.9, ask=100.1),
-            quote("ccf", "2026-06-23T08:40:00+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("ccf", "2026-06-23T02:40:00+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("ccf", "2026-06-23T02:40:00+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("ccf", "2026-06-23T02:40:00+08:00", 100.0, bid=99.9, ask=100.1),
         ],
     )
     umc = FakeOhlcvProvider(
         umc_rows,
         quotes=[
-            quote("umc", "2026-06-23T08:45:01+08:00", 20.0, bid=19.99, ask=20.01),
-            quote("umc", "2026-06-23T08:45:11+08:00", 20.0, bid=19.99, ask=20.01),
-            quote("umc", "2026-06-23T08:45:20+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("umc", "2026-06-23T02:45:01+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("umc", "2026-06-23T02:45:11+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("umc", "2026-06-23T02:45:20+08:00", 20.0, bid=19.99, ask=20.01),
         ],
     )
     usd = FakeOhlcvProvider(
         usd_rows,
         quotes=[
-            quote("usd", "2026-06-23T08:45:01+08:00", 30.0, bid=29.99, ask=30.01),
-            quote("usd", "2026-06-23T08:45:11+08:00", 30.0, bid=29.99, ask=30.01),
-            quote("usd", "2026-06-23T08:45:20+08:00", 30.0, bid=29.99, ask=30.01),
+            quote("usd", "2026-06-23T02:45:01+08:00", 30.0, bid=29.99, ask=30.01),
+            quote("usd", "2026-06-23T02:45:11+08:00", 30.0, bid=29.99, ask=30.01),
+            quote("usd", "2026-06-23T02:45:20+08:00", 30.0, bid=29.99, ask=30.01),
         ],
     )
     terminal_output = io.StringIO()
@@ -872,11 +875,11 @@ def test_live_runtime_ccf_watchdog_restarts_once_with_backoff(tmp_path) -> None:
         usd_twd_provider=usd,
         clock=dry_run_clock(
             [
-                "2026-06-23T08:45:00+08:00",
-                "2026-06-23T08:45:01+08:00",
-                "2026-06-23T08:45:11+08:00",
-                "2026-06-23T08:45:20+08:00",
-                "2026-06-23T08:45:21+08:00",
+                "2026-06-23T02:45:00+08:00",
+                "2026-06-23T02:45:01+08:00",
+                "2026-06-23T02:45:11+08:00",
+                "2026-06-23T02:45:20+08:00",
+                "2026-06-23T02:45:21+08:00",
             ]
         ),
         sleeper=lambda _: None,
@@ -893,14 +896,14 @@ def test_live_runtime_uses_cached_quote_after_transient_fetch_failure(tmp_path) 
     seed_warmup_bars(config)
     ccf, _, usd = dry_run_quote_providers(
         [
-            "2026-06-23T08:45:00+08:00",
-            "2026-06-23T08:45:01+08:00",
+            "2026-06-23T02:45:00+08:00",
+            "2026-06-23T02:45:01+08:00",
         ]
     )
     umc = FakeOhlcvProvider(
         pd.DataFrame(),
         quotes=[
-            quote("umc", "2026-06-23T08:45:00+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("umc", "2026-06-23T02:45:00+08:00", 20.0, bid=19.99, ask=20.01),
             RuntimeError("request timeout"),
         ],
     )
@@ -913,10 +916,10 @@ def test_live_runtime_uses_cached_quote_after_transient_fetch_failure(tmp_path) 
         usd_twd_provider=usd,
         clock=dry_run_clock(
             [
-                "2026-06-23T08:45:00+08:00",
-                "2026-06-23T08:45:00+08:00",
-                "2026-06-23T08:45:01+08:00",
-                "2026-06-23T08:45:01+08:00",
+                "2026-06-23T02:45:00+08:00",
+                "2026-06-23T02:45:00+08:00",
+                "2026-06-23T02:45:01+08:00",
+                "2026-06-23T02:45:01+08:00",
             ]
         ),
         sleeper=lambda _: None,
@@ -939,14 +942,14 @@ def test_live_runtime_skips_iteration_when_fetch_fails_without_cached_quote(tmp_
     ccf = FakeCcfProvider(
         pd.DataFrame(),
         quotes=[
-            quote("ccf", "2026-06-23T08:45:00+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("ccf", "2026-06-23T02:45:00+08:00", 100.0, bid=99.9, ask=100.1),
         ],
     )
     umc = FakeOhlcvProvider(pd.DataFrame(), quotes=[RuntimeError("request timeout")])
     usd = FakeOhlcvProvider(
         pd.DataFrame(),
         quotes=[
-            quote("usd", "2026-06-23T08:45:00+08:00", 30.0, bid=29.99, ask=30.01),
+            quote("usd", "2026-06-23T02:45:00+08:00", 30.0, bid=29.99, ask=30.01),
         ],
     )
     terminal_output = io.StringIO()
@@ -956,7 +959,7 @@ def test_live_runtime_skips_iteration_when_fetch_fails_without_cached_quote(tmp_
         ccf_provider=ccf,
         umc_provider=umc,
         usd_twd_provider=usd,
-        clock=lambda: ts("2026-06-23T08:45:00+08:00"),
+        clock=lambda: ts("2026-06-23T02:45:00+08:00"),
         sleeper=lambda _: None,
         reporter=LiveTerminalReporter(terminal_output, color=False),
     ).run(max_iterations=1, skip_warmup=True)
@@ -975,7 +978,7 @@ def test_live_runtime_skips_iteration_when_fetch_fails_without_cached_quote(tmp_
 
 def indicator_snapshot(zscore: float = 2.1) -> IndicatorSnapshot:
     return IndicatorSnapshot(
-        timestamp=ts("2026-06-18T08:45:00+08:00"),
+        timestamp=ts("2026-06-18T02:45:00+08:00"),
         spread=2.1,
         mean=0.0,
         std=1.0,
@@ -1090,7 +1093,7 @@ def test_resolve_ccf_contract_normalizes_policy_selection_for_fubon_ordering(tmp
         FakeCcfCandidateProvider(
             [{"symbol": "CCF202607", "contractMonth": "202607"}]
         ),
-        now=ts("2026-06-18T08:45:00+08:00"),
+        now=ts("2026-06-18T02:45:00+08:00"),
     )
 
     assert contract.symbol == "CCFG6"
@@ -1109,7 +1112,7 @@ def test_resolve_ccf_contract_normalizes_front_month_selector_for_fubon_ordering
     contract = resolve_ccf_contract(
         config,
         FakeCcfProvider(),
-        now=ts("2026-06-18T08:45:00+08:00"),
+        now=ts("2026-06-18T02:45:00+08:00"),
     )
 
     assert contract.symbol == "CCFG6"
@@ -1118,6 +1121,7 @@ def test_resolve_ccf_contract_normalizes_front_month_selector_for_fubon_ordering
 
 
 def test_parse_timestamp_accepts_fubon_microsecond_epoch() -> None:
+    # Epoch arithmetic, not a session time: this one stays at 13:30 Taipei.
     parsed = parse_timestamp(1781760623530000)
 
     assert parsed == ts("2026-06-18T13:30:23.530000+08:00")
@@ -1159,7 +1163,7 @@ def test_fubon_books_cache_fetch_quote_returns_latest_book() -> None:
             "channel": "books",
             "data": {
                 "symbol": "CCFG6",
-                "time": "2026-06-18T08:45:01+08:00",
+                "time": "2026-06-18T02:45:01+08:00",
                 "bids": [{"price": 2409.0, "size": 3}],
                 "asks": [{"price": 2411.0, "size": 4}],
             },
@@ -1203,7 +1207,7 @@ def test_fubon_ccf_candles_merge_regular_and_afterhours_sessions() -> None:
         {
             "candles_regular": {
                 "data": [
-                    {"date": "2026-06-18T13:45:00+08:00", "close": 100.0},
+                    {"date": "2026-06-18T03:45:00+08:00", "close": 100.0},
                 ]
             },
             "candles_afterhours": {
@@ -1218,12 +1222,12 @@ def test_fubon_ccf_candles_merge_regular_and_afterhours_sessions() -> None:
 
     frame = provider.fetch_1m(
         "CCFG6",
-        ts("2026-06-18T13:45:00+08:00"),
+        ts("2026-06-18T03:45:00+08:00"),
         ts("2026-06-19T00:04:00+08:00"),
     )
 
     assert frame["timestamp"].tolist() == [
-        pd.Timestamp("2026-06-18T13:45:00+08:00"),
+        pd.Timestamp("2026-06-18T03:45:00+08:00"),
         pd.Timestamp("2026-06-18T17:25:00+08:00"),
         pd.Timestamp("2026-06-19T00:04:00+08:00"),
     ]
@@ -1246,7 +1250,7 @@ def test_fubon_books_restart_clears_cache_disconnects_and_resubscribes() -> None
             "channel": "books",
             "data": {
                 "symbol": "CCFG6",
-                "time": "2026-06-18T08:45:01+08:00",
+                "time": "2026-06-18T02:45:01+08:00",
                 "bids": [{"price": 2409.0, "size": 3}],
                 "asks": [{"price": 2411.0, "size": 4}],
             },
@@ -1338,27 +1342,27 @@ def test_warmup_builder_combines_ccf_sources_and_forward_fills(tmp_path) -> None
     fallback = FakeCcfProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 100.0),
-                ("2026-06-18T08:47:00+08:00", 102.0),
+                ("2026-06-18T02:45:00+08:00", 100.0),
+                ("2026-06-18T02:47:00+08:00", 102.0),
             ]
         )
     )
-    intraday = FakeCcfProvider(rows([("2026-06-18T08:47:00+08:00", 103.0)]))
+    intraday = FakeCcfProvider(rows([("2026-06-18T02:47:00+08:00", 103.0)]))
     umc = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 20.0),
-                ("2026-06-18T08:46:00+08:00", 20.5),
-                ("2026-06-18T08:47:00+08:00", 21.0),
+                ("2026-06-18T02:45:00+08:00", 20.0),
+                ("2026-06-18T02:46:00+08:00", 20.5),
+                ("2026-06-18T02:47:00+08:00", 21.0),
             ]
         )
     )
     usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 30.0),
-                ("2026-06-18T08:46:00+08:00", 30.0),
-                ("2026-06-18T08:47:00+08:00", 30.0),
+                ("2026-06-18T02:45:00+08:00", 30.0),
+                ("2026-06-18T02:46:00+08:00", 30.0),
+                ("2026-06-18T02:47:00+08:00", 30.0),
             ]
         )
     )
@@ -1369,13 +1373,13 @@ def test_warmup_builder_combines_ccf_sources_and_forward_fills(tmp_path) -> None
         ccf_fallback_provider=fallback,
         umc_provider=umc,
         usd_twd_provider=usd,
-    ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:48:42+08:00"))
+    ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T02:48:42+08:00"))
 
     assert len(bars) == 3
     assert [bar.timestamp for bar in bars] == [
-        ts("2026-06-18T08:45:00+08:00"),
-        ts("2026-06-18T08:46:00+08:00"),
-        ts("2026-06-18T08:47:00+08:00"),
+        ts("2026-06-18T02:45:00+08:00"),
+        ts("2026-06-18T02:46:00+08:00"),
+        ts("2026-06-18T02:47:00+08:00"),
     ]
     assert bars[1].ccf_close is None
     assert bars[1].ccf_close_filled == 100.0
@@ -1390,9 +1394,9 @@ def test_warmup_builder_does_not_fetch_fallback_when_intraday_is_sufficient(
     config = small_live_config(tmp_path)
     intraday_rows = rows(
         [
-            ("2026-06-18T08:45:00+08:00", 100.0),
-            ("2026-06-18T08:46:00+08:00", 101.0),
-            ("2026-06-18T08:47:00+08:00", 102.0),
+            ("2026-06-18T02:45:00+08:00", 100.0),
+            ("2026-06-18T02:46:00+08:00", 101.0),
+            ("2026-06-18T02:47:00+08:00", 102.0),
         ]
     )
     intraday = FakeCcfProvider(intraday_rows)
@@ -1401,9 +1405,9 @@ def test_warmup_builder_does_not_fetch_fallback_when_intraday_is_sufficient(
     usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 30.0),
-                ("2026-06-18T08:46:00+08:00", 30.0),
-                ("2026-06-18T08:47:00+08:00", 30.0),
+                ("2026-06-18T02:45:00+08:00", 30.0),
+                ("2026-06-18T02:46:00+08:00", 30.0),
+                ("2026-06-18T02:47:00+08:00", 30.0),
             ]
         )
     )
@@ -1414,16 +1418,16 @@ def test_warmup_builder_does_not_fetch_fallback_when_intraday_is_sufficient(
         ccf_fallback_provider=fallback,
         umc_provider=umc,
         usd_twd_provider=usd,
-    ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:48:42+08:00"))
+    ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T02:48:42+08:00"))
 
     assert len(bars) == 3
     assert intraday.fetch_1m_calls
     assert fallback.fetch_1m_calls == []
 
 
-def test_expected_warmup_index_is_anchored_to_current_night_session() -> None:
+def test_expected_warmup_index_is_anchored_to_current_session() -> None:
     warmup_index, session_index = build_ccf_expected_warmup_index(
-        start=ts("2026-06-18T13:40:00+08:00"),
+        start=ts("2026-06-18T03:40:00+08:00"),
         end=ts("2026-06-19T00:04:00+08:00"),
         count=3,
     )
@@ -1433,8 +1437,14 @@ def test_expected_warmup_index_is_anchored_to_current_night_session() -> None:
         pd.Timestamp("2026-06-19T00:03:00+08:00"),
         pd.Timestamp("2026-06-19T00:04:00+08:00"),
     ]
-    assert pd.Timestamp("2026-06-18T13:45:00+08:00") in session_index
-    assert pd.Timestamp("2026-06-18T17:25:00+08:00") in session_index
+    # 03:45 is inside Wednesday's US session, which runs to Taipei 04:00.
+    assert pd.Timestamp("2026-06-18T03:45:00+08:00") in session_index
+    # 17:25 opens the TAIFEX night session, but NYSE does not open until 21:30.
+    # The pair's index is the INTERSECTION, so those four hours are not in it --
+    # a spread built from a frozen UMC price there would be fiction.
+    assert pd.Timestamp("2026-06-18T17:25:00+08:00") not in session_index
+    assert pd.Timestamp("2026-06-18T21:29:00+08:00") not in session_index
+    assert pd.Timestamp("2026-06-18T21:30:00+08:00") in session_index
 
 
 def test_warmup_builder_refuses_wholly_missing_current_night_session(
@@ -1443,9 +1453,9 @@ def test_warmup_builder_refuses_wholly_missing_current_night_session(
     config = small_live_config(tmp_path)
     day_only = rows(
         [
-            ("2026-06-18T13:43:00+08:00", 100.0),
-            ("2026-06-18T13:44:00+08:00", 101.0),
-            ("2026-06-18T13:45:00+08:00", 102.0),
+            ("2026-06-18T03:43:00+08:00", 100.0),
+            ("2026-06-18T03:44:00+08:00", 101.0),
+            ("2026-06-18T03:45:00+08:00", 102.0),
         ]
     )
 
@@ -1472,27 +1482,27 @@ def test_warmup_builder_refuses_when_forward_fill_ratio_too_high(tmp_path) -> No
     fallback = FakeCcfProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 100.0),
-                ("2026-06-18T08:47:00+08:00", 102.0),
+                ("2026-06-18T02:45:00+08:00", 100.0),
+                ("2026-06-18T02:47:00+08:00", 102.0),
             ]
         )
     )
-    intraday = FakeCcfProvider(rows([("2026-06-18T08:47:00+08:00", 103.0)]))
+    intraday = FakeCcfProvider(rows([("2026-06-18T02:47:00+08:00", 103.0)]))
     umc = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 20.0),
-                ("2026-06-18T08:46:00+08:00", 20.5),
-                ("2026-06-18T08:47:00+08:00", 21.0),
+                ("2026-06-18T02:45:00+08:00", 20.0),
+                ("2026-06-18T02:46:00+08:00", 20.5),
+                ("2026-06-18T02:47:00+08:00", 21.0),
             ]
         )
     )
     usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 30.0),
-                ("2026-06-18T08:46:00+08:00", 30.0),
-                ("2026-06-18T08:47:00+08:00", 30.0),
+                ("2026-06-18T02:45:00+08:00", 30.0),
+                ("2026-06-18T02:46:00+08:00", 30.0),
+                ("2026-06-18T02:47:00+08:00", 30.0),
             ]
         )
     )
@@ -1504,7 +1514,7 @@ def test_warmup_builder_refuses_when_forward_fill_ratio_too_high(tmp_path) -> No
             ccf_fallback_provider=fallback,
             umc_provider=umc,
             usd_twd_provider=usd,
-        ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:48:42+08:00"))
+        ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T02:48:42+08:00"))
 
 
 def test_warmup_builder_refuses_stale_trailing_ccf_data(tmp_path) -> None:
@@ -1512,21 +1522,21 @@ def test_warmup_builder_refuses_stale_trailing_ccf_data(tmp_path) -> None:
     stale_ccf = FakeCcfProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 100.0),
-                ("2026-06-18T08:46:00+08:00", 101.0),
+                ("2026-06-18T02:45:00+08:00", 100.0),
+                ("2026-06-18T02:46:00+08:00", 101.0),
             ]
         )
     )
     current_rows = rows(
         [
-            ("2026-06-18T08:45:00+08:00", 20.0),
-            ("2026-06-18T08:46:00+08:00", 20.0),
-            ("2026-06-18T08:47:00+08:00", 20.0),
-            ("2026-06-18T08:48:00+08:00", 20.0),
-            ("2026-06-18T08:49:00+08:00", 20.0),
-            ("2026-06-18T08:50:00+08:00", 20.0),
-            ("2026-06-18T08:51:00+08:00", 20.0),
-            ("2026-06-18T08:52:00+08:00", 20.0),
+            ("2026-06-18T02:45:00+08:00", 20.0),
+            ("2026-06-18T02:46:00+08:00", 20.0),
+            ("2026-06-18T02:47:00+08:00", 20.0),
+            ("2026-06-18T02:48:00+08:00", 20.0),
+            ("2026-06-18T02:49:00+08:00", 20.0),
+            ("2026-06-18T02:50:00+08:00", 20.0),
+            ("2026-06-18T02:51:00+08:00", 20.0),
+            ("2026-06-18T02:52:00+08:00", 20.0),
         ]
     )
 
@@ -1537,7 +1547,7 @@ def test_warmup_builder_refuses_stale_trailing_ccf_data(tmp_path) -> None:
             ccf_fallback_provider=None,
             umc_provider=FakeOhlcvProvider(current_rows),
             usd_twd_provider=FakeOhlcvProvider(current_rows),
-        ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:53:00+08:00"))
+        ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T02:53:00+08:00"))
 
 
 def test_ccf_warmup_source_report_tracks_precedence_and_quality() -> None:
@@ -1547,17 +1557,17 @@ def test_ccf_warmup_source_report_tracks_precedence_and_quality() -> None:
                 "taifex",
                 rows(
                     [
-                        ("2026-06-18T08:44:00+08:00", 99.0),
-                        ("2026-06-18T08:45:00+08:00", 100.0),
-                        ("2026-06-18T08:47:00+08:00", 102.0),
+                        ("2026-06-18T02:44:00+08:00", 99.0),
+                        ("2026-06-18T02:45:00+08:00", 100.0),
+                        ("2026-06-18T02:47:00+08:00", 102.0),
                     ]
                 ),
             ),
-            ("fubon", rows([("2026-06-18T08:47:00+08:00", 103.0)])),
+            ("fubon", rows([("2026-06-18T02:47:00+08:00", 103.0)])),
         ],
-        start_minute=ts("2026-06-18T08:45:00+08:00"),
-        end_minute=ts("2026-06-18T08:47:00+08:00"),
-        ccf_fetch_start=ts("2026-06-18T08:44:00+08:00"),
+        start_minute=ts("2026-06-18T02:45:00+08:00"),
+        end_minute=ts("2026-06-18T02:47:00+08:00"),
+        ccf_fetch_start=ts("2026-06-18T02:44:00+08:00"),
     )
 
     assert report.null_count == 0
@@ -1575,26 +1585,26 @@ def test_warmup_builder_uses_prior_ccf_close_to_seed_forward_fill(tmp_path) -> N
     ccf = FakeCcfProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 99.0),
-                ("2026-06-18T08:46:00+08:00", 101.0),
+                ("2026-06-18T02:45:00+08:00", 99.0),
+                ("2026-06-18T02:46:00+08:00", 101.0),
             ]
         )
     )
     umc = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 20.0),
-                ("2026-06-18T08:46:00+08:00", 20.0),
-                ("2026-06-18T08:47:00+08:00", 20.0),
+                ("2026-06-18T02:45:00+08:00", 20.0),
+                ("2026-06-18T02:46:00+08:00", 20.0),
+                ("2026-06-18T02:47:00+08:00", 20.0),
             ]
         )
     )
     usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 30.0),
-                ("2026-06-18T08:46:00+08:00", 30.0),
-                ("2026-06-18T08:47:00+08:00", 30.0),
+                ("2026-06-18T02:45:00+08:00", 30.0),
+                ("2026-06-18T02:46:00+08:00", 30.0),
+                ("2026-06-18T02:47:00+08:00", 30.0),
             ]
         )
     )
@@ -1605,7 +1615,7 @@ def test_warmup_builder_uses_prior_ccf_close_to_seed_forward_fill(tmp_path) -> N
         ccf_fallback_provider=None,
         umc_provider=umc,
         usd_twd_provider=usd,
-    ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:48:00+08:00"))
+    ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T02:48:00+08:00"))
 
     assert bars[0].ccf_close == 99.0
     assert bars[0].ccf_close_filled == 99.0
@@ -1614,22 +1624,22 @@ def test_warmup_builder_uses_prior_ccf_close_to_seed_forward_fill(tmp_path) -> N
 
 def test_warmup_builder_fails_when_initial_ccf_cannot_be_filled(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    ccf = FakeCcfProvider(rows([("2026-06-18T08:46:00+08:00", 101.0)]))
+    ccf = FakeCcfProvider(rows([("2026-06-18T02:46:00+08:00", 101.0)]))
     umc = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 20.0),
-                ("2026-06-18T08:46:00+08:00", 20.0),
-                ("2026-06-18T08:47:00+08:00", 20.0),
+                ("2026-06-18T02:45:00+08:00", 20.0),
+                ("2026-06-18T02:46:00+08:00", 20.0),
+                ("2026-06-18T02:47:00+08:00", 20.0),
             ]
         )
     )
     usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 30.0),
-                ("2026-06-18T08:46:00+08:00", 30.0),
-                ("2026-06-18T08:47:00+08:00", 30.0),
+                ("2026-06-18T02:45:00+08:00", 30.0),
+                ("2026-06-18T02:46:00+08:00", 30.0),
+                ("2026-06-18T02:47:00+08:00", 30.0),
             ]
         )
     )
@@ -1641,14 +1651,14 @@ def test_warmup_builder_fails_when_initial_ccf_cannot_be_filled(tmp_path) -> Non
             ccf_fallback_provider=None,
             umc_provider=umc,
             usd_twd_provider=usd,
-        ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:48:00+08:00"))
+        ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T02:48:00+08:00"))
 
 
 def test_warmup_builder_fails_when_umc_or_usd_is_missing(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    ccf = FakeCcfProvider(rows([("2026-06-18T08:45:00+08:00", 100.0)]))
-    umc = FakeOhlcvProvider(rows([("2026-06-18T08:45:00+08:00", 20.0)]))
-    usd = FakeOhlcvProvider(rows([("2026-06-18T08:45:00+08:00", 30.0)]))
+    ccf = FakeCcfProvider(rows([("2026-06-18T02:45:00+08:00", 100.0)]))
+    umc = FakeOhlcvProvider(rows([("2026-06-18T02:45:00+08:00", 20.0)]))
+    usd = FakeOhlcvProvider(rows([("2026-06-18T02:45:00+08:00", 30.0)]))
 
     with pytest.raises(RuntimeError, match="missing minutes"):
         WarmupBuilder(
@@ -1657,46 +1667,46 @@ def test_warmup_builder_fails_when_umc_or_usd_is_missing(tmp_path) -> None:
             ccf_fallback_provider=None,
             umc_provider=umc,
             usd_twd_provider=usd,
-        ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:48:00+08:00"))
+        ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T02:48:00+08:00"))
 
 
 def test_live_minute_bar_builder_finalizes_on_minute_crossing() -> None:
     builder = LiveMinuteBarBuilder(stale_seconds=10.0, max_leg_timestamp_skew_seconds=10.0)
     first = LiveQuoteSet(
-        ccf=quote("ccf", "2026-06-18T08:45:55+08:00", 100.0),
-        umc=quote("umc", "2026-06-18T08:45:55+08:00", 20.0),
-        usd_twd=quote("usd", "2026-06-18T08:45:55+08:00", 30.0),
+        ccf=quote("ccf", "2026-06-18T02:45:55+08:00", 100.0),
+        umc=quote("umc", "2026-06-18T02:45:55+08:00", 20.0),
+        usd_twd=quote("usd", "2026-06-18T02:45:55+08:00", 30.0),
     )
     second = LiveQuoteSet(
-        ccf=quote("ccf", "2026-06-18T08:46:01+08:00", 101.0),
-        umc=quote("umc", "2026-06-18T08:46:01+08:00", 21.0),
-        usd_twd=quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
+        ccf=quote("ccf", "2026-06-18T02:46:01+08:00", 101.0),
+        umc=quote("umc", "2026-06-18T02:46:01+08:00", 21.0),
+        usd_twd=quote("usd", "2026-06-18T02:46:01+08:00", 30.0),
     )
 
-    assert builder.update(first, ts("2026-06-18T08:45:55+08:00")) is None
-    result = builder.update(second, ts("2026-06-18T08:46:01+08:00"))
+    assert builder.update(first, ts("2026-06-18T02:45:55+08:00")) is None
+    result = builder.update(second, ts("2026-06-18T02:46:01+08:00"))
 
     assert result is not None
     assert result.bar is not None
-    assert result.bar.timestamp == ts("2026-06-18T08:45:00+08:00")
+    assert result.bar.timestamp == ts("2026-06-18T02:45:00+08:00")
     assert result.bar.ccf_close_filled == 100.0
 
 
 def test_live_minute_bar_builder_allows_ccf_forward_fill_but_skips_stale_umc() -> None:
     builder = LiveMinuteBarBuilder(stale_seconds=10.0, max_leg_timestamp_skew_seconds=10.0)
     first = LiveQuoteSet(
-        ccf=quote("ccf", "2026-06-18T08:45:55+08:00", 100.0),
-        umc=quote("umc", "2026-06-18T08:45:00+08:00", 20.0),
-        usd_twd=quote("usd", "2026-06-18T08:45:55+08:00", 30.0),
+        ccf=quote("ccf", "2026-06-18T02:45:55+08:00", 100.0),
+        umc=quote("umc", "2026-06-18T02:45:00+08:00", 20.0),
+        usd_twd=quote("usd", "2026-06-18T02:45:55+08:00", 30.0),
     )
     stale = LiveQuoteSet(
-        ccf=quote("ccf", "2026-06-18T08:46:01+08:00", 101.0),
-        umc=quote("umc", "2026-06-18T08:46:01+08:00", 21.0),
-        usd_twd=quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
+        ccf=quote("ccf", "2026-06-18T02:46:01+08:00", 101.0),
+        umc=quote("umc", "2026-06-18T02:46:01+08:00", 21.0),
+        usd_twd=quote("usd", "2026-06-18T02:46:01+08:00", 30.0),
     )
 
-    builder.update(first, ts("2026-06-18T08:45:55+08:00"))
-    result = builder.update(stale, ts("2026-06-18T08:46:01+08:00"))
+    builder.update(first, ts("2026-06-18T02:45:55+08:00"))
+    result = builder.update(stale, ts("2026-06-18T02:46:01+08:00"))
 
     assert result is not None
     assert result.skipped_reason == "market_data_stale"
@@ -1706,18 +1716,18 @@ def test_live_minute_bar_builder_forward_fills_stale_ccf_quote() -> None:
     builder = LiveMinuteBarBuilder(stale_seconds=10.0, max_leg_timestamp_skew_seconds=10.0)
     builder.last_ccf_close = 99.0
     first = LiveQuoteSet(
-        ccf=quote("ccf", "2026-06-18T08:44:00+08:00", 100.0),
-        umc=quote("umc", "2026-06-18T08:45:59+08:00", 20.0),
-        usd_twd=quote("usd", "2026-06-18T08:45:59+08:00", 30.0),
+        ccf=quote("ccf", "2026-06-18T02:44:00+08:00", 100.0),
+        umc=quote("umc", "2026-06-18T02:45:59+08:00", 20.0),
+        usd_twd=quote("usd", "2026-06-18T02:45:59+08:00", 30.0),
     )
     second = LiveQuoteSet(
-        ccf=quote("ccf", "2026-06-18T08:46:01+08:00", 101.0),
-        umc=quote("umc", "2026-06-18T08:46:01+08:00", 21.0),
-        usd_twd=quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
+        ccf=quote("ccf", "2026-06-18T02:46:01+08:00", 101.0),
+        umc=quote("umc", "2026-06-18T02:46:01+08:00", 21.0),
+        usd_twd=quote("usd", "2026-06-18T02:46:01+08:00", 30.0),
     )
 
-    builder.update(first, ts("2026-06-18T08:45:59+08:00"))
-    result = builder.update(second, ts("2026-06-18T08:46:01+08:00"))
+    builder.update(first, ts("2026-06-18T02:45:59+08:00"))
+    result = builder.update(second, ts("2026-06-18T02:46:01+08:00"))
 
     assert result is not None
     assert result.bar is not None
@@ -1730,27 +1740,27 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
     warmup_ccf = FakeCcfProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 100.0),
-                ("2026-06-18T04:59:00+08:00", 100.0),
-                ("2026-06-18T05:00:00+08:00", 100.0),
+                ("2026-06-18T02:42:00+08:00", 100.0),
+                ("2026-06-18T02:43:00+08:00", 100.0),
+                ("2026-06-18T02:44:00+08:00", 100.0),
             ]
         )
     )
     warmup_umc = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 20.0),
-                ("2026-06-18T04:59:00+08:00", 20.0),
-                ("2026-06-18T05:00:00+08:00", 20.0),
+                ("2026-06-18T02:42:00+08:00", 20.0),
+                ("2026-06-18T02:43:00+08:00", 20.0),
+                ("2026-06-18T02:44:00+08:00", 20.0),
             ]
         )
     )
     warmup_usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 30.0),
-                ("2026-06-18T04:59:00+08:00", 30.0),
-                ("2026-06-18T05:00:00+08:00", 30.0),
+                ("2026-06-18T02:42:00+08:00", 30.0),
+                ("2026-06-18T02:43:00+08:00", 30.0),
+                ("2026-06-18T02:44:00+08:00", 30.0),
             ]
         )
     )
@@ -1760,57 +1770,57 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
         ccf_fallback_provider=None,
         umc_provider=warmup_umc,
         usd_twd_provider=warmup_usd,
-    ).run(reset_store=True, end=ts("2026-06-18T08:45:00+08:00"))
+    ).run(reset_store=True, end=ts("2026-06-18T02:45:00+08:00"))
 
     clocks = iter(
         [
-            ts("2026-06-18T08:45:30+08:00"),
-            ts("2026-06-18T08:45:59+08:00"),
-            ts("2026-06-18T08:46:00+08:00"),
-            ts("2026-06-18T08:46:01+08:00"),
-            ts("2026-06-18T08:46:01+08:00"),
+            ts("2026-06-18T02:45:30+08:00"),
+            ts("2026-06-18T02:45:59+08:00"),
+            ts("2026-06-18T02:46:00+08:00"),
+            ts("2026-06-18T02:46:01+08:00"),
+            ts("2026-06-18T02:46:01+08:00"),
         ]
     )
     ccf = FakeCcfProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 100.0),
-                ("2026-06-18T04:59:00+08:00", 100.0),
-                ("2026-06-18T05:00:00+08:00", 100.0),
+                ("2026-06-18T02:42:00+08:00", 100.0),
+                ("2026-06-18T02:43:00+08:00", 100.0),
+                ("2026-06-18T02:44:00+08:00", 100.0),
             ]
         ),
         quotes=[
-            quote("ccf", "2026-06-18T08:45:59+08:00", 100.0, bid=99.9, ask=100.1),
-            quote("ccf", "2026-06-18T08:46:00+08:00", 100.0, bid=99.9, ask=100.1),
-            quote("ccf", "2026-06-18T08:46:01+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("ccf", "2026-06-18T02:45:59+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("ccf", "2026-06-18T02:46:00+08:00", 100.0, bid=99.9, ask=100.1),
+            quote("ccf", "2026-06-18T02:46:01+08:00", 100.0, bid=99.9, ask=100.1),
         ]
     )
     umc = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 20.0),
-                ("2026-06-18T04:59:00+08:00", 20.0),
-                ("2026-06-18T05:00:00+08:00", 20.0),
+                ("2026-06-18T02:42:00+08:00", 20.0),
+                ("2026-06-18T02:43:00+08:00", 20.0),
+                ("2026-06-18T02:44:00+08:00", 20.0),
             ]
         ),
         quotes=[
-            quote("umc", "2026-06-18T08:45:59+08:00", 20.0, bid=19.99, ask=20.01),
-            quote("umc", "2026-06-18T08:46:00+08:00", 20.0, bid=19.99, ask=20.01),
-            quote("umc", "2026-06-18T08:46:01+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("umc", "2026-06-18T02:45:59+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("umc", "2026-06-18T02:46:00+08:00", 20.0, bid=19.99, ask=20.01),
+            quote("umc", "2026-06-18T02:46:01+08:00", 20.0, bid=19.99, ask=20.01),
         ],
     )
     usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 30.0),
-                ("2026-06-18T04:59:00+08:00", 30.0),
-                ("2026-06-18T05:00:00+08:00", 30.0),
+                ("2026-06-18T02:42:00+08:00", 30.0),
+                ("2026-06-18T02:43:00+08:00", 30.0),
+                ("2026-06-18T02:44:00+08:00", 30.0),
             ]
         ),
         quotes=[
-            quote("usd", "2026-06-18T08:45:59+08:00", 30.0, bid=29.99, ask=30.01),
-            quote("usd", "2026-06-18T08:46:00+08:00", 30.0, bid=29.99, ask=30.01),
-            quote("usd", "2026-06-18T08:46:01+08:00", 30.0, bid=29.99, ask=30.01),
+            quote("usd", "2026-06-18T02:45:59+08:00", 30.0, bid=29.99, ask=30.01),
+            quote("usd", "2026-06-18T02:46:00+08:00", 30.0, bid=29.99, ask=30.01),
+            quote("usd", "2026-06-18T02:46:01+08:00", 30.0, bid=29.99, ask=30.01),
         ],
     )
     terminal_output = io.StringIO()
@@ -1829,7 +1839,7 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
     assert result.bars_processed == 1
     output = terminal_output.getvalue()
     assert output.count("LIVE") == 3
-    assert "08:45 BAR  " in output
+    assert "02:45 BAR  " in output
     assert "shortSpread(spread=" in output
     assert "longSpread(spread=" in output
     assert "none" in output
@@ -1859,27 +1869,27 @@ def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
     warmup_ccf = FakeCcfProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 100.0),
-                ("2026-06-18T04:59:00+08:00", 100.0),
-                ("2026-06-18T05:00:00+08:00", 100.0),
+                ("2026-06-18T02:42:00+08:00", 100.0),
+                ("2026-06-18T02:43:00+08:00", 100.0),
+                ("2026-06-18T02:44:00+08:00", 100.0),
             ]
         )
     )
     warmup_umc = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 20.0),
-                ("2026-06-18T04:59:00+08:00", 20.0),
-                ("2026-06-18T05:00:00+08:00", 20.0),
+                ("2026-06-18T02:42:00+08:00", 20.0),
+                ("2026-06-18T02:43:00+08:00", 20.0),
+                ("2026-06-18T02:44:00+08:00", 20.0),
             ]
         )
     )
     warmup_usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 30.0),
-                ("2026-06-18T04:59:00+08:00", 30.0),
-                ("2026-06-18T05:00:00+08:00", 30.0),
+                ("2026-06-18T02:42:00+08:00", 30.0),
+                ("2026-06-18T02:43:00+08:00", 30.0),
+                ("2026-06-18T02:44:00+08:00", 30.0),
             ]
         )
     )
@@ -1889,53 +1899,53 @@ def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
         ccf_fallback_provider=None,
         umc_provider=warmup_umc,
         usd_twd_provider=warmup_usd,
-    ).run(reset_store=True, end=ts("2026-06-18T08:45:00+08:00"))
+    ).run(reset_store=True, end=ts("2026-06-18T02:45:00+08:00"))
 
     clocks = iter(
         [
-            ts("2026-06-18T08:45:30+08:00"),
-            ts("2026-06-18T08:45:59+08:00"),
-            ts("2026-06-18T08:46:01+08:00"),
-            ts("2026-06-18T08:46:01+08:00"),
+            ts("2026-06-18T02:45:30+08:00"),
+            ts("2026-06-18T02:45:59+08:00"),
+            ts("2026-06-18T02:46:01+08:00"),
+            ts("2026-06-18T02:46:01+08:00"),
         ]
     )
     ccf = FakeCcfProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 100.0),
-                ("2026-06-18T04:59:00+08:00", 100.0),
-                ("2026-06-18T05:00:00+08:00", 100.0),
+                ("2026-06-18T02:42:00+08:00", 100.0),
+                ("2026-06-18T02:43:00+08:00", 100.0),
+                ("2026-06-18T02:44:00+08:00", 100.0),
             ]
         ),
         quotes=[
-            quote("ccf", "2026-06-18T08:45:59+08:00", 100.0),
-            quote("ccf", "2026-06-18T08:46:01+08:00", 100.0),
+            quote("ccf", "2026-06-18T02:45:59+08:00", 100.0),
+            quote("ccf", "2026-06-18T02:46:01+08:00", 100.0),
         ]
     )
     umc = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 20.0),
-                ("2026-06-18T04:59:00+08:00", 20.0),
-                ("2026-06-18T05:00:00+08:00", 20.0),
+                ("2026-06-18T02:42:00+08:00", 20.0),
+                ("2026-06-18T02:43:00+08:00", 20.0),
+                ("2026-06-18T02:44:00+08:00", 20.0),
             ]
         ),
         quotes=[
-            quote("umc", "2026-06-18T08:45:40+08:00", 20.0),
-            quote("umc", "2026-06-18T08:46:01+08:00", 20.0),
+            quote("umc", "2026-06-18T02:45:40+08:00", 20.0),
+            quote("umc", "2026-06-18T02:46:01+08:00", 20.0),
         ],
     )
     usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 30.0),
-                ("2026-06-18T04:59:00+08:00", 30.0),
-                ("2026-06-18T05:00:00+08:00", 30.0),
+                ("2026-06-18T02:42:00+08:00", 30.0),
+                ("2026-06-18T02:43:00+08:00", 30.0),
+                ("2026-06-18T02:44:00+08:00", 30.0),
             ]
         ),
         quotes=[
-            quote("usd", "2026-06-18T08:45:59+08:00", 30.0),
-            quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
+            quote("usd", "2026-06-18T02:45:59+08:00", 30.0),
+            quote("usd", "2026-06-18T02:46:01+08:00", 30.0),
         ],
     )
     terminal_output = io.StringIO()
@@ -1960,11 +1970,11 @@ def test_live_dry_run_records_simulated_entry_and_opens_position(tmp_path) -> No
     config = replace(config, strategy=replace(config.strategy, entry_z=1.0))
     ccf, umc, usd = dry_run_quote_providers(
         [
-            "2026-06-18T08:45:30+08:00",
-            "2026-06-18T08:45:59+08:00",
-            "2026-06-18T08:46:01+08:00",
-            "2026-06-18T08:46:59+08:00",
-            "2026-06-18T08:47:01+08:00",
+            "2026-06-18T02:45:30+08:00",
+            "2026-06-18T02:45:59+08:00",
+            "2026-06-18T02:46:01+08:00",
+            "2026-06-18T02:46:59+08:00",
+            "2026-06-18T02:47:01+08:00",
         ]
     )
     terminal_output = io.StringIO()
@@ -1976,13 +1986,13 @@ def test_live_dry_run_records_simulated_entry_and_opens_position(tmp_path) -> No
         usd_twd_provider=usd,
         clock=dry_run_clock(
             [
-                "2026-06-18T08:45:00+08:00",
-                "2026-06-18T08:45:30+08:00",
-                "2026-06-18T08:45:59+08:00",
-                "2026-06-18T08:46:01+08:00",
-                "2026-06-18T08:46:59+08:00",
-                "2026-06-18T08:47:01+08:00",
-                "2026-06-18T08:47:02+08:00",
+                "2026-06-18T02:45:00+08:00",
+                "2026-06-18T02:45:30+08:00",
+                "2026-06-18T02:45:59+08:00",
+                "2026-06-18T02:46:01+08:00",
+                "2026-06-18T02:46:59+08:00",
+                "2026-06-18T02:47:01+08:00",
+                "2026-06-18T02:47:02+08:00",
             ]
         ),
         sleeper=lambda _: None,
@@ -2060,11 +2070,11 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
         monkeypatch.setenv(name, "1")
     ccf, umc, usd = dry_run_quote_providers(
         [
-            "2026-06-18T08:45:30+08:00",
-            "2026-06-18T08:45:59+08:00",
-            "2026-06-18T08:46:01+08:00",
-            "2026-06-18T08:46:59+08:00",
-            "2026-06-18T08:47:01+08:00",
+            "2026-06-18T02:45:30+08:00",
+            "2026-06-18T02:45:59+08:00",
+            "2026-06-18T02:46:01+08:00",
+            "2026-06-18T02:46:59+08:00",
+            "2026-06-18T02:47:01+08:00",
         ]
     )
     ccf_adapter = FakeLiveExecutionAdapter(BrokerName.FUBON_CCF)
@@ -2083,24 +2093,24 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
                 broker=BrokerName.FUBON_CCF,
                 symbol="CCFG6",
                 quantity=100.0,
-                fetched_at=ts("2026-06-18T08:47:01+08:00"),
+                fetched_at=ts("2026-06-18T02:47:01+08:00"),
             ),
             FixedPositionReadOnlyBroker(
                 broker=BrokerName.IBKR_UMC,
                 symbol="UMC",
                 quantity=-(1_000_000.0 / (120.0 * 5.0)),
-                fetched_at=ts("2026-06-18T08:47:01+08:00"),
+                fetched_at=ts("2026-06-18T02:47:01+08:00"),
             ),
         ),
         clock=dry_run_clock(
             [
-                "2026-06-18T08:45:00+08:00",
-                "2026-06-18T08:45:30+08:00",
-                "2026-06-18T08:45:59+08:00",
-                "2026-06-18T08:46:01+08:00",
-                "2026-06-18T08:46:59+08:00",
-                "2026-06-18T08:47:01+08:00",
-                "2026-06-18T08:47:02+08:00",
+                "2026-06-18T02:45:00+08:00",
+                "2026-06-18T02:45:30+08:00",
+                "2026-06-18T02:45:59+08:00",
+                "2026-06-18T02:46:01+08:00",
+                "2026-06-18T02:46:59+08:00",
+                "2026-06-18T02:47:01+08:00",
+                "2026-06-18T02:47:02+08:00",
             ]
         ),
         sleeper=lambda _: None,
@@ -2164,11 +2174,11 @@ def _live_execute_resume_brokers(*, ccf_quantity: float, umc_quantity: float, at
 def _run_live_execute_entry_to_open(config) -> None:
     ccf, umc, usd = dry_run_quote_providers(
         [
-            "2026-06-18T08:45:30+08:00",
-            "2026-06-18T08:45:59+08:00",
-            "2026-06-18T08:46:01+08:00",
-            "2026-06-18T08:46:59+08:00",
-            "2026-06-18T08:47:01+08:00",
+            "2026-06-18T02:45:30+08:00",
+            "2026-06-18T02:45:59+08:00",
+            "2026-06-18T02:46:01+08:00",
+            "2026-06-18T02:46:59+08:00",
+            "2026-06-18T02:47:01+08:00",
         ]
     )
     LiveExecuteRunner(
@@ -2181,17 +2191,17 @@ def _run_live_execute_entry_to_open(config) -> None:
         readonly_brokers=_live_execute_resume_brokers(
             ccf_quantity=100.0,
             umc_quantity=-(1_000_000.0 / (120.0 * 5.0)),
-            at="2026-06-18T08:47:01+08:00",
+            at="2026-06-18T02:47:01+08:00",
         ),
         clock=dry_run_clock(
             [
-                "2026-06-18T08:45:00+08:00",
-                "2026-06-18T08:45:30+08:00",
-                "2026-06-18T08:45:59+08:00",
-                "2026-06-18T08:46:01+08:00",
-                "2026-06-18T08:46:59+08:00",
-                "2026-06-18T08:47:01+08:00",
-                "2026-06-18T08:47:02+08:00",
+                "2026-06-18T02:45:00+08:00",
+                "2026-06-18T02:45:30+08:00",
+                "2026-06-18T02:45:59+08:00",
+                "2026-06-18T02:46:01+08:00",
+                "2026-06-18T02:46:59+08:00",
+                "2026-06-18T02:47:01+08:00",
+                "2026-06-18T02:47:02+08:00",
             ]
         ),
         sleeper=lambda _: None,
@@ -2202,30 +2212,30 @@ def _run_live_execute_entry_to_open(config) -> None:
 def _resume_live_execute(config, *, readonly):
     fresh_ccf = rows(
         [
-            ("2026-06-18T05:00:00+08:00", 100.0),
-            ("2026-06-18T08:45:00+08:00", 100.0),
-            ("2026-06-18T08:46:00+08:00", 100.0),
+            ("2026-06-18T02:44:00+08:00", 100.0),
+            ("2026-06-18T02:45:00+08:00", 100.0),
+            ("2026-06-18T02:46:00+08:00", 100.0),
         ]
     )
     fresh_umc = rows(
         [
-            ("2026-06-18T05:00:00+08:00", 20.0),
-            ("2026-06-18T08:45:00+08:00", 20.0),
-            ("2026-06-18T08:46:00+08:00", 20.0),
+            ("2026-06-18T02:44:00+08:00", 20.0),
+            ("2026-06-18T02:45:00+08:00", 20.0),
+            ("2026-06-18T02:46:00+08:00", 20.0),
         ]
     )
     fresh_usd = rows(
         [
-            ("2026-06-18T05:00:00+08:00", 30.0),
-            ("2026-06-18T08:45:00+08:00", 30.0),
-            ("2026-06-18T08:46:00+08:00", 30.0),
+            ("2026-06-18T02:44:00+08:00", 30.0),
+            ("2026-06-18T02:45:00+08:00", 30.0),
+            ("2026-06-18T02:46:00+08:00", 30.0),
         ]
     )
     ccf, umc, usd = dry_run_quote_providers(
         [
-            "2026-06-18T08:47:30+08:00",
-            "2026-06-18T08:47:59+08:00",
-            "2026-06-18T08:48:01+08:00",
+            "2026-06-18T02:47:30+08:00",
+            "2026-06-18T02:47:59+08:00",
+            "2026-06-18T02:48:01+08:00",
         ],
         ccf_rows=fresh_ccf,
         umc_rows=fresh_umc,
@@ -2242,11 +2252,11 @@ def _resume_live_execute(config, *, readonly):
         readonly_brokers=readonly,
         clock=dry_run_clock(
             [
-                "2026-06-18T08:47:02+08:00",
-                "2026-06-18T08:47:30+08:00",
-                "2026-06-18T08:47:59+08:00",
-                "2026-06-18T08:48:01+08:00",
-                "2026-06-18T08:48:02+08:00",
+                "2026-06-18T02:47:02+08:00",
+                "2026-06-18T02:47:30+08:00",
+                "2026-06-18T02:47:59+08:00",
+                "2026-06-18T02:48:01+08:00",
+                "2026-06-18T02:48:02+08:00",
             ]
         ),
         sleeper=lambda _: None,
@@ -2283,7 +2293,7 @@ def test_live_execute_resume_keeps_open_when_broker_matches(
         readonly=_live_execute_resume_brokers(
             ccf_quantity=100.0,
             umc_quantity=-(1_000_000.0 / (120.0 * 5.0)),
-            at="2026-06-18T08:47:30+08:00",
+            at="2026-06-18T02:47:30+08:00",
         ),
     )
 
@@ -2311,7 +2321,7 @@ def test_live_execute_resume_pauses_when_broker_lost_position(
         readonly=_live_execute_resume_brokers(
             ccf_quantity=0.0,
             umc_quantity=0.0,
-            at="2026-06-18T08:47:30+08:00",
+            at="2026-06-18T02:47:30+08:00",
         ),
     )
 
@@ -2354,7 +2364,7 @@ def test_live_execute_resume_keeps_position_when_broker_unreachable(
                 broker=BrokerName.IBKR_UMC,
                 symbol="UMC",
                 quantity=-(1_000_000.0 / (120.0 * 5.0)),
-                fetched_at=ts("2026-06-18T08:47:30+08:00"),
+                fetched_at=ts("2026-06-18T02:47:30+08:00"),
             ),
         ),
     )
@@ -2374,11 +2384,11 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
     config = replace(config, strategy=replace(config.strategy, entry_z=1.0))
     first_ccf, first_umc, first_usd = dry_run_quote_providers(
         [
-            "2026-06-18T08:45:30+08:00",
-            "2026-06-18T08:45:59+08:00",
-            "2026-06-18T08:46:01+08:00",
-            "2026-06-18T08:46:59+08:00",
-            "2026-06-18T08:47:01+08:00",
+            "2026-06-18T02:45:30+08:00",
+            "2026-06-18T02:45:59+08:00",
+            "2026-06-18T02:46:01+08:00",
+            "2026-06-18T02:46:59+08:00",
+            "2026-06-18T02:47:01+08:00",
         ]
     )
 
@@ -2389,13 +2399,13 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
         usd_twd_provider=first_usd,
         clock=dry_run_clock(
             [
-                "2026-06-18T08:45:00+08:00",
-                "2026-06-18T08:45:30+08:00",
-                "2026-06-18T08:45:59+08:00",
-                "2026-06-18T08:46:01+08:00",
-                "2026-06-18T08:46:59+08:00",
-                "2026-06-18T08:47:01+08:00",
-                "2026-06-18T08:47:02+08:00",
+                "2026-06-18T02:45:00+08:00",
+                "2026-06-18T02:45:30+08:00",
+                "2026-06-18T02:45:59+08:00",
+                "2026-06-18T02:46:01+08:00",
+                "2026-06-18T02:46:59+08:00",
+                "2026-06-18T02:47:01+08:00",
+                "2026-06-18T02:47:02+08:00",
             ]
         ),
         sleeper=lambda _: None,
@@ -2406,30 +2416,30 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
 
     resume_ccf = rows(
         [
-            ("2026-06-18T05:00:00+08:00", 100.0),
-            ("2026-06-18T08:45:00+08:00", 100.0),
-            ("2026-06-18T08:46:00+08:00", 100.0),
+            ("2026-06-18T02:44:00+08:00", 100.0),
+            ("2026-06-18T02:45:00+08:00", 100.0),
+            ("2026-06-18T02:46:00+08:00", 100.0),
         ]
     )
     resume_umc = rows(
         [
-            ("2026-06-18T05:00:00+08:00", 20.0),
-            ("2026-06-18T08:45:00+08:00", 20.0),
-            ("2026-06-18T08:46:00+08:00", 20.0),
+            ("2026-06-18T02:44:00+08:00", 20.0),
+            ("2026-06-18T02:45:00+08:00", 20.0),
+            ("2026-06-18T02:46:00+08:00", 20.0),
         ]
     )
     resume_usd = rows(
         [
-            ("2026-06-18T05:00:00+08:00", 30.0),
-            ("2026-06-18T08:45:00+08:00", 30.0),
-            ("2026-06-18T08:46:00+08:00", 30.0),
+            ("2026-06-18T02:44:00+08:00", 30.0),
+            ("2026-06-18T02:45:00+08:00", 30.0),
+            ("2026-06-18T02:46:00+08:00", 30.0),
         ]
     )
     second_ccf, second_umc, second_usd = dry_run_quote_providers(
         [
-            "2026-06-18T08:47:30+08:00",
-            "2026-06-18T08:47:59+08:00",
-            "2026-06-18T08:48:01+08:00",
+            "2026-06-18T02:47:30+08:00",
+            "2026-06-18T02:47:59+08:00",
+            "2026-06-18T02:48:01+08:00",
         ],
         ccf_rows=resume_ccf,
         umc_rows=resume_umc,
@@ -2442,11 +2452,11 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
         usd_twd_provider=second_usd,
         clock=dry_run_clock(
             [
-                "2026-06-18T08:47:02+08:00",
-                "2026-06-18T08:47:30+08:00",
-                "2026-06-18T08:47:59+08:00",
-                "2026-06-18T08:48:01+08:00",
-                "2026-06-18T08:48:02+08:00",
+                "2026-06-18T02:47:02+08:00",
+                "2026-06-18T02:47:30+08:00",
+                "2026-06-18T02:47:59+08:00",
+                "2026-06-18T02:48:01+08:00",
+                "2026-06-18T02:48:02+08:00",
             ]
         ),
         sleeper=lambda _: None,
@@ -2494,7 +2504,7 @@ def test_reconnect_ccf_provider_if_supported_relogins_and_stays_safe() -> None:
             if self.exc is not None:
                 raise self.exc
 
-    when = ts("2026-06-18T08:45:00+08:00")
+    when = ts("2026-06-18T02:45:00+08:00")
 
     out = io.StringIO()
     provider = _ReconProvider()
@@ -2519,11 +2529,11 @@ def test_live_dry_run_survives_contract_resolution_failure(tmp_path) -> None:
     config = replace(config, strategy=replace(config.strategy, entry_z=1.0))
     ccf, umc, usd = dry_run_quote_providers(
         [
-            "2026-06-18T08:45:30+08:00",
-            "2026-06-18T08:45:59+08:00",
-            "2026-06-18T08:46:01+08:00",
-            "2026-06-18T08:46:59+08:00",
-            "2026-06-18T08:47:01+08:00",
+            "2026-06-18T02:45:30+08:00",
+            "2026-06-18T02:45:59+08:00",
+            "2026-06-18T02:46:01+08:00",
+            "2026-06-18T02:46:59+08:00",
+            "2026-06-18T02:47:01+08:00",
         ]
     )
     # Startup resolves the contract once successfully; every later per-bar
@@ -2548,13 +2558,13 @@ def test_live_dry_run_survives_contract_resolution_failure(tmp_path) -> None:
         usd_twd_provider=usd,
         clock=dry_run_clock(
             [
-                "2026-06-18T08:45:00+08:00",
-                "2026-06-18T08:45:30+08:00",
-                "2026-06-18T08:45:59+08:00",
-                "2026-06-18T08:46:01+08:00",
-                "2026-06-18T08:46:59+08:00",
-                "2026-06-18T08:47:01+08:00",
-                "2026-06-18T08:47:02+08:00",
+                "2026-06-18T02:45:00+08:00",
+                "2026-06-18T02:45:30+08:00",
+                "2026-06-18T02:45:59+08:00",
+                "2026-06-18T02:46:01+08:00",
+                "2026-06-18T02:46:59+08:00",
+                "2026-06-18T02:47:01+08:00",
+                "2026-06-18T02:47:02+08:00",
             ]
         ),
         sleeper=lambda _: None,
@@ -2574,7 +2584,7 @@ def seed_strategy_state(config: AppConfig, state: StrategyRuntimeState) -> None:
             0,
             state.exit_signal_time
             or state.candidate_time
-            or ts("2026-06-18T08:45:00+08:00"),
+            or ts("2026-06-18T02:45:00+08:00"),
             state,
             IndicatorEngine(window=config.strategy.zscore_window),
         )
@@ -2584,12 +2594,12 @@ def seed_strategy_state(config: AppConfig, state: StrategyRuntimeState) -> None:
 
 
 def open_position_state(*, state: StrategyState) -> StrategyRuntimeState:
-    entry_time = ts("2026-06-18T08:40:00+08:00")
+    entry_time = ts("2026-06-18T02:40:00+08:00")
     return StrategyRuntimeState(
         state=state,
         position_direction=Direction.SHORT_UMC_LONG_CCF,
         exit_signal_idx=0 if state == StrategyState.EXIT_PENDING else -1,
-        exit_signal_time=ts("2026-06-18T08:45:00+08:00")
+        exit_signal_time=ts("2026-06-18T02:45:00+08:00")
         if state == StrategyState.EXIT_PENDING
         else None,
         exit_signal_zscore=-0.1 if state == StrategyState.EXIT_PENDING else None,
@@ -2641,9 +2651,9 @@ def test_live_dry_run_exit_pending_records_exit_intent(tmp_path) -> None:
     seed_strategy_state(config, open_position_state(state=StrategyState.EXIT_PENDING))
     ccf, umc, usd = dry_run_quote_providers(
         [
-            "2026-06-18T08:45:30+08:00",
-            "2026-06-18T08:45:59+08:00",
-            "2026-06-18T08:46:01+08:00",
+            "2026-06-18T02:45:30+08:00",
+            "2026-06-18T02:45:59+08:00",
+            "2026-06-18T02:46:01+08:00",
         ]
     )
 
@@ -2654,11 +2664,11 @@ def test_live_dry_run_exit_pending_records_exit_intent(tmp_path) -> None:
         usd_twd_provider=usd,
         clock=dry_run_clock(
             [
-                "2026-06-18T08:45:00+08:00",
-                "2026-06-18T08:45:30+08:00",
-                "2026-06-18T08:45:59+08:00",
-                "2026-06-18T08:46:01+08:00",
-                "2026-06-18T08:46:02+08:00",
+                "2026-06-18T02:45:00+08:00",
+                "2026-06-18T02:45:30+08:00",
+                "2026-06-18T02:45:59+08:00",
+                "2026-06-18T02:46:01+08:00",
+                "2026-06-18T02:46:02+08:00",
             ]
         ),
         sleeper=lambda _: None,
@@ -2697,32 +2707,35 @@ def test_live_dry_run_force_exit_records_rollover_exit_intent(tmp_path) -> None:
     state.trading_ccf_expiry = "2026-06-19"
     state.open_trade["ccf_expiry"] = "2026-06-19"
     seed_strategy_state(config, state)
+    # The rollover deadline is the pair session's 04:00 close less the 5-minute
+    # grace, so the bar that must trigger it is 03:55 -- not the old 13:35, which
+    # sat in the TAIFEX day session where this pair does not trade at all.
     force_ccf_rows = rows(
         [
-            ("2026-06-18T13:32:00+08:00", 100.0),
-            ("2026-06-18T13:33:00+08:00", 100.0),
-            ("2026-06-18T13:34:00+08:00", 100.0),
+            ("2026-06-18T03:52:00+08:00", 100.0),
+            ("2026-06-18T03:53:00+08:00", 100.0),
+            ("2026-06-18T03:54:00+08:00", 100.0),
         ]
     )
     force_umc_rows = rows(
         [
-            ("2026-06-18T13:32:00+08:00", 20.0),
-            ("2026-06-18T13:33:00+08:00", 20.0),
-            ("2026-06-18T13:34:00+08:00", 20.0),
+            ("2026-06-18T03:52:00+08:00", 20.0),
+            ("2026-06-18T03:53:00+08:00", 20.0),
+            ("2026-06-18T03:54:00+08:00", 20.0),
         ]
     )
     force_usd_rows = rows(
         [
-            ("2026-06-18T13:32:00+08:00", 25.0),
-            ("2026-06-18T13:33:00+08:00", 25.0),
-            ("2026-06-18T13:34:00+08:00", 25.0),
+            ("2026-06-18T03:52:00+08:00", 25.0),
+            ("2026-06-18T03:53:00+08:00", 25.0),
+            ("2026-06-18T03:54:00+08:00", 25.0),
         ]
     )
     ccf, umc, usd = dry_run_quote_providers(
         [
-            "2026-06-18T13:35:30+08:00",
-            "2026-06-18T13:35:59+08:00",
-            "2026-06-18T13:36:01+08:00",
+            "2026-06-18T03:55:30+08:00",
+            "2026-06-18T03:55:59+08:00",
+            "2026-06-18T03:56:01+08:00",
         ],
         ccf_rows=force_ccf_rows,
         umc_rows=force_umc_rows,
@@ -2736,11 +2749,11 @@ def test_live_dry_run_force_exit_records_rollover_exit_intent(tmp_path) -> None:
         usd_twd_provider=usd,
         clock=dry_run_clock(
             [
-                "2026-06-18T13:35:00+08:00",
-                "2026-06-18T13:35:30+08:00",
-                "2026-06-18T13:35:59+08:00",
-                "2026-06-18T13:36:01+08:00",
-                "2026-06-18T13:36:02+08:00",
+                "2026-06-18T03:55:00+08:00",
+                "2026-06-18T03:55:30+08:00",
+                "2026-06-18T03:55:59+08:00",
+                "2026-06-18T03:56:01+08:00",
+                "2026-06-18T03:56:02+08:00",
             ]
         ),
         sleeper=lambda _: None,
@@ -2778,27 +2791,27 @@ def test_live_runtime_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
     ccf = FakeCcfProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 100.0),
-                ("2026-06-18T04:59:00+08:00", 101.0),
-                ("2026-06-18T05:00:00+08:00", 102.0),
+                ("2026-06-18T02:42:00+08:00", 100.0),
+                ("2026-06-18T02:43:00+08:00", 101.0),
+                ("2026-06-18T02:44:00+08:00", 102.0),
             ]
         )
     )
     umc = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 20.0),
-                ("2026-06-18T04:59:00+08:00", 20.5),
-                ("2026-06-18T05:00:00+08:00", 21.0),
+                ("2026-06-18T02:42:00+08:00", 20.0),
+                ("2026-06-18T02:43:00+08:00", 20.5),
+                ("2026-06-18T02:44:00+08:00", 21.0),
             ]
         )
     )
     usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 30.0),
-                ("2026-06-18T04:59:00+08:00", 30.0),
-                ("2026-06-18T05:00:00+08:00", 30.0),
+                ("2026-06-18T02:42:00+08:00", 30.0),
+                ("2026-06-18T02:43:00+08:00", 30.0),
+                ("2026-06-18T02:44:00+08:00", 30.0),
             ]
         )
     )
@@ -2809,7 +2822,7 @@ def test_live_runtime_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
         ccf_provider=ccf,
         umc_provider=umc,
         usd_twd_provider=usd,
-        clock=lambda: ts("2026-06-18T08:45:00+08:00"),
+        clock=lambda: ts("2026-06-18T02:45:00+08:00"),
         sleeper=lambda _: None,
         reporter=LiveTerminalReporter(terminal_output, color=False),
     ).run(reset_store=True, max_iterations=0)
@@ -2848,27 +2861,27 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
     warmup_ccf = FakeCcfProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 100.0),
-                ("2026-06-18T04:59:00+08:00", 101.0),
-                ("2026-06-18T05:00:00+08:00", 102.0),
+                ("2026-06-18T02:42:00+08:00", 100.0),
+                ("2026-06-18T02:43:00+08:00", 101.0),
+                ("2026-06-18T02:44:00+08:00", 102.0),
             ]
         )
     )
     warmup_umc = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 20.0),
-                ("2026-06-18T04:59:00+08:00", 20.5),
-                ("2026-06-18T05:00:00+08:00", 21.0),
+                ("2026-06-18T02:42:00+08:00", 20.0),
+                ("2026-06-18T02:43:00+08:00", 20.5),
+                ("2026-06-18T02:44:00+08:00", 21.0),
             ]
         )
     )
     warmup_usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 30.0),
-                ("2026-06-18T04:59:00+08:00", 30.0),
-                ("2026-06-18T05:00:00+08:00", 30.0),
+                ("2026-06-18T02:42:00+08:00", 30.0),
+                ("2026-06-18T02:43:00+08:00", 30.0),
+                ("2026-06-18T02:44:00+08:00", 30.0),
             ]
         )
     )
@@ -2878,13 +2891,13 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
         ccf_fallback_provider=None,
         umc_provider=warmup_umc,
         usd_twd_provider=warmup_usd,
-    ).run(reset_store=True, end=ts("2026-06-18T08:45:00+08:00"))
+    ).run(reset_store=True, end=ts("2026-06-18T02:45:00+08:00"))
 
     fresh_rows = rows(
         [
-            ("2026-06-18T08:45:00+08:00", 110.0),
-            ("2026-06-18T08:46:00+08:00", 111.0),
-            ("2026-06-18T08:47:00+08:00", 112.0),
+            ("2026-06-18T02:45:00+08:00", 110.0),
+            ("2026-06-18T02:46:00+08:00", 111.0),
+            ("2026-06-18T02:47:00+08:00", 112.0),
         ]
     )
     live_ccf = FakeCcfProvider(fresh_rows)
@@ -2892,9 +2905,9 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
     live_usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 30.0),
-                ("2026-06-18T08:46:00+08:00", 30.0),
-                ("2026-06-18T08:47:00+08:00", 30.0),
+                ("2026-06-18T02:45:00+08:00", 30.0),
+                ("2026-06-18T02:46:00+08:00", 30.0),
+                ("2026-06-18T02:47:00+08:00", 30.0),
             ]
         )
     )
@@ -2905,7 +2918,7 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
         ccf_provider=live_ccf,
         umc_provider=live_umc,
         usd_twd_provider=live_usd,
-        clock=lambda: ts("2026-06-18T08:48:00+08:00"),
+        clock=lambda: ts("2026-06-18T02:48:00+08:00"),
         sleeper=lambda _: None,
         reporter=LiveTerminalReporter(terminal_output, color=False),
     ).run(resume=True, max_iterations=0)
@@ -2921,9 +2934,9 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
         store.initialize()
         refreshed = store.load_indicator_seed_bars(3, ccf_symbol="CCFG6")
         assert [bar.timestamp for bar in refreshed] == [
-            ts("2026-06-18T08:45:00+08:00"),
-            ts("2026-06-18T08:46:00+08:00"),
-            ts("2026-06-18T08:47:00+08:00"),
+            ts("2026-06-18T02:45:00+08:00"),
+            ts("2026-06-18T02:46:00+08:00"),
+            ts("2026-06-18T02:47:00+08:00"),
         ]
         # Fresh resume warmup replaces only the seed snapshot.  Downtime is
         # never backfilled into the strategy's formal live-bar history.
@@ -2937,23 +2950,23 @@ def test_live_runtime_non_resume_refreshes_existing_seed_by_default(tmp_path) ->
     seed_warmup_bars(config)
     fresh_ccf = rows(
         [
-            ("2026-06-18T08:45:00+08:00", 110.0),
-            ("2026-06-18T08:46:00+08:00", 111.0),
-            ("2026-06-18T08:47:00+08:00", 112.0),
+            ("2026-06-18T02:45:00+08:00", 110.0),
+            ("2026-06-18T02:46:00+08:00", 111.0),
+            ("2026-06-18T02:47:00+08:00", 112.0),
         ]
     )
     fresh_umc = rows(
         [
-            ("2026-06-18T08:45:00+08:00", 20.0),
-            ("2026-06-18T08:46:00+08:00", 20.0),
-            ("2026-06-18T08:47:00+08:00", 20.0),
+            ("2026-06-18T02:45:00+08:00", 20.0),
+            ("2026-06-18T02:46:00+08:00", 20.0),
+            ("2026-06-18T02:47:00+08:00", 20.0),
         ]
     )
     fresh_usd = rows(
         [
-            ("2026-06-18T08:45:00+08:00", 30.0),
-            ("2026-06-18T08:46:00+08:00", 30.0),
-            ("2026-06-18T08:47:00+08:00", 30.0),
+            ("2026-06-18T02:45:00+08:00", 30.0),
+            ("2026-06-18T02:46:00+08:00", 30.0),
+            ("2026-06-18T02:47:00+08:00", 30.0),
         ]
     )
     ccf = FakeCcfProvider(fresh_ccf)
@@ -2963,7 +2976,7 @@ def test_live_runtime_non_resume_refreshes_existing_seed_by_default(tmp_path) ->
         ccf_provider=ccf,
         umc_provider=FakeOhlcvProvider(fresh_umc),
         usd_twd_provider=FakeOhlcvProvider(fresh_usd),
-        clock=lambda: ts("2026-06-18T08:48:00+08:00"),
+        clock=lambda: ts("2026-06-18T02:48:00+08:00"),
         sleeper=lambda _: None,
     ).run(max_iterations=0)
 
@@ -2973,9 +2986,9 @@ def test_live_runtime_non_resume_refreshes_existing_seed_by_default(tmp_path) ->
         store.initialize()
         refreshed = store.load_indicator_seed_bars(3, ccf_symbol="CCFG6")
         assert [bar.timestamp for bar in refreshed] == [
-            ts("2026-06-18T08:45:00+08:00"),
-            ts("2026-06-18T08:46:00+08:00"),
-            ts("2026-06-18T08:47:00+08:00"),
+            ts("2026-06-18T02:45:00+08:00"),
+            ts("2026-06-18T02:46:00+08:00"),
+            ts("2026-06-18T02:47:00+08:00"),
         ]
     finally:
         store.close()
@@ -2994,7 +3007,7 @@ def test_live_runtime_resume_refuses_cached_seed_when_refresh_fails(tmp_path) ->
             ccf_provider=ccf,
             umc_provider=umc,
             usd_twd_provider=usd,
-            clock=lambda: ts("2026-06-18T08:48:00+08:00"),
+            clock=lambda: ts("2026-06-18T02:48:00+08:00"),
             sleeper=lambda _: None,
         ).run(resume=True, max_iterations=0)
 
@@ -3013,7 +3026,7 @@ def test_live_runtime_resume_rejects_skip_warmup(tmp_path) -> None:
             ccf_provider=FakeCcfProvider(pd.DataFrame()),
             umc_provider=FakeOhlcvProvider(pd.DataFrame()),
             usd_twd_provider=FakeOhlcvProvider(pd.DataFrame()),
-            clock=lambda: ts("2026-06-18T08:48:00+08:00"),
+            clock=lambda: ts("2026-06-18T02:48:00+08:00"),
             sleeper=lambda _: None,
         ).run(resume=True, max_iterations=0, skip_warmup=True)
 
@@ -3023,27 +3036,27 @@ def test_live_runtime_skip_warmup_requires_existing_seed(tmp_path) -> None:
     ccf = FakeCcfProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 100.0),
-                ("2026-06-18T04:59:00+08:00", 101.0),
-                ("2026-06-18T05:00:00+08:00", 102.0),
+                ("2026-06-18T02:42:00+08:00", 100.0),
+                ("2026-06-18T02:43:00+08:00", 101.0),
+                ("2026-06-18T02:44:00+08:00", 102.0),
             ]
         )
     )
     umc = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 20.0),
-                ("2026-06-18T04:59:00+08:00", 20.5),
-                ("2026-06-18T05:00:00+08:00", 21.0),
+                ("2026-06-18T02:42:00+08:00", 20.0),
+                ("2026-06-18T02:43:00+08:00", 20.5),
+                ("2026-06-18T02:44:00+08:00", 21.0),
             ]
         )
     )
     usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T04:58:00+08:00", 30.0),
-                ("2026-06-18T04:59:00+08:00", 30.0),
-                ("2026-06-18T05:00:00+08:00", 30.0),
+                ("2026-06-18T02:42:00+08:00", 30.0),
+                ("2026-06-18T02:43:00+08:00", 30.0),
+                ("2026-06-18T02:44:00+08:00", 30.0),
             ]
         )
     )
@@ -3054,7 +3067,7 @@ def test_live_runtime_skip_warmup_requires_existing_seed(tmp_path) -> None:
             ccf_provider=ccf,
             umc_provider=umc,
             usd_twd_provider=usd,
-            clock=lambda: ts("2026-06-18T08:45:00+08:00"),
+            clock=lambda: ts("2026-06-18T02:45:00+08:00"),
             sleeper=lambda _: None,
         ).run(reset_store=True, max_iterations=0, skip_warmup=True)
 
@@ -3088,9 +3101,9 @@ def test_warmup_runner_rejects_live_order_flag_before_provider_calls(tmp_path) -
             expected_zscore_tolerance=1e-7,
         ),
     )
-    ccf = FakeCcfProvider(rows([("2026-06-18T08:45:00+08:00", 100.0)]))
-    umc = FakeOhlcvProvider(rows([("2026-06-18T08:45:00+08:00", 20.0)]))
-    usd = FakeOhlcvProvider(rows([("2026-06-18T08:45:00+08:00", 30.0)]))
+    ccf = FakeCcfProvider(rows([("2026-06-18T02:45:00+08:00", 100.0)]))
+    umc = FakeOhlcvProvider(rows([("2026-06-18T02:45:00+08:00", 20.0)]))
+    usd = FakeOhlcvProvider(rows([("2026-06-18T02:45:00+08:00", 30.0)]))
 
     with pytest.raises(RuntimeError, match="allow_live_order"):
         WarmupRunner(
@@ -3113,27 +3126,27 @@ def test_warmup_runner_fixed_symbol_skips_front_month_selector_and_writes_seed_o
     ccf = FakeCcfProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 100.0),
-                ("2026-06-18T08:46:00+08:00", 101.0),
-                ("2026-06-18T08:47:00+08:00", 102.0),
+                ("2026-06-18T02:45:00+08:00", 100.0),
+                ("2026-06-18T02:46:00+08:00", 101.0),
+                ("2026-06-18T02:47:00+08:00", 102.0),
             ]
         )
     )
     umc = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 20.0),
-                ("2026-06-18T08:46:00+08:00", 20.5),
-                ("2026-06-18T08:47:00+08:00", 21.0),
+                ("2026-06-18T02:45:00+08:00", 20.0),
+                ("2026-06-18T02:46:00+08:00", 20.5),
+                ("2026-06-18T02:47:00+08:00", 21.0),
             ]
         )
     )
     usd = FakeOhlcvProvider(
         rows(
             [
-                ("2026-06-18T08:45:00+08:00", 30.0),
-                ("2026-06-18T08:46:00+08:00", 30.0),
-                ("2026-06-18T08:47:00+08:00", 30.0),
+                ("2026-06-18T02:45:00+08:00", 30.0),
+                ("2026-06-18T02:46:00+08:00", 30.0),
+                ("2026-06-18T02:47:00+08:00", 30.0),
             ]
         )
     )
@@ -3144,7 +3157,7 @@ def test_warmup_runner_fixed_symbol_skips_front_month_selector_and_writes_seed_o
         ccf_fallback_provider=None,
         umc_provider=umc,
         usd_twd_provider=usd,
-    ).run(reset_store=True, end=ts("2026-06-18T08:48:00+08:00"))
+    ).run(reset_store=True, end=ts("2026-06-18T02:48:00+08:00"))
 
     assert result.bars_written == 3
     assert result.ccf_symbol == "CCFG6"
@@ -3166,13 +3179,13 @@ def test_warmup_runner_fixed_symbol_skips_front_month_selector_and_writes_seed_o
 
 def test_ccf_warmup_check_runner_uses_fubon_and_taifex_only(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    ccf = FakeCcfProvider(rows([("2026-06-18T08:47:00+08:00", 103.0)]))
+    ccf = FakeCcfProvider(rows([("2026-06-18T02:47:00+08:00", 103.0)]))
     taifex = FakeCcfProvider(
         rows(
             [
-                ("2026-06-18T08:44:00+08:00", 99.0),
-                ("2026-06-18T08:45:00+08:00", 100.0),
-                ("2026-06-18T08:46:00+08:00", 101.0),
+                ("2026-06-18T02:44:00+08:00", 99.0),
+                ("2026-06-18T02:45:00+08:00", 100.0),
+                ("2026-06-18T02:46:00+08:00", 101.0),
             ]
         )
     )
@@ -3181,7 +3194,7 @@ def test_ccf_warmup_check_runner_uses_fubon_and_taifex_only(tmp_path) -> None:
         config,
         ccf_provider=ccf,
         taifex_provider=taifex,
-    ).run(output_csv="", end=ts("2026-06-18T08:48:00+08:00"))
+    ).run(output_csv="", end=ts("2026-06-18T02:48:00+08:00"))
 
     assert result.ccf_symbol == "CCFG6"
     assert len(result.report.frame) == 3
@@ -3194,9 +3207,9 @@ def test_ccf_warmup_check_refuses_wholly_missing_current_session(tmp_path) -> No
     config = small_live_config(tmp_path)
     day_only = rows(
         [
-            ("2026-06-18T13:43:00+08:00", 100.0),
-            ("2026-06-18T13:44:00+08:00", 101.0),
-            ("2026-06-18T13:45:00+08:00", 102.0),
+            ("2026-06-18T03:43:00+08:00", 100.0),
+            ("2026-06-18T03:44:00+08:00", 101.0),
+            ("2026-06-18T03:45:00+08:00", 102.0),
         ]
     )
 
@@ -3411,22 +3424,28 @@ def test_contract_policy_force_exit_helper_uses_configured_deadline(tmp_path) ->
         trading_ccf_expiry="2026-07-15",
     )
 
+    # 03:55 = the pair session's 04:00 close less the 5-minute grace, not a
+    # TAIFEX wall clock. See core/contract_policy.force_exit_deadline.
     assert not should_force_exit_for_contract_policy(
         config,
         state,
-        ts("2026-07-14T13:34:00+08:00"),
+        ts("2026-07-14T03:54:00+08:00"),
     )
     assert should_force_exit_for_contract_policy(
         config,
         state,
-        ts("2026-07-14T13:35:00+08:00"),
+        ts("2026-07-14T03:55:00+08:00"),
     )
 
 
 def test_resolve_force_exit_reason_weekend_requires_open_position(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    weekend_bar = ts("2026-06-20T04:58:00+08:00")  # Friday-night session tail
-    weekday_bar = ts("2026-06-18T11:45:00+08:00")  # ordinary Thursday day session
+    # 03:58 on Saturday is inside the grace window before the pair's last
+    # session close of the week (Friday's US session, closing 04:00 Taipei).
+    weekend_bar = ts("2026-06-20T03:58:00+08:00")
+    # Mid-session on an ordinary Wednesday-into-Thursday: in the pair's window,
+    # nowhere near its close.
+    weekday_bar = ts("2026-06-18T03:00:00+08:00")
     flat = StrategyRuntimeState(state=StrategyState.FLAT)
     open_far_expiry = StrategyRuntimeState(
         state=StrategyState.OPEN,
@@ -3448,9 +3467,10 @@ def test_resolve_force_exit_reason_weekend_requires_open_position(tmp_path) -> N
 
 def test_resolve_force_exit_reason_prefers_expiry_over_weekend(tmp_path) -> None:
     config = small_live_config(tmp_path)
-    weekend_bar = ts("2026-06-20T04:58:00+08:00")
-    # 2026-06-22 (Mon) expiry -> force-exit deadline is the previous business day
-    # (Fri 2026-06-19) 13:35, already past by the weekend bar, so rollover wins.
+    weekend_bar = ts("2026-06-20T03:58:00+08:00")
+    # 2026-06-22 (Mon) expiry -> force-exit deadline is the pair session close on
+    # the previous business day (Fri 2026-06-19 04:00) less the grace, i.e.
+    # 03:55, already past by the weekend bar, so rollover wins.
     open_near_expiry = StrategyRuntimeState(
         state=StrategyState.OPEN,
         position_direction=Direction.SHORT_UMC_LONG_CCF,
@@ -3469,34 +3489,36 @@ def test_live_dry_run_weekend_force_exit_flattens_before_weekend(tmp_path) -> No
     # Far expiry: the contract-policy rollover must NOT fire, isolating the
     # weekend/session-end flatten as the only force-exit driver.
     seed_strategy_state(config, open_position_state(state=StrategyState.OPEN))
-    # Warmup-rebuild inputs: three session minutes inside the Friday-night session
-    # (2026-06-19 17:25 -> 2026-06-20 05:00), just before the live bar at 04:58.
+    # The pair's last session before the weekend is Friday 06-19's US session,
+    # which closes at Taipei 06-20 04:00 -- an hour BEFORE the TAIFEX night
+    # session it sits inside. The grace window is therefore 03:55-04:00, and the
+    # bar that must trigger the flatten is 03:58.
     warmup_ccf = rows(
         [
-            ("2026-06-20T04:55:00+08:00", 100.0),
-            ("2026-06-20T04:56:00+08:00", 100.0),
-            ("2026-06-20T04:57:00+08:00", 100.0),
+            ("2026-06-20T03:55:00+08:00", 100.0),
+            ("2026-06-20T03:56:00+08:00", 100.0),
+            ("2026-06-20T03:57:00+08:00", 100.0),
         ]
     )
     warmup_umc = rows(
         [
-            ("2026-06-20T04:55:00+08:00", 20.0),
-            ("2026-06-20T04:56:00+08:00", 20.0),
-            ("2026-06-20T04:57:00+08:00", 20.0),
+            ("2026-06-20T03:55:00+08:00", 20.0),
+            ("2026-06-20T03:56:00+08:00", 20.0),
+            ("2026-06-20T03:57:00+08:00", 20.0),
         ]
     )
     warmup_usd = rows(
         [
-            ("2026-06-20T04:55:00+08:00", 25.0),
-            ("2026-06-20T04:56:00+08:00", 25.0),
-            ("2026-06-20T04:57:00+08:00", 25.0),
+            ("2026-06-20T03:55:00+08:00", 25.0),
+            ("2026-06-20T03:56:00+08:00", 25.0),
+            ("2026-06-20T03:57:00+08:00", 25.0),
         ]
     )
     ccf, umc, usd = dry_run_quote_providers(
         [
-            "2026-06-20T04:58:30+08:00",
-            "2026-06-20T04:58:59+08:00",
-            "2026-06-20T04:59:01+08:00",
+            "2026-06-20T03:58:30+08:00",
+            "2026-06-20T03:58:59+08:00",
+            "2026-06-20T03:59:01+08:00",
         ],
         ccf_rows=warmup_ccf,
         umc_rows=warmup_umc,
@@ -3510,11 +3532,11 @@ def test_live_dry_run_weekend_force_exit_flattens_before_weekend(tmp_path) -> No
         usd_twd_provider=usd,
         clock=dry_run_clock(
             [
-                "2026-06-20T04:58:00+08:00",
-                "2026-06-20T04:58:30+08:00",
-                "2026-06-20T04:58:59+08:00",
-                "2026-06-20T04:59:01+08:00",
-                "2026-06-20T04:59:02+08:00",
+                "2026-06-20T03:58:00+08:00",
+                "2026-06-20T03:58:30+08:00",
+                "2026-06-20T03:58:59+08:00",
+                "2026-06-20T03:59:01+08:00",
+                "2026-06-20T03:59:02+08:00",
             ]
         ),
         sleeper=lambda _: None,

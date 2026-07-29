@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from lux_trader.integrations.ibkr.calendar import umc_rth_session
+from lux_trader.core.us_calendar import umc_rth_session
 from lux_trader.integrations.ibkr.market_data import IbkrUmcQuoteProvider
 from lux_trader.store import SQLiteStore
 

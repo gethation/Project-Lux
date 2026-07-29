@@ -7,6 +7,7 @@ from typing import Any
 from ..config import ContractPolicyConfig
 from .contracts import parse_contract_expiry, row_get, row_to_dict
 from .time import TAIPEI_TZ
+from .us_calendar import umc_rth_session
 
 
 @dataclass(frozen=True)
@@ -64,18 +65,49 @@ class ExpiryBufferContractPolicy:
         return sorted(parsed, key=lambda item: (item.expiry, item.symbol))[0]
 
     def force_exit_deadline(self, expiry: date) -> datetime:
+        """When the rollover flatten must have happened by.
+
+        Anchored to the END OF THE PAIR'S OWN SESSION, not to a TAIFEX wall
+        clock. The inherited 13:35 sat in the TAIFEX day session, which CCF/UMC
+        never trades: firing there would close the CCF leg while NYSE was shut
+        and leave UMC naked overnight. That is invisible in a QFF/TSM system,
+        where the US leg trades around the clock and can always be closed
+        alongside -- it is specific to a US leg that keeps market hours.
+
+        So the deadline is the last pair-session close at or before the rollover
+        day, minus a grace window. The grace exists because the minute builder
+        finalizes minute M only when M+1 opens, so the session's final minute is
+        never processed.
+        """
         day = previous_business_day(
             expiry,
             days=self.config.force_exit_business_days_before_expiry,
             holidays=self.holidays,
         )
-        hour, minute = parse_hhmm(self.config.force_exit_time)
-        return datetime.combine(day, time(hour=hour, minute=minute), tzinfo=TAIPEI_TZ)
+        return pair_session_close_on(day) - timedelta(
+            minutes=self.config.force_exit_grace_minutes
+        )
 
     def should_force_exit(self, now: datetime, expiry: date | None) -> bool:
         if expiry is None:
             return False
         return ensure_policy_time(now) >= self.force_exit_deadline(expiry)
+
+
+def pair_session_close_on(day: date) -> datetime:
+    """Taipei close of the last pair session ending on or before ``day``.
+
+    A UMC session for US market date D closes on Taipei D+1, so the session
+    that ends on ``day`` belongs to the previous US date; weekends walk back.
+    """
+    for offset in range(1, 8):
+        market_date = day - timedelta(days=offset)
+        if market_date.weekday() >= 5:
+            continue
+        session = umc_rth_session(market_date)
+        if session.closes_at.date() <= day:
+            return session.closes_at
+    raise RuntimeError(f"No pair session close found within a week before {day}")
 
 
 def ensure_policy_time(value: datetime | None) -> datetime:

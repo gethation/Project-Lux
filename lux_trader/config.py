@@ -68,8 +68,12 @@ class ContractPolicyConfig:
     enabled: bool
     min_business_days_to_expiry: int
     force_exit_business_days_before_expiry: int
-    force_exit_time: str
     holidays: tuple[date, ...]
+    # Minutes before the pair session's close to flatten for a rollover. There
+    # is deliberately no absolute force_exit_time any more: the inherited 13:35
+    # sat in the TAIFEX day session, which CCF/UMC never trades, so firing there
+    # would close CCF while NYSE was shut and leave UMC naked overnight.
+    force_exit_grace_minutes: int = 5
 
 
 @dataclass(frozen=True)
@@ -313,8 +317,10 @@ def load_config(path: Path) -> AppConfig:
             force_exit_business_days_before_expiry=int(
                 contract_policy.get("force_exit_business_days_before_expiry", 1)
             ),
-            force_exit_time=str(contract_policy.get("force_exit_time", "13:35")),
             holidays=parse_holidays(contract_policy.get("holidays", [])),
+            force_exit_grace_minutes=int(
+                contract_policy.get("force_exit_grace_minutes", 5)
+            ),
         ),
         trading_calendar=TradingCalendarConfig(
             closed_dates=parse_date_list(

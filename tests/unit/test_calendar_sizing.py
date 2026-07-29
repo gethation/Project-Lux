@@ -9,6 +9,7 @@ from lux_trader.core.calendar import (
     TradingCalendar,
     is_weekend_force_exit_bar,
     live_session_status,
+    taifex_session_status,
 )
 from lux_trader.config import FeeConfig, StrategyConfig, load_config
 from lux_trader.core.fees import fill_costs
@@ -127,16 +128,19 @@ def test_live_calendar_closed_date_blocks_day_and_night_sessions() -> None:
     )
 
 
-def test_live_calendar_weekday_sessions_and_friday_close_only() -> None:
-    weekday_day = live_session_status(
+def test_taifex_calendar_weekday_sessions_and_friday_close_only() -> None:
+    # taifex_session_status, not live_session_status: this asserts TAIFEX's own
+    # hours. live_session_status is the PAIR's session -- TAIFEX intersected
+    # with NYSE RTH -- and none of these three instants is inside it.
+    weekday_day = taifex_session_status(
         datetime.fromisoformat("2026-06-18T08:45:00+08:00"),
         (),
     )
-    weekday_night = live_session_status(
+    weekday_night = taifex_session_status(
         datetime.fromisoformat("2026-06-18T17:25:00+08:00"),
         (),
     )
-    friday_night = live_session_status(
+    friday_night = taifex_session_status(
         datetime.fromisoformat("2026-06-12T17:25:00+08:00"),
         (),
     )
@@ -149,6 +153,73 @@ def test_live_calendar_weekday_sessions_and_friday_close_only() -> None:
     assert friday_night.is_close_only
 
 
+def test_pair_session_is_taifex_intersected_with_nyse_rth() -> None:
+    """CCF/UMC trades only where both venues are open at once.
+
+    UMC is a cash equity that prices during RTH alone, so outside it a spread
+    built from a frozen UMC price is fiction. The intersection is Taipei
+    21:30-04:00 in US summer, which means the pair never trades the TAIFEX DAY
+    session at all.
+    """
+    # TAIFEX day session: open for TAIFEX, but NYSE has been shut for hours.
+    day = live_session_status(datetime.fromisoformat("2026-06-18T08:45:00+08:00"), ())
+    assert not day.is_trading
+    assert day.reason == "us_rth_closed"
+
+    # TAIFEX night session opens at 17:25; NYSE does not open until 21:30.
+    early_night = live_session_status(
+        datetime.fromisoformat("2026-06-18T17:25:00+08:00"), ()
+    )
+    assert not early_night.is_trading
+    assert early_night.reason == "us_rth_closed"
+    assert early_night.next_open_at == datetime.fromisoformat(
+        "2026-06-18T21:30:00+08:00"
+    )
+
+    # Both open.
+    assert live_session_status(
+        datetime.fromisoformat("2026-06-18T21:30:00+08:00"), ()
+    ).is_trading
+    assert live_session_status(
+        datetime.fromisoformat("2026-06-19T03:59:00+08:00"), ()
+    ).is_trading
+    # RTH close is exclusive.
+    assert not live_session_status(
+        datetime.fromisoformat("2026-06-19T04:00:00+08:00"), ()
+    ).is_trading
+
+
+def test_pair_session_shifts_with_us_dst() -> None:
+    """In US winter the window is 22:30-05:00 Taipei, an hour later throughout.
+
+    05:00 is also when the TAIFEX night session ends, so in winter the two
+    closes coincide exactly rather than one clipping the other.
+    """
+    assert not live_session_status(
+        datetime.fromisoformat("2026-01-20T21:30:00+08:00"), ()
+    ).is_trading
+    assert live_session_status(
+        datetime.fromisoformat("2026-01-20T22:30:00+08:00"), ()
+    ).is_trading
+    assert live_session_status(
+        datetime.fromisoformat("2026-01-21T04:59:00+08:00"), ()
+    ).is_trading
+    assert not live_session_status(
+        datetime.fromisoformat("2026-01-21T05:00:00+08:00"), ()
+    ).is_trading
+
+
+def test_pair_is_closed_when_taifex_is_closed_even_inside_rth() -> None:
+    """A TAIFEX holiday closes the pair regardless of what NYSE is doing."""
+    closed = (date(2026, 6, 18),)
+    status = live_session_status(
+        datetime.fromisoformat("2026-06-18T22:00:00+08:00"), closed
+    )
+
+    assert not status.is_trading
+    assert status.reason == "closed_date"
+
+
 def test_inactive_session_is_not_allowed_without_ccf_trades() -> None:
     timestamp = datetime.fromisoformat("2026-06-13T08:45:00+08:00")
     bars = TradingCalendar().annotate([make_bar(0, timestamp, ccf_close=None)])
@@ -157,60 +228,78 @@ def test_inactive_session_is_not_allowed_without_ccf_trades() -> None:
     assert not bars[0].entry_allowed
 
 
-def test_weekend_force_exit_fires_in_grace_window_at_friday_session_end() -> None:
-    # 2026-06-19 is a Friday; its night session runs into 2026-06-20 (Sat) 05:00,
-    # after which CCF is frozen until Monday 2026-06-22.
+def test_weekend_force_exit_fires_in_grace_window_at_the_pair_session_end() -> None:
+    # The pair's last session before the weekend is Friday 2026-06-19's US
+    # session, closing at Taipei 2026-06-20 04:00 -- an hour BEFORE the TAIFEX
+    # night session it sits inside. Anchoring the window to TAIFEX's 05:00 would
+    # put it entirely in minutes the loop never processes.
     assert is_weekend_force_exit_bar(
-        datetime.fromisoformat("2026-06-20T04:57:00+08:00"),
+        datetime.fromisoformat("2026-06-20T03:57:00+08:00"),
         weekend_policy="flat",
     )
-    # Exactly grace_minutes (5) before the 05:00 end still counts; one minute more
+    # Exactly grace_minutes (5) before the close still counts; one minute more
     # does not.
     assert is_weekend_force_exit_bar(
-        datetime.fromisoformat("2026-06-20T04:55:00+08:00"),
+        datetime.fromisoformat("2026-06-20T03:55:00+08:00"),
         weekend_policy="flat",
     )
     assert not is_weekend_force_exit_bar(
-        datetime.fromisoformat("2026-06-20T04:54:00+08:00"),
+        datetime.fromisoformat("2026-06-20T03:54:00+08:00"),
+        weekend_policy="flat",
+    )
+
+
+def test_weekend_force_exit_does_not_fire_in_taifexs_own_closing_window() -> None:
+    """The regression the pair-session anchor exists to prevent.
+
+    04:55-05:00 is the TAIFEX night session's tail and used to be the grace
+    window. The pair stopped trading at 04:00, so no bar exists here -- a rule
+    that could only fire in this window would be wired up and permanently dead.
+    """
+    assert not is_weekend_force_exit_bar(
+        datetime.fromisoformat("2026-06-20T04:57:00+08:00"),
         weekend_policy="flat",
     )
 
 
 def test_weekend_force_exit_never_fires_under_the_default_policy() -> None:
-    # Same bar as above, default policy: no force-exit at all.
+    # Same bar as the firing one above, default policy: no force-exit at all.
     assert not is_weekend_force_exit_bar(
-        datetime.fromisoformat("2026-06-20T04:57:00+08:00")
+        datetime.fromisoformat("2026-06-20T03:57:00+08:00")
     )
     assert not is_weekend_force_exit_bar(
-        datetime.fromisoformat("2026-06-20T04:57:00+08:00"),
+        datetime.fromisoformat("2026-06-20T03:57:00+08:00"),
         weekend_policy="no-entry",
     )
 
 
-def test_weekend_force_exit_ignores_start_of_friday_night_and_day_session() -> None:
-    # Early in the Friday night session — far from the end — must not force-exit.
+def test_weekend_force_exit_ignores_the_start_of_the_pair_session() -> None:
+    # Friday's US open, far from its close, must not force-exit.
     assert not is_weekend_force_exit_bar(
-        datetime.fromisoformat("2026-06-19T17:30:00+08:00")
+        datetime.fromisoformat("2026-06-19T21:35:00+08:00"),
+        weekend_policy="flat",
     )
-    # Friday day session: the night session is still ahead this week.
+    # TAIFEX day session: outside the pair's window entirely.
     assert not is_weekend_force_exit_bar(
-        datetime.fromisoformat("2026-06-19T13:42:00+08:00")
+        datetime.fromisoformat("2026-06-19T13:42:00+08:00"),
+        weekend_policy="flat",
     )
 
 
-def test_weekend_force_exit_ignores_ordinary_weeknight_session_end() -> None:
-    # Wednesday night -> Thursday 05:00: the Thursday day session follows in the
-    # same ISO week, so this is not a weekend break.
+def test_weekend_force_exit_ignores_an_ordinary_weeknight_session_end() -> None:
+    # Wednesday's US session closes Thursday 04:00 Taipei, and Thursday's own
+    # session follows in the same ISO week, so this is not a weekend break.
     assert not is_weekend_force_exit_bar(
-        datetime.fromisoformat("2026-06-18T04:57:00+08:00")
+        datetime.fromisoformat("2026-06-18T03:57:00+08:00"),
+        weekend_policy="flat",
     )
 
 
 def test_weekend_force_exit_covers_monday_holiday_long_weekend() -> None:
-    # 2026-06-22 (Mon) closed: the next trading session is Tuesday, still a new ISO
-    # week, so the Friday-night flatten must still fire.
+    # 2026-06-22 (Mon) closed: the next session is Tuesday, still a new ISO
+    # week, so the Friday flatten must still fire.
     assert is_weekend_force_exit_bar(
-        datetime.fromisoformat("2026-06-20T04:57:00+08:00"),
+        datetime.fromisoformat("2026-06-20T03:57:00+08:00"),
         (date(2026, 6, 22),),
         weekend_policy="flat",
     )

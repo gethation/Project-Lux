@@ -15,6 +15,7 @@ from ..core.calendar import (
 )
 from ..core.contracts import parse_contract_expiry, row_get, row_to_dict
 from ..core.time import TAIPEI_TZ, ensure_taipei
+from ..core.us_calendar import filter_umc_rth_minutes
 from .normalization import close_series
 from .parsing import parse_optional_float, parse_timestamp
 from .types import CcfContractCandidate
@@ -138,12 +139,17 @@ def build_ccf_expected_session_index(
     end: datetime,
     closed_dates: Iterable[date] = (),
 ) -> pd.DatetimeIndex:
-    """Return every CCF trading minute required by the live calendar.
+    """Every minute the PAIR expects to trade: TAIFEX open AND NYSE RTH open.
 
     Unlike :func:`build_ccf_session_index`, this index is anchored to the
     requested time range rather than inferred from whatever rows a provider
-    happened to return.  A wholly missing current day/night session therefore
-    remains visible to warmup freshness checks instead of disappearing.
+    happened to return.  A wholly missing session therefore remains visible to
+    warmup freshness checks instead of disappearing.
+
+    The RTH intersection is what makes it the pair's index rather than TAIFEX's.
+    Without it the warmup would demand CCF bars through the whole TAIFEX day
+    session, find nothing on the UMC side to pair them with, and fail closed on
+    minutes the pair was never going to trade.
     """
     start_ts = pd.Timestamp(floor_minute(start))
     end_ts = pd.Timestamp(floor_minute(end))
@@ -165,7 +171,7 @@ def build_ccf_expected_session_index(
             continue
         if is_live_business_day(trading_date, closed):
             expected.append(timestamp)
-    return pd.DatetimeIndex(expected)
+    return filter_umc_rth_minutes(pd.DatetimeIndex(expected))
 
 
 def build_ccf_expected_warmup_index(

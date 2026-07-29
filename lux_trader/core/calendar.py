@@ -6,6 +6,7 @@ from datetime import date
 from datetime import datetime, time, timedelta, tzinfo
 
 from .models import MarketBar
+from .us_calendar import umc_rth_close_for, umc_rth_status
 
 
 DAY_START = 8 * 60 + 45
@@ -96,10 +97,11 @@ def is_live_business_day(value: date, closed_dates: Iterable[date]) -> bool:
     return value.weekday() < 5 and value not in set(closed_dates)
 
 
-def live_session_status(
+def taifex_session_status(
     timestamp: datetime,
     closed_dates: Iterable[date] = (),
 ) -> LiveSessionStatus:
+    """TAIFEX's own session, before intersecting with the US leg."""
     closed = set(closed_dates)
     trading = _is_live_session_trading(timestamp, closed)
     session_start = session_start_date(timestamp)
@@ -124,6 +126,51 @@ def live_session_status(
         next_open_at=next_open,
         countdown=max(next_open - timestamp, timedelta(0)),
     )
+
+
+def live_session_status(
+    timestamp: datetime,
+    closed_dates: Iterable[date] = (),
+) -> LiveSessionStatus:
+    """The CCF/UMC pair's session: TAIFEX open AND NYSE RTH open.
+
+    Both legs have to be priceable at once. UMC is a cash equity that only
+    prices during RTH, so outside it a spread built from a frozen UMC price is
+    fiction -- the loop should idle rather than spray staleness warnings for
+    hours. That intersection is Taipei 21:30-04:00 in US summer and 22:30-05:00
+    in winter, which means this pair never trades the TAIFEX DAY session at all.
+
+    Winter's tail is the interesting edge: RTH closes at Taipei 05:00, exactly
+    when the TAIFEX night session does, so the two boundaries coincide instead
+    of one clipping the other.
+    """
+    base = taifex_session_status(timestamp, closed_dates)
+    inside_rth, next_rth_open = umc_rth_status(timestamp)
+
+    if base.is_trading and inside_rth:
+        return base
+    if base.is_trading:
+        return LiveSessionStatus(
+            is_trading=False,
+            is_close_only=False,
+            reason="us_rth_closed",
+            # Display-only approximation: TAIFEX could close again inside a long
+            # US break. This value feeds the countdown and the non-trading
+            # event, never a trading decision.
+            next_open_at=max(next_rth_open, timestamp),
+            countdown=max(next_rth_open - timestamp, timedelta(0)),
+        )
+    # TAIFEX is closed. If UMC is closed too, the pair reopens at whichever
+    # market opens later; if UMC is somehow open, TAIFEX's own next open governs.
+    if not inside_rth and next_rth_open > base.next_open_at:
+        return LiveSessionStatus(
+            is_trading=False,
+            is_close_only=False,
+            reason=base.reason,
+            next_open_at=next_rth_open,
+            countdown=max(next_rth_open - timestamp, timedelta(0)),
+        )
+    return base
 
 
 def next_trading_session_start(
@@ -203,24 +250,29 @@ def is_weekend_force_exit_bar(
     only so the QFF/TSM replay golden keeps working as a tripwire until the
     CCF/UMC golden replaces it in Phase C. See docs/CCF_UMC_PLAN.md.
 
-    Known limitation: a holiday on the *Friday* itself is not covered, because the
-    live calendar treats the early-morning hours of a closed date as non-trading,
-    so the preceding Thursday-night session's tail is truncated at midnight and the
-    grace window never lands on a processed bar. See the follow-up note in the
-    weekend force-close design.
+    The grace window is measured against the PAIR's session close, not TAIFEX's.
+    TAIFEX's night session runs an hour past the pair's, so a window anchored to
+    it would sit entirely in minutes the loop never processes -- the rule would
+    be wired up and silently unable to fire. Same reasoning as the rollover
+    deadline in core/contract_policy.
+
+    Known limitation: a holiday on the *Friday* itself is not covered, because
+    the calendar treats a closed date's early-morning hours as non-trading, so
+    the preceding session's tail is truncated at midnight and the grace window
+    never lands on a processed bar.
     """
     if not weekend_force_close_enabled(validate_weekend_policy(weekend_policy)):
         return False
     closed = set(closed_dates)
-    if not _is_live_session_trading(timestamp, closed):
+    if not live_session_status(timestamp, closed).is_trading:
         return False
-    end = session_end_minute(timestamp)
+    end = umc_rth_close_for(timestamp)
     if end is None:
         return False
     seconds_to_end = (end - timestamp).total_seconds()
     if seconds_to_end < 0 or seconds_to_end > grace_minutes * 60:
         return False
-    next_start = next_trading_session_start(end, closed)
+    _, next_start = umc_rth_status(end)
     current_iso = timestamp.isocalendar()
     next_iso = next_start.isocalendar()
     return (current_iso[0], current_iso[1]) != (next_iso[0], next_iso[1])

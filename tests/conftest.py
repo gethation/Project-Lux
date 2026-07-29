@@ -102,7 +102,7 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             enabled=True,
             min_business_days_to_expiry=5,
             force_exit_business_days_before_expiry=1,
-            force_exit_time="13:35",
+            force_exit_grace_minutes=5,
             holidays=(),
         ),
         trading_calendar=TradingCalendarConfig(closed_dates=()),

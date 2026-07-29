@@ -14,6 +14,15 @@ from lux_trader.integrations.fubon.market_data_process import (
 )
 
 
+# These two tests hang the first worker on purpose, then require the REPLACEMENT
+# worker to come up inside the same budget. On Windows the replacement is a
+# spawn, so it re-imports the module chain from scratch -- measured at 1.89s
+# against the 2.0s this used to allow. That 0.11s of headroom is why they went
+# red under load: the budget was measuring the machine's import speed, not the
+# rebuild it means to test. 6.0s clears the measured cost with room to spare.
+WORKER_REBUILD_TIMEOUT_SECONDS = 6.0
+
+
 def _send_ok(connection: Connection, result: Any = None) -> None:
     connection.send(
         {
@@ -89,7 +98,7 @@ def test_initial_realtime_timeout_terminates_and_rebuilds_worker(tmp_path) -> No
     marker = tmp_path / "first-worker.txt"
     provider = FubonCcfMarketDataProcess(
         marker,
-        init_timeout_seconds=2.0,
+        init_timeout_seconds=WORKER_REBUILD_TIMEOUT_SECONDS,
         terminate_timeout_seconds=0.5,
         worker_target=_first_init_hangs_worker,
     )
@@ -108,7 +117,7 @@ def test_reconnect_timeout_terminates_and_rebuilds_worker(tmp_path) -> None:
     marker = tmp_path / "first-worker.txt"
     provider = FubonCcfMarketDataProcess(
         marker,
-        init_timeout_seconds=2.0,
+        init_timeout_seconds=WORKER_REBUILD_TIMEOUT_SECONDS,
         terminate_timeout_seconds=0.5,
         worker_target=_reconnect_hangs_worker,
     )

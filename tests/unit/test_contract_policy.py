@@ -15,7 +15,7 @@ def make_policy() -> ExpiryBufferContractPolicy:
             enabled=True,
             min_business_days_to_expiry=5,
             force_exit_business_days_before_expiry=1,
-            force_exit_time="13:35",
+            force_exit_grace_minutes=5,
             holidays=(),
         )
     )
@@ -53,17 +53,45 @@ def test_expiry_buffer_switches_to_next_contract_when_front_has_four_days_left()
     assert selected.symbol == "CCFH6"
 
 
-def test_force_exit_deadline_is_previous_business_day_at_1335() -> None:
+def test_force_exit_deadline_lands_before_the_pair_session_close() -> None:
+    """Not a TAIFEX wall clock -- the pair's own session close.
+
+    The inherited 13:35 sat in the TAIFEX day session, which CCF/UMC never
+    trades. Firing there would close the CCF leg while NYSE was shut and leave
+    UMC naked overnight: a defect that cannot exist in a QFF/TSM system, whose
+    US leg trades around the clock and can always be closed alongside.
+    """
     policy = make_policy()
 
+    # US summer: RTH closes at Taipei 04:00, so the deadline is 03:55.
     assert policy.force_exit_deadline(date(2026, 7, 15)) == datetime.fromisoformat(
-        "2026-07-14T13:35:00+08:00"
+        "2026-07-14T03:55:00+08:00"
     )
     assert not policy.should_force_exit(
-        datetime.fromisoformat("2026-07-14T13:34:59+08:00"),
+        datetime.fromisoformat("2026-07-14T03:54:59+08:00"),
         date(2026, 7, 15),
     )
     assert policy.should_force_exit(
-        datetime.fromisoformat("2026-07-14T13:35:00+08:00"),
+        datetime.fromisoformat("2026-07-14T03:55:00+08:00"),
         date(2026, 7, 15),
     )
+
+
+def test_force_exit_deadline_follows_us_dst() -> None:
+    """In US winter the whole window shifts an hour later in Taipei."""
+    policy = make_policy()
+
+    assert policy.force_exit_deadline(date(2026, 1, 21)) == datetime.fromisoformat(
+        "2026-01-20T04:55:00+08:00"
+    )
+
+
+def test_force_exit_deadline_never_lands_in_the_taifex_day_session() -> None:
+    """The property the old 13:35 violated, checked across a year of expiries."""
+    policy = make_policy()
+
+    for month in range(1, 13):
+        deadline = policy.force_exit_deadline(date(2026, month, 20))
+        minute_of_day = deadline.hour * 60 + deadline.minute
+        # TAIFEX day session is 08:45-13:45; the pair's window never overlaps it.
+        assert not (8 * 60 + 45) <= minute_of_day <= (13 * 60 + 45), deadline

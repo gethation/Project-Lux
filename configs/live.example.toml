@@ -41,7 +41,7 @@ expected_zscore_tolerance = 0.0000001
 enabled = true
 min_business_days_to_expiry = 5
 force_exit_business_days_before_expiry = 1
-force_exit_time = '13:35'
+force_exit_grace_minutes = 5
 holidays = []
 
 [trading_calendar]
