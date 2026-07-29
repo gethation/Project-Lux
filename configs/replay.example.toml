@@ -6,20 +6,20 @@ umc_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\binance_tsmu
 usd_twd_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\bitopro_usdttwd_1m_taipei.csv'
 
 [strategy]
-entry_z = 2.0
-exit_z = 1.0
+entry_z = 1.5
+exit_z = 0.0
 leg_notional_twd = 1000000.0
 initial_capital_twd = 2000000.0
 max_entry_delay_minutes = 15
-zscore_window = 500
+zscore_window = 2500
 # flat | no-entry | none -- see configs/live.example.toml.
 weekend_policy = 'none'
 
 [fees]
-umc_fee_bps = 5.0
-ccf_fee_per_contract_twd = 5.0
+umc_fee_bps = 2.5
+ccf_fee_per_contract_twd = 88.0
 ccf_tax_rate = 0.00002
-ccf_contract_multiplier = 100.0
+ccf_contract_multiplier = 2000.0
 umc_contract_multiplier = 5.0
 
 [safety]

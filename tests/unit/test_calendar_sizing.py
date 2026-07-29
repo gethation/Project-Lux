@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timezone
 
 import pytest
@@ -9,6 +10,7 @@ from lux_trader.core.calendar import (
     is_weekend_force_exit_bar,
     live_session_status,
 )
+from lux_trader.config import FeeConfig, StrategyConfig, load_config
 from lux_trader.core.fees import fill_costs
 from lux_trader.core.models import Direction, MarketBar
 from lux_trader.core.sizing import size_position_for_direction
@@ -293,6 +295,94 @@ def test_fixed_ccf_lots_preserves_direction_signs(strategy_config, fee_config) -
     assert sizing.umc_units == pytest.approx(6.0)
 
 
+# ---------------------------------------------------------------------------
+# CCF's contract size: the highest-consequence constant in the system.
+# CCF is 2,000 shares per contract; QFF, which this codebase used to trade, was
+# 100. A wrong value sizes every position twenty times off while every downstream
+# number stays internally consistent, so nothing else can catch it.
+# ---------------------------------------------------------------------------
+
+
+def ccf_fees(multiplier: float) -> FeeConfig:
+    return FeeConfig(
+        umc_fee_bps=2.5,
+        ccf_fee_per_contract_twd=88.0,
+        ccf_tax_rate=0.00002,
+        ccf_contract_multiplier=multiplier,
+        umc_contract_multiplier=5.0,
+    )
+
+
+def test_one_ccf_lot_is_two_thousand_shares_not_one_hundred() -> None:
+    # A realistic CCF price: the measured median is 156 TWD.
+    sizing = size_position_for_direction(
+        Direction.SHORT_UMC_LONG_CCF,
+        umc_price=790.0,
+        ccf_price=156.0,
+        strategy=StrategyConfig(
+            entry_z=1.5,
+            exit_z=0.0,
+            leg_notional_twd=0.0,
+            initial_capital_twd=2_000_000.0,
+            max_entry_delay_minutes=15,
+            zscore_window=2500,
+            ccf_lots=1,
+        ),
+        fees=ccf_fees(2000.0),
+    )
+
+    assert sizing is not None
+    assert sizing.ccf_contracts == 1
+    assert sizing.ccf_units == 2000.0
+    # One contract is ~312,000 TWD, 2.8x a QFF contract -- not ~15,600.
+    assert sizing.actual_leg_notional_twd == pytest.approx(312_000.0)
+
+
+def test_ccf_multiplier_scales_the_umc_leg_by_exactly_twenty() -> None:
+    def umc_units_for(multiplier: float) -> float:
+        sizing = size_position_for_direction(
+            Direction.SHORT_UMC_LONG_CCF,
+            umc_price=790.0,
+            ccf_price=156.0,
+            strategy=StrategyConfig(
+                entry_z=1.5,
+                exit_z=0.0,
+                leg_notional_twd=0.0,
+                initial_capital_twd=2_000_000.0,
+                max_entry_delay_minutes=15,
+                zscore_window=2500,
+                ccf_lots=1,
+            ),
+            fees=ccf_fees(multiplier),
+        )
+        assert sizing is not None
+        return sizing.umc_units
+
+    # Getting the multiplier wrong does not fail anywhere -- it silently hedges
+    # the CCF leg with a UMC leg twenty times the wrong size.
+    assert umc_units_for(2000.0) == pytest.approx(20.0 * umc_units_for(100.0))
+
+
+def test_config_refuses_to_guess_the_ccf_contract_multiplier(tmp_path) -> None:
+    config_path = tmp_path / "no_multiplier.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[paths]",
+                "input_csv = ''",
+                f"store_path = '{(tmp_path / 'store.sqlite3').as_posix()}'",
+                "",
+                "[fees]",
+                "ccf_fee_per_contract_twd = 88.0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="ccf_contract_multiplier is required"):
+        load_config(config_path)
+
+
 def test_umc_fee_uses_umc_contract_twd_price(fee_config) -> None:
     costs = fill_costs(
         umc_units=-17.27244229,
@@ -306,24 +396,12 @@ def test_umc_fee_uses_umc_contract_twd_price(fee_config) -> None:
 
 
 def replace_strategy_notional(strategy_config, leg_notional_twd: float):
-    return strategy_config.__class__(
-        entry_z=strategy_config.entry_z,
-        exit_z=strategy_config.exit_z,
+    return replace(
+        strategy_config,
         leg_notional_twd=leg_notional_twd,
-        initial_capital_twd=strategy_config.initial_capital_twd,
-        max_entry_delay_minutes=strategy_config.max_entry_delay_minutes,
-        zscore_window=strategy_config.zscore_window,
-        ccf_lots=strategy_config.ccf_lots,
+        sizing_mode="notional",
     )
 
 
 def replace_strategy_ccf_lots(strategy_config, ccf_lots: int):
-    return strategy_config.__class__(
-        entry_z=strategy_config.entry_z,
-        exit_z=strategy_config.exit_z,
-        leg_notional_twd=strategy_config.leg_notional_twd,
-        initial_capital_twd=strategy_config.initial_capital_twd,
-        max_entry_delay_minutes=strategy_config.max_entry_delay_minutes,
-        zscore_window=strategy_config.zscore_window,
-        ccf_lots=ccf_lots,
-    )
+    return replace(strategy_config, ccf_lots=ccf_lots, sizing_mode="fixed_lots")

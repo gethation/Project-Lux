@@ -357,6 +357,9 @@ def write_minimal_config(tmp_path: Path, live_body: str = "") -> Path:
     config_path.write_text(
         "\n".join(
             [
+                "[fees]",
+                "ccf_contract_multiplier = 2000.0",
+                "",
                 "[paths]",
                 "store_path = 'project_lux.sqlite3'",
                 "input_csv = ''",
@@ -420,6 +423,9 @@ def test_load_config_reads_live_execution_smoke_config(tmp_path) -> None:
     config_path.write_text(
         "\n".join(
             [
+                "[fees]",
+                "ccf_contract_multiplier = 2000.0",
+                "",
                 "[paths]",
                 "store_path = 'project_lux.sqlite3'",
                 "input_csv = ''",

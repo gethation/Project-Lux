@@ -40,6 +40,8 @@ LEGACY_USDTTWD_OHLCV = _FIXTURE_DIR / "bitopro_usdttwd_open.csv"
 
 @pytest.fixture
 def strategy_config() -> StrategyConfig:
+    # Notional sizing: these are the legacy QFF/TSM parameters that the golden
+    # and the sizing-arithmetic tests are written against.
     return StrategyConfig(
         entry_z=2.0,
         exit_z=1.0,
@@ -47,6 +49,7 @@ def strategy_config() -> StrategyConfig:
         initial_capital_twd=2_000_000.0,
         max_entry_delay_minutes=15,
         zscore_window=500,
+        sizing_mode="notional",
     )
 
 
@@ -75,6 +78,9 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             initial_capital_twd=2_000_000.0,
             max_entry_delay_minutes=15,
             zscore_window=500,
+            # The golden was produced under notional sizing; the project default
+            # is one fixed lot.
+            sizing_mode="notional",
             # Explicit, not inherited: the QFF/TSM golden was produced under the
             # weekend rules, so it only reproduces under 'flat'. The project
             # default is 'none'.

@@ -20,6 +20,9 @@ def write_live_execute_config(tmp_path: Path) -> Path:
     config_path.write_text(
         "\n".join(
             [
+                "[fees]",
+                "ccf_contract_multiplier = 2000.0",
+                "",
                 "[paths]",
                 "input_csv = ''",
                 f"store_path = '{store_path}'",

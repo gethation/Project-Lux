@@ -751,6 +751,9 @@ def write_config(
     config_path.write_text(
         "\n".join(
             [
+                "[fees]",
+                "ccf_contract_multiplier = 2000.0",
+                "",
                 "[paths]",
                 "input_csv = ''",
                 f"store_path = '{(tmp_path / 'store.sqlite3').as_posix()}'",

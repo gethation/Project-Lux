@@ -42,6 +42,9 @@ def write_config(
     config_path.write_text(
         "\n".join(
             [
+                "[fees]",
+                "ccf_contract_multiplier = 2000.0",
+                "",
                 "[paths]",
                 "input_csv = ''",
                 f"store_path = '{store_path}'",
@@ -301,10 +304,15 @@ def test_monitor_margin_notional_prefers_fixed_ccf_lots(
     )
     store = open_store(tmp_path)
     reporter = RecordingReporter()
+    # The point of the test is the DENOMINATOR: one CCF lot at 2,500 is
+    # 1 x 2000 x 2500 = 5,000,000 notional, not the 1,000,000 the config also
+    # offers. Equity is set to 30% of the lot-derived figure, so the assertions
+    # below only hold if the monitor picked the lots.
+    equity_twd = 0.30 * 1 * 2000.0 * 2500.0
     monitor = make_monitor(
         config,
-        fubon=fubon_broker(75_000.0),
-        umc=umc_broker(75_000.0 / USD_TWD),
+        fubon=fubon_broker(equity_twd),
+        umc=umc_broker(equity_twd / USD_TWD),
     )
     try:
         store.record_warmup_bars(

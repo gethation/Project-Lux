@@ -28,6 +28,8 @@ zscore_window = 500
 # Explicit: this golden was produced under the weekend rules and only reproduces
 # under 'flat'. The project default is 'none'.
 weekend_policy = 'flat'
+# Likewise: notional sizing, not the project's default single fixed lot.
+sizing_mode = 'notional'
 
 [fees]
 umc_fee_bps = 5.0

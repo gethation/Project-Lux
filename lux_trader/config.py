@@ -10,6 +10,20 @@ from .core.calendar import DEFAULT_WEEKEND_POLICY, validate_weekend_policy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+SIZING_FIXED_LOTS = "fixed_lots"
+SIZING_NOTIONAL = "notional"
+SIZING_MODES = (SIZING_FIXED_LOTS, SIZING_NOTIONAL)
+DEFAULT_SIZING_MODE = SIZING_FIXED_LOTS
+DEFAULT_CCF_LOTS = 1
+
+
+def validate_sizing_mode(value: str, *, field: str = "strategy.sizing_mode") -> str:
+    mode = str(value).strip().lower()
+    if mode not in SIZING_MODES:
+        allowed = ", ".join(repr(name) for name in SIZING_MODES)
+        raise ValueError(f"{field} must be one of {allowed}; got {value!r}")
+    return mode
+
 
 @dataclass(frozen=True)
 class StrategyConfig:
@@ -19,11 +33,18 @@ class StrategyConfig:
     initial_capital_twd: float
     max_entry_delay_minutes: int
     zscore_window: int
-    ccf_lots: int | None = None
+    ccf_lots: int | None = DEFAULT_CCF_LOTS
     # See core.calendar: 'none' is the measured-correct rule for CCF/UMC, where
     # both venues close over the weekend. Only the legacy QFF/TSM replay fixture
     # sets 'flat'.
     weekend_policy: str = DEFAULT_WEEKEND_POLICY
+    # 'fixed_lots' (default) sizes from ccf_lots; 'notional' sizes from
+    # leg_notional_twd and rounds to whole contracts. Fixed lots is the default
+    # because it is what actually gets traded, and because CCF's granularity is
+    # coarse: one contract is ~312,000 TWD, so a 1M notional target rounds to
+    # three contracts with -6.4%..+11.2% rounding error. Notional stays available
+    # but must be asked for by name.
+    sizing_mode: str = DEFAULT_SIZING_MODE
 
 
 @dataclass(frozen=True)
@@ -197,6 +218,27 @@ def load_config(path: Path) -> AppConfig:
         live.get("taifex_cache_dir", r"data\taifex_cache"), root
     )
 
+    sizing_mode = validate_sizing_mode(
+        strategy.get("sizing_mode", DEFAULT_SIZING_MODE)
+    )
+    ccf_lots = optional_positive_int(strategy.get("ccf_lots"), "strategy.ccf_lots")
+    if sizing_mode == SIZING_FIXED_LOTS and ccf_lots is None:
+        ccf_lots = DEFAULT_CCF_LOTS
+    if sizing_mode == SIZING_NOTIONAL:
+        # Carrying a lot count into notional mode would leave two live sizing
+        # inputs disagreeing about the position, with only the reader's guess to
+        # say which one won.
+        if ccf_lots is not None:
+            raise ValueError(
+                "strategy.ccf_lots is only meaningful with "
+                f"sizing_mode = '{SIZING_FIXED_LOTS}'"
+            )
+        if float(strategy.get("leg_notional_twd", 0.0)) <= 0.0:
+            raise ValueError(
+                f"sizing_mode = '{SIZING_NOTIONAL}' needs a positive "
+                "strategy.leg_notional_twd"
+            )
+
     return AppConfig(
         input_csv=input_csv,
         store_path=store_path,
@@ -210,20 +252,26 @@ def load_config(path: Path) -> AppConfig:
             initial_capital_twd=float(strategy.get("initial_capital_twd", 2_000_000.0)),
             max_entry_delay_minutes=int(strategy.get("max_entry_delay_minutes", 15)),
             zscore_window=int(strategy.get("zscore_window", 500)),
-            ccf_lots=optional_positive_int(
-                strategy.get("ccf_lots"),
-                "strategy.ccf_lots",
-            ),
+            ccf_lots=ccf_lots,
             weekend_policy=validate_weekend_policy(
                 strategy.get("weekend_policy", DEFAULT_WEEKEND_POLICY),
                 field="strategy.weekend_policy",
             ),
+            sizing_mode=sizing_mode,
         ),
         fees=FeeConfig(
-            umc_fee_bps=float(fees.get("umc_fee_bps", 5.0)),
-            ccf_fee_per_contract_twd=float(fees.get("ccf_fee_per_contract_twd", 5.0)),
+            # UMC via IBKR. 2.5 bps is a placeholder: IBKR bills per share plus
+            # SEC/FINRA fees plus a minimum, which bps cannot express. Measured
+            # conservative rather than optimistic -- 2.49 USD modelled per side
+            # against 2.03 actual at the median 406-share size, and the gap
+            # covers the sell-side regulatory fees the model omits. The real fee
+            # model lands with the execution adapter in Phase D.
+            umc_fee_bps=float(fees.get("umc_fee_bps", 2.5)),
+            # TODO: 88.0 is QFF's per-contract fee reused. CCF's actual Fubon
+            # fee is unconfirmed -- see docs/CCF_UMC_PLAN.md open items.
+            ccf_fee_per_contract_twd=float(fees.get("ccf_fee_per_contract_twd", 88.0)),
             ccf_tax_rate=float(fees.get("ccf_tax_rate", 0.00002)),
-            ccf_contract_multiplier=float(fees.get("ccf_contract_multiplier", 100.0)),
+            ccf_contract_multiplier=required_contract_multiplier(fees),
             umc_contract_multiplier=float(fees.get("umc_contract_multiplier", 5.0)),
         ),
         safety=SafetyConfig(
@@ -438,6 +486,29 @@ def optional_path(value: object, root: Path) -> Path | None:
     if not path.is_absolute():
         path = root / path
     return path
+
+
+def required_contract_multiplier(fees: dict) -> float:
+    """CCF's shares-per-contract, with no default.
+
+    THE highest-consequence constant in the system. CCF is 2,000 shares per
+    contract; QFF, which this codebase used to trade, is 100. A default would
+    make a config that forgot the line size every position twenty times wrong in
+    whichever direction the default happened to point, and nothing downstream
+    would notice -- the arithmetic stays perfectly self-consistent.
+    """
+    value = fees.get("ccf_contract_multiplier")
+    if value is None:
+        raise RuntimeError(
+            "fees.ccf_contract_multiplier is required and has no default "
+            "(CCF is 2000 shares/contract; QFF was 100)"
+        )
+    parsed = float(value)
+    if parsed <= 0:
+        raise RuntimeError(
+            f"fees.ccf_contract_multiplier must be positive, got {parsed}"
+        )
+    return parsed
 
 
 def optional_positive_int(value: object, label: str) -> int | None:

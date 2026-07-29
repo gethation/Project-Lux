@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from ..config import FeeConfig, StrategyConfig
+from ..config import SIZING_FIXED_LOTS, FeeConfig, StrategyConfig
 from .models import Direction, PositionSizing
 
 
@@ -19,7 +19,11 @@ def size_position_for_direction(
     strategy: StrategyConfig,
     fees: FeeConfig,
 ) -> PositionSizing | None:
-    if strategy.ccf_lots is not None:
+    if strategy.sizing_mode == SIZING_FIXED_LOTS:
+        if strategy.ccf_lots is None:
+            raise ValueError(
+                f"sizing_mode = '{SIZING_FIXED_LOTS}' requires strategy.ccf_lots"
+            )
         raw_ccf_contracts = float(strategy.ccf_lots)
         ccf_contract_count = strategy.ccf_lots
     else:

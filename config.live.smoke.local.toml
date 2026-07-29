@@ -3,7 +3,7 @@ store_path = 'data\warmup_smoke.sqlite3'
 input_csv = ''
 
 [strategy]
-entry_z = 2.0
+entry_z = 1.5
 exit_z = 0.0
 leg_notional_twd = 1000000.0
 initial_capital_twd = 2000000.0
@@ -11,10 +11,10 @@ max_entry_delay_minutes = 15
 zscore_window = 1440
 
 [fees]
-umc_fee_bps = 5.0
-ccf_fee_per_contract_twd = 5.0
+umc_fee_bps = 2.5
+ccf_fee_per_contract_twd = 88.0
 ccf_tax_rate = 0.00002
-ccf_contract_multiplier = 100.0
+ccf_contract_multiplier = 2000.0
 
 [safety]
 allow_live_order = false

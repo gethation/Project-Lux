@@ -3,22 +3,33 @@ store_path = 'data\project_lux_live.sqlite3'
 input_csv = ''
 
 [strategy]
-entry_z = 2.0
-exit_z = 1.0
-leg_notional_twd = 1000000.0
+# The frozen CCF/UMC parameters: 1m bars, window 2500, enter at 1.5, exit at 0.
+entry_z = 1.5
+exit_z = 0.0
 initial_capital_twd = 2000000.0
 max_entry_delay_minutes = 15
-zscore_window = 500
+zscore_window = 2500
+# fixed_lots | notional. Fixed lots is the default and what actually trades.
+sizing_mode = 'fixed_lots'
+ccf_lots = 1
 # flat | no-entry | none. 'none' (the default) is correct for CCF/UMC: TAIFEX
 # and NYSE both close over the weekend, so neither the last-session entry ban
 # nor the force-close applies. Only the legacy QFF/TSM fixture uses 'flat'.
 weekend_policy = 'none'
 
 [fees]
-umc_fee_bps = 5.0
-ccf_fee_per_contract_twd = 5.0
+# Placeholder. IBKR bills per share + SEC/FINRA + a minimum, which bps cannot
+# express; the real model arrives with the Phase D execution adapter.
+umc_fee_bps = 2.5
+# TODO: QFF's 88 TWD/contract reused. CCF's actual Fubon fee is unconfirmed.
+ccf_fee_per_contract_twd = 88.0
 ccf_tax_rate = 0.00002
-ccf_contract_multiplier = 100.0
+# REQUIRED, no default: CCF is 2,000 shares per contract. QFF was 100. Getting
+# this wrong sizes every position twenty times off, self-consistently, so
+# nothing downstream would flag it.
+ccf_contract_multiplier = 2000.0
+# UMC's ADR ratio: one ADR is 5 ordinary shares, the same ratio that converts
+# the US price into a TWD-fair spread leg.
 umc_contract_multiplier = 5.0
 
 [safety]
