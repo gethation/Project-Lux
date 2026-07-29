@@ -308,8 +308,9 @@ CCF/UMC golden 綠燈後，刪掉 QFF/TSM fixture 與 `weekend_policy = flat` �
 | # | 狀態 |
 |---|---|
 | **D4 下單前查券商實際部位** | ✅ 完成 `e9cd61c`，444 passed |
-| D1/D2 IBKR execution adapter + 成交確認分層 | 未做（Phase D 主體） |
-| D3 費用模型、D7 整股取整 | **被 golden 擋住**，見下 |
+| **D1/D2 IBKR execution adapter + 成交確認分層** | ✅ 骨架完成，478 passed |
+| **D7 整股取整** | ✅ 隨 D1 落在 order 邊界 |
+| D3 費用模型 | **被 golden 擋住**，見下 |
 | **D5 持倉期間部位對帳** | ✅ 完成，只查 IBKR 側，456 passed |
 | D6 Recall 應對 | 可以開始 —— D5 已提供偵測 |
 
@@ -320,17 +321,40 @@ CCF/UMC golden 綠燈後，刪掉 QFF/TSM fixture 與 `weekend_policy = flat` �
 回報重新定量 = 用一個剛被證明是錯的世界模型去交易）、**讀不到不等於 flat**、
 **失敗時一張單都不送**（包含本來會先成交的富邦腿，否則留下裸腿）。
 
-### D3 / D7 被 golden 擋住
+### D1/D2 已完成（骨架）
 
-兩者都會動到 Phase C 剛凍好的 golden：
-- **D3**：golden 用 `umc_fee_bps = 2.5` 對齊 PoC。換成 per-share + 最低佣金 +
-  SEC/FINRA 會讓 replay 不再重現 PoC。
-- **D7**：golden 的 `umc_units` 是分數股（PoC 從不下單，所以不取整）。在共用
-  sizing 裡取整就會偏離。
+`integrations/ibkr/execution.py`。**唯讀是預設**：`IbkrConnectionConfig.readonly`
+預設 `True`，execution adapter 是 repo 裡**唯一**傳 `False` 的地方，且用獨立
+client id（實測：quote 17002 / readonly 17003 皆為唯讀，execution 17004 才可交易）。
 
-**正確的落點是 live 專屬路徑**：sizing 算理想避險比例，**order 層**才取整成可
-交易股數；費用模型同理，replay 保留 bps（且實測 bps 是**偏保守**的 —— 中位數
-406 股時模型 $2.49/邊 vs 實際 $2.03）。兩者都要等 D1 的 adapter 存在才有落點。
+**成交確認分層放在 worker 裡**（`Trade` 物件與事件在那個行程）：事件 → 訂單簿 →
+部位差額。分類是重點：
+- `filled` —— 終態成交，或部位差額**完全吻合**。半吻合**不算確認**（代表部位還
+  因為別的原因動過）
+- `failed` —— 終態、零成交、部位未動。**安全**，沒有產生曝險，coordinator 可以
+  乾淨地收尾而不必 PAUSE
+- `unknown` —— 其餘一切（逾時、部分成交、請求本身失敗）→ **PAUSE**
+
+「被拒絕」與「不知道」都是沒成交，但只有一個可以安全地據此行動。把後者當成前者
+回報，正是部分成交的空單變成無人追蹤部位的途徑。
+
+**D7 隨之落地**：整股取整在 **order 邊界**（intent 變成 order 的地方），不在
+sizing —— 放 sizing 會動到 golden。**向零取整**（超額避險會留下 CCF 腿蓋不住的
+美股曝險），並回報 residual 而非默默丟掉。
+
+兩個 live-order env gate **每次下單都重查**，不是建構時查一次 —— 長時間執行的
+行程不能保有一個已被撤銷的權限。
+
+**仍然無法驗證的**（需要 margin 帳戶）：放空、借券可用量、recall 應對。回測中
+**約一半的交易要先賣出 UMC**，所以在那之前這實質上是個只做多的 adapter，而只做多
+的版本沒有人回測過。**測試全綠不等於可以上線。**
+
+### D3 被 golden 擋住
+
+golden 用 `umc_fee_bps = 2.5` 對齊 PoC。換成 per-share + 最低佣金 + SEC/FINRA
+會讓 replay 不再重現 PoC。正確做法是 replay 保留 bps、live 用真實模型 ——
+且實測 bps 是**偏保守**的（中位數 406 股時模型 $2.49/邊 vs 實際 $2.03），所以
+回測沒有美化自己。
 
 ### D5 的前提是錯的（計畫本身的錯誤，已查證）
 
