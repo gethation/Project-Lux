@@ -129,7 +129,7 @@ CCF/UMC 是全新部署，沒有需要保留的歷史。
 |---|---|---|
 | B1 逐檔移植 | `1b3f04f` | 413 passed（+67 移植測試）。審核擋下 4 件事，見下 |
 | B2 交集時段 + B3 warmup + B5 換月時點 | `1f0c885` | 419 passed / 7 skipped |
-| B4 clock skew 來源 | `2d1f9a3` | ✅ NTP，429 passed / 7 skipped |
+| B4 clock skew 來源 | `3a386f5` | ✅ NTP，429 passed / 7 skipped |
 
 **B1 逐檔審核擋下的四件事**（都不是照單全收）：
 1. `reqMarketDataType(3)` 寫死 → 可設定、預設 1(live)。要求 3 會**覆蓋**已持有的授權。
