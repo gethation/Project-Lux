@@ -77,7 +77,10 @@ sync_windows_time_on_startup = true
 clock_skew_fail_seconds = 60.0
 windows_time_sync_timeout_seconds = 15.0
 max_leg_timestamp_skew_seconds = 10.0
-warmup_minutes = 500
+# Matches zscore_window. 2500 minutes on the TAIFEX-and-RTH intersection is
+# about 6.4 UMC sessions, i.e. ~9 calendar days -- inside both the TAIFEX 30-day
+# rolling window and IBKR's history reach.
+warmup_minutes = 2500
 warmup_ccf_max_trailing_fill_minutes = 5
 ccf_product = 'CCF'
 ccf_symbol = 'auto'
@@ -86,7 +89,24 @@ fx_symbol = 'USD/TWD'
 fubon_env_path = '.env'
 taifex_use_network = true
 taifex_cache_dir = 'data\taifex_cache'
-taifex_ccf_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
+taifex_ccf_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\ccf1_1m_cumulative.csv'
+
+# -- IBKR (UMC) --------------------------------------------------------------
+ibkr_host = '127.0.0.1'
+ibkr_port = 4001
+ibkr_client_id = 17002
+# 1 live | 2 frozen | 3 delayed | 4 delayed-frozen. Keep 1: requesting 3
+# OVERRIDES a real-time entitlement, and the delayed tier serves no book, so the
+# directional signal could never fire on it anyway.
+ibkr_market_data_type = 1
+
+# -- Twelve Data (USD/TWD) ---------------------------------------------------
+# 78 requests per UMC session against a free tier of 800/day.
+fx_cache_ttl_seconds = 300.0
+# The FX reference is polled on a cache TTL, not co-timed with the legs, so it
+# gets its own budget rather than the 10s one above.
+fx_stale_seconds = 600.0
+fx_max_serve_seconds = 900.0
 
 [broker_reconciliation]
 enabled = false

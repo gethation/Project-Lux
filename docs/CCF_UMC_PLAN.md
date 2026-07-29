@@ -123,7 +123,44 @@ CCF/UMC 是全新部署，沒有需要保留的歷史。
 
 ---
 
-## 3. Phase B — 補上 IBKR 行情與 FX
+## 3. Phase B — 補上 IBKR 行情與 FX ✅ 大部分完成 2026-07-29
+
+| 步驟 | commit | 結果 |
+|---|---|---|
+| B1 逐檔移植 | `1b3f04f` | 413 passed（+67 移植測試）。審核擋下 4 件事，見下 |
+| B2 交集時段 + B3 warmup + B5 換月時點 | `1f0c885` | 419 passed / 7 skipped |
+| B4 clock skew 來源 | — | **未完成**，`fetch_umc_market_time` 仍 raise |
+
+**B1 逐檔審核擋下的四件事**（都不是照單全收）：
+1. `reqMarketDataType(3)` 寫死 → 可設定、預設 1(live)。要求 3 會**覆蓋**已持有的授權。
+2. **`close` 是價格 fallback 的最後一環** —— 那是前一交易日收盤，而沒有 tick 時間時
+   quote 會被蓋上 `observed_at`。合起來是「昨天的價格戴著今天的時間戳」，staleness
+   閘門會放行。且**沒授權的 session 正是產生 close-only payload 的情況**。改成 raise。
+3. **FX 的 bid/ask 是阻斷級問題**：Twelve Data 無盤口 → `missing_book` → 就算 IBKR
+   授權到位也**永遠產不出訊號**。改成 FX 一律取 mid —— 匯率是讓兩腿可比的**參考**，
+   不是我們會穿越的盤口；兩腿在各自幣別結算，每筆交易並不換匯。
+4. margin panel 從 Binance 欄位改讀 IBKR tag（`UnrealizedPnL` / `MaintMarginReq`）。
+
+**B2/B5 發現：兩條強制平倉規則其實是死的**，原因相同 —— grace window 都錨在
+pair 永遠到不了的 TAIFEX 時鐘上：
+- **換月**：`force_exit_time = '13:35'` 在日盤。改成 pair session 收盤前
+  `force_exit_grace_minutes`（預設 5）。新測試斷言「deadline 全年都不會落在
+  08:45–13:45」。
+- **週末**：grace window 錨在 TAIFEX 05:00 夜盤收盤，但 pair 04:00 就停了 ——
+  整個窗口落在不會被處理的分鐘上，規則接好了卻永遠不可能觸發。同樣改錨到
+  pair session 收盤。
+
+RTH 時鐘從 `integrations/ibkr/calendar.py` 移到 `core/us_calendar.py`（純 zoneinfo、
+與 venue 無關，放 core 才能不靠 Gateway 測時段）。
+
+**B4 未完成**：`clock_skew_fail_seconds` 這個安全閘門目前沒有時鐘來源。IBKR 的
+server time 來自 ib_async 連線握手而非 request，要暴露它得擴充 worker 協定；NTP
+是另一個候選，且不依賴 Gateway 開著。兩者都還沒做，`fetch_umc_market_time` 維持
+raise —— 寧可開不起來，也不要讓 skew 檢查因為回傳本機時鐘而恆真。
+
+---
+
+## 3b. Phase B 原始計畫（保留供對照）
 
 ### B1 — 逐檔移植（審核後才收）
 
