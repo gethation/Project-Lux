@@ -310,8 +310,8 @@ CCF/UMC golden 綠燈後，刪掉 QFF/TSM fixture 與 `weekend_policy = flat` �
 | **D4 下單前查券商實際部位** | ✅ 完成 `e9cd61c`，444 passed |
 | D1/D2 IBKR execution adapter + 成交確認分層 | 未做（Phase D 主體） |
 | D3 費用模型、D7 整股取整 | **被 golden 擋住**，見下 |
-| D5 持倉期間部位對帳 | **前提要修正**，見下 |
-| D6 Recall 應對 | 需 D5 先偵測到 |
+| **D5 持倉期間部位對帳** | ✅ 完成，只查 IBKR 側，456 passed |
+| D6 Recall 應對 | 可以開始 —— D5 已提供偵測 |
 
 ### D4 已完成
 
@@ -348,8 +348,19 @@ CCF/UMC golden 綠燈後，刪掉 QFF/TSM fixture 與 `weekend_policy = flat` �
 - 或者只查 IBKR 側（它的 readonly 沒有 `fetch_margins`，本來就走完整快照，
   順帶就有 positions）—— **而 recall 風險本來就只在 UMC 這一腿**？
 
-第三個選項看起來最好：零額外的富邦流量，而且正好覆蓋唯一會被第三方平掉的腿。
-但這是需要確認的決定，不是實作細節。
+**已定案（使用者 2026-07-29）：只查 IBKR 側。** 零額外富邦流量，而且正好覆蓋唯一
+會被第三方平掉的腿 —— TAIFEX 期貨沒有借券，唯一的非自願平倉是交易所強平，而那
+本來就有保證金監控在看。
+
+**已實作**：`reconciliation/position_drift.py`（純比對）+ margin monitor 掛在既有
+排程上。IBKR 的 readonly 沒有 `fetch_margins`，所以保證金檢查**本來就在拉它的完整
+快照**，positions 免費附帶 —— 只是從來沒拿去比對。偵測到 drift 時 loop 直接
+PAUSE 並立即持久化（drift 可能發生在隨後因 staleness 被跳過的 bar 上，只存在記憶體
+裡的 PAUSE 會被下次重啟抹掉）。有測試斷言**富邦的完整快照不會被請求**。
+
+**接線時抓到的 bug**：PAUSE 原本呼叫 `store.record_strategy_state` —— **那個方法
+不存在**，執行時會拋 `AttributeError` 直接打死 live loop，而且正好在最要緊的那條
+路徑上、當時還沒有任何測試會走到。已改用 `save_state`。
 
 ---
 
