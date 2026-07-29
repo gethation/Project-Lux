@@ -129,7 +129,7 @@ CCF/UMC 是全新部署，沒有需要保留的歷史。
 |---|---|---|
 | B1 逐檔移植 | `1b3f04f` | 413 passed（+67 移植測試）。審核擋下 4 件事，見下 |
 | B2 交集時段 + B3 warmup + B5 換月時點 | `1f0c885` | 419 passed / 7 skipped |
-| B4 clock skew 來源 | — | **未完成**，`fetch_umc_market_time` 仍 raise |
+| B4 clock skew 來源 | `2d1f9a3` | ✅ NTP，429 passed / 7 skipped |
 
 **B1 逐檔審核擋下的四件事**（都不是照單全收）：
 1. `reqMarketDataType(3)` 寫死 → 可設定、預設 1(live)。要求 3 會**覆蓋**已持有的授權。
@@ -153,10 +153,25 @@ pair 永遠到不了的 TAIFEX 時鐘上：
 RTH 時鐘從 `integrations/ibkr/calendar.py` 移到 `core/us_calendar.py`（純 zoneinfo、
 與 venue 無關，放 core 才能不靠 Gateway 測時段）。
 
-**B4 未完成**：`clock_skew_fail_seconds` 這個安全閘門目前沒有時鐘來源。IBKR 的
-server time 來自 ib_async 連線握手而非 request，要暴露它得擴充 worker 協定；NTP
-是另一個候選，且不依賴 Gateway 開著。兩者都還沒做，`fetch_umc_market_time` 維持
-raise —— 寧可開不起來，也不要讓 skew 檢查因為回傳本機時鐘而恆真。
+**B4 定案：用 NTP，不用券商時間。** 三個理由指向同一邊：
+1. 閘門量的是**絕對時間**。loop 用本機時鐘標 bar，staleness 是
+   `local_now − quote.timestamp`，對三個各自用真實時間戳的來源同時比較 ——
+   本機時鐘一漂，**所有比較同時壞掉**。拿某一家券商的時鐘去驗，驗的是那家的時鐘。
+2. **券商探測在券商掛掉時跑不了**，而 IB Gateway 有每日登入畫面 —— 閘門會恰好在
+   啟動時失效，且因為 fail closed，變成「開不起來」。
+3. **Windows 本來就從 NTP 對時**（同一段 preflight 裡的 `w32tm /resync`）。用 NTP
+   驗證才自洽：從 NTP 對時，然後確認那次對時生效。
+
+用 stdlib 實作（SNTP 就是一次 48-byte UDP 交換），不加相依。多台依序試、**第一個
+回應就採用** —— 刻意不做多數決：錯誤答案在這裡不會造成錯誤交易（呼叫端 fail
+closed，錯的時間只會拒絕啟動），多數決買到的是可用性不是安全性。
+
+Stratum 0（kiss-of-death）與 zero transmit timestamp 一律拒絕而非解析 —— 兩者
+硬解都會得到一個**看起來合理**的時刻，而這正是這個閘門絕不能自己發明的東西。
+
+預設伺服器：台灣國家標準時間 → 全球 pool。2026-07-29 實測全部可達、RTT 29–59ms、
+本機偏差 +0.05s。**端到端實測過**（不只 mock）：實際閘門回報 0.053s 通過，模擬
++5 分鐘漂移時以 299.9s 被拒。
 
 ---
 
