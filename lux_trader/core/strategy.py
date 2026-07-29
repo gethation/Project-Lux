@@ -41,12 +41,46 @@ def should_exit(zscore: float, direction: Direction, exit_z: float) -> bool:
     return zscore > exit_z
 
 
-def entry_umc_price(bar: MarketBar) -> float:
+# A signalled fill happens on the bar AFTER the signal, at that bar's OPEN --
+# you cannot trade a close you have not seen yet. A FORCED exit is different: it
+# is triggered by the session ending, so the close is the last price available.
+# The PoC uses exactly this split (entry_fill_price=next_entry_allowed_open,
+# exit_fill_price=signal_exit_next_close_allowed_open, forced_exit=close), and
+# replay has to match it to mean anything as a reference.
+FORCED_EXIT_FILL_REASONS = frozenset(
+    {"friday_session_end", "end_of_data", "rollover_force_exit", "weekend_force_exit"}
+)
+
+
+def open_umc_price(bar: MarketBar) -> float:
+    """The bar's opening UMC fair value, falling back to its close.
+
+    The fallback matters: the open series comes from the OHLCV files, which are
+    optional. Without them replay still runs, on close prices, and says so
+    through entry_fill_price_type.
+    """
     return bar.umc_entry_twd_fair if bar.umc_entry_twd_fair is not None else bar.umc_twd_fair
 
 
-def entry_ccf_price(bar: MarketBar) -> float:
+def open_ccf_price(bar: MarketBar) -> float:
     return bar.ccf_entry_price if bar.ccf_entry_price is not None else bar.ccf_close_filled
+
+
+def exit_umc_price(bar: MarketBar, exit_reason: str) -> float:
+    if exit_reason in FORCED_EXIT_FILL_REASONS:
+        return bar.umc_twd_fair
+    return open_umc_price(bar)
+
+
+def exit_ccf_price(bar: MarketBar, exit_reason: str) -> float:
+    if exit_reason in FORCED_EXIT_FILL_REASONS:
+        return bar.ccf_close_filled
+    return open_ccf_price(bar)
+
+
+# Kept as the historical names used across the entry path.
+entry_umc_price = open_umc_price
+entry_ccf_price = open_ccf_price
 
 
 @dataclass
@@ -522,9 +556,9 @@ class PairStrategy:
 
         costs = fill_costs(
             umc_units=self.state.umc_units,
-            umc_price=bar.umc_twd_fair,
+            umc_price=exit_umc_price(bar, exit_reason),
             ccf_contracts=self.state.ccf_contracts,
-            ccf_price=bar.ccf_close_filled,
+            ccf_price=exit_ccf_price(bar, exit_reason),
             fees=self.fees,
         )
         orders, fills = self._place_exit_orders(bar, costs)
@@ -561,12 +595,14 @@ class PairStrategy:
                 {},
             )
         open_trade = self.state.open_trade
+        exit_umc = exit_umc_price(bar, exit_reason)
+        exit_ccf = exit_ccf_price(bar, exit_reason)
         umc_pnl = self.state.umc_units * (
-            umc_contract_twd_price(bar.umc_twd_fair, self.fees)
+            umc_contract_twd_price(exit_umc, self.fees)
             - umc_contract_twd_price(float(open_trade["entry_umc_twd_fair"]), self.fees)
         )
         ccf_pnl = self.state.ccf_units * (
-            bar.ccf_close_filled - float(open_trade["entry_ccf_close"])
+            exit_ccf - float(open_trade["entry_ccf_close"])
         )
         gross_pnl = umc_pnl + ccf_pnl
         umc_fee_twd = float(open_trade["entry_umc_fee_twd"]) + costs["umc_fee_twd"]
@@ -589,8 +625,11 @@ class PairStrategy:
             "exit_idx": bar.row_index,
             "exit_time": bar.timestamp,
             "exit_fill_zscore": snapshot.zscore,
-            "exit_umc_twd_fair": bar.umc_twd_fair,
-            "exit_ccf_close": bar.ccf_close_filled,
+            "exit_umc_twd_fair": exit_umc,
+            "exit_ccf_close": exit_ccf,
+            "exit_fill_price_type": (
+                "close" if exit_reason in FORCED_EXIT_FILL_REASONS else "open"
+            ),
             "umc_pnl": umc_pnl,
             "ccf_pnl": ccf_pnl,
             "gross_pnl_twd": gross_pnl,

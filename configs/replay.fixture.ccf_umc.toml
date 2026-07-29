@@ -1,0 +1,52 @@
+# The CCF/UMC replay golden, pinned to the committed fixture under
+# tests/fixtures/replay/. Run from the repository root:
+#   conda run -n Quant python -m lux_trader replay --config configs/replay.fixture.ccf_umc.toml --reset-store
+#   conda run -n Quant python -m lux_trader summary --config configs/replay.fixture.ccf_umc.toml
+#
+# Frozen from the PoC run `wk_none_0728` (2026-07-28): 1m bars, window 2500,
+# entry 1.5, exit 0.0, weekend policy none, notional sizing at 1M per leg.
+# 12,460 bars over 2026-06-09 21:30 -> 2026-07-28 03:59 Taipei.
+#
+# WHAT THIS GOLDEN DOES AND DOES NOT PROVE
+#
+# It pins the STRATEGY MATHS -- spread, rolling z, entry/exit rules, sizing,
+# fees -- against the PoC to the cent. It says nothing about live behaviour:
+# the live path scores entries on the directional bid/ask z-score and fills on
+# the same bar, while replay uses the mid/close z-score and fills on the next
+# bar. A green golden does NOT mean live would take these trades.
+#
+# The sample is thin: 18 trades over seven weeks, all winners. That record is a
+# warning, not a reassurance -- it says those seven weeks held no adverse move.
+
+[paths]
+# Resolved relative to the current working directory (repo root), not the
+# config directory; keep CLI invocations rooted at the repo.
+input_csv = 'tests/fixtures/replay/ccf_umc_spread_zscore_w2500.csv'
+store_path = 'data/replay_fixture_ccf_umc.sqlite3'
+ccf_ohlcv_csv = 'tests/fixtures/replay/ccf1_1m_open.csv'
+umc_ohlcv_csv = 'tests/fixtures/replay/umc_1m_open.csv'
+usd_twd_ohlcv_csv = 'tests/fixtures/replay/usd_twd_1m_open.csv'
+
+[strategy]
+entry_z = 1.5
+exit_z = 0.0
+leg_notional_twd = 1000000.0
+initial_capital_twd = 2000000.0
+max_entry_delay_minutes = 15
+zscore_window = 2500
+# The PoC run this is frozen from used notional sizing. The project default is
+# one fixed lot; the fixed-lot golden lives alongside this one in the tests.
+sizing_mode = 'notional'
+weekend_policy = 'none'
+
+[fees]
+umc_fee_bps = 2.5
+ccf_fee_per_contract_twd = 88.0
+ccf_tax_rate = 0.00002
+ccf_contract_multiplier = 2000.0
+umc_contract_multiplier = 5.0
+
+[safety]
+allow_live_order = false
+validate_expected_zscore = true
+expected_zscore_tolerance = 0.0000001

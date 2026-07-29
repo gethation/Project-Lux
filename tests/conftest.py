@@ -18,24 +18,24 @@ from lux_trader.config import (
 )
 
 
-# LEGACY QFF/TSM fixtures -- these files really do hold QFF, Binance TSM and
-# BitoPro USD/TWD data, not CCF/UMC. They stay under their true names while
-# this branch rebuilds around CCF/UMC, because they are the only reference that
-# can prove a refactor did not move the numbers. Phase C of
-# docs/CCF_UMC_PLAN.md replaces them with a CCF/UMC golden and deletes these.
+# Frozen snapshot of the PoC's CCF/UMC run, committed under
+# tests/fixtures/replay/. Copied rather than referenced: the PoC pipeline
+# overwrites its own outputs, and a golden that moves when an upstream script is
+# re-run is not a golden. The OHLCV files are trimmed to the [timestamp, open]
+# columns replay actually reads.
 #
-# Frozen snapshot of the PoC reference replay inputs, committed under
-# tests/fixtures/replay/. The replay acceptance test must be deterministic and
-# self-contained: the live PoC working directory rebuilds qff1_1m.csv from
-# TAIFEX tick history, which only retains ~30 trading days, so the original
-# reference dataset (and its 265,481 net PnL) ages out and cannot be rebuilt.
-# These fixtures decouple the test from that mutable upstream. The OHLCV files
-# are trimmed to the [timestamp, open] columns the replay actually reads.
+# The golden assertions live in tests/integration/test_replay_golden.py, which
+# loads configs/replay.fixture.ccf_umc.toml rather than rebuilding the
+# parameters here -- so the committed config is itself under test.
+#
+# The strategy parameters in make_app_config below are NOT the golden's. They
+# are arbitrary values that predate this pair, kept because a long tail of unit
+# tests asserts arithmetic against them.
 _FIXTURE_DIR = Path(__file__).parent / "fixtures" / "replay"
-POC_CSV = _FIXTURE_DIR / "spread_zscore_w500.csv"
-LEGACY_QFF_OHLCV = _FIXTURE_DIR / "qff1_1m_open.csv"
-LEGACY_TSM_OHLCV = _FIXTURE_DIR / "binance_tsm_open.csv"
-LEGACY_USDTTWD_OHLCV = _FIXTURE_DIR / "bitopro_usdttwd_open.csv"
+POC_CSV = _FIXTURE_DIR / "ccf_umc_spread_zscore_w2500.csv"
+CCF_OHLCV = _FIXTURE_DIR / "ccf1_1m_open.csv"
+UMC_OHLCV = _FIXTURE_DIR / "umc_1m_open.csv"
+USD_TWD_OHLCV = _FIXTURE_DIR / "usd_twd_1m_open.csv"
 
 
 @pytest.fixture
@@ -68,9 +68,9 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
     return AppConfig(
         input_csv=POC_CSV,
         store_path=tmp_path / "project_lux.sqlite3",
-        ccf_ohlcv_csv=LEGACY_QFF_OHLCV,
-        umc_ohlcv_csv=LEGACY_TSM_OHLCV,
-        usd_twd_ohlcv_csv=LEGACY_USDTTWD_OHLCV,
+        ccf_ohlcv_csv=CCF_OHLCV,
+        umc_ohlcv_csv=UMC_OHLCV,
+        usd_twd_ohlcv_csv=USD_TWD_OHLCV,
         strategy=StrategyConfig(
             entry_z=2.0,
             exit_z=1.0,
