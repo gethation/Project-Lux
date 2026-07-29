@@ -307,7 +307,7 @@ CCF/UMC golden 綠燈後，刪掉 QFF/TSM fixture 與 `weekend_policy = flat` �
 
 | # | 狀態 |
 |---|---|
-| **D4 下單前查券商實際部位** | ✅ 完成 `d7c0a41`，444 passed |
+| **D4 下單前查券商實際部位** | ✅ 完成 `e9cd61c`，444 passed |
 | D1/D2 IBKR execution adapter + 成交確認分層 | 未做（Phase D 主體） |
 | D3 費用模型、D7 整股取整 | **被 golden 擋住**，見下 |
 | D5 持倉期間部位對帳 | **前提要修正**，見下 |
