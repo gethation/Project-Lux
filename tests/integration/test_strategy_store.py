@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
 
 import pytest
@@ -172,5 +173,27 @@ def test_sqlite_state_roundtrip(tmp_path) -> None:
         assert restored.strategy.candidate_idx == 10
         assert restored.indicator.window == 3
         assert list(restored.indicator.values) == []
+    finally:
+        store.close()
+
+
+def test_store_refuses_a_qff_tsm_store_instead_of_migrating_it(tmp_path) -> None:
+    # A QFF/TSM store has qff_/tsm_ leg columns. ensure_column would happily add
+    # the ccf_ ones beside them, producing a store whose position lives in
+    # columns nothing reads -- so opening it has to fail instead.
+    store_path = tmp_path / "legacy.sqlite3"
+    connection = sqlite3.connect(store_path)
+    try:
+        connection.execute(
+            "CREATE TABLE bars (row_index INTEGER, qff_close_filled REAL, tsm_units REAL)"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    store = SQLiteStore(store_path)
+    try:
+        with pytest.raises(RuntimeError, match="Refusing to open a QFF/TSM store"):
+            store.initialize()
     finally:
         store.close()

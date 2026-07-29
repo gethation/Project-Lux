@@ -116,7 +116,7 @@ def test_live_execute_refreshes_matched_reconciliation_before_runner(
     )
     args = build_parser().parse_args(
         [
-            "live-execute",
+            "live", "--mode", "execute",
             "--config",
             str(config_path),
             "--reset-store",
@@ -156,7 +156,7 @@ def test_live_execute_stops_before_runner_when_reconciliation_mismatches(
     )
     args = build_parser().parse_args(
         [
-            "live-execute",
+            "live", "--mode", "execute",
             "--config",
             str(config_path),
             "--reset-store",

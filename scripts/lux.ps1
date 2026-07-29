@@ -2,8 +2,8 @@
 # --no-capture-output keeps the interactive terminal UI (dashboard/compact) working.
 #
 # Usage:
-#   .\scripts\lux.ps1 live-dry-run --config configs/live.example.toml --reset-store
-#   .\scripts\lux.ps1 live-execute --config configs/config.live.exec.local.toml --reset-store
+#   .\scripts\lux.ps1 live --mode dry-run --config configs/live.example.toml --reset-store
+#   .\scripts\lux.ps1 live --mode execute --config configs/config.live.exec.local.toml --reset-store
 #   .\scripts\lux.ps1 replay --config configs/replay.fixture.toml --reset-store
 
 $ErrorActionPreference = 'Stop'
@@ -30,11 +30,14 @@ $liveExecuteEnvGates = @(
     'IBKR_ALLOW_LIVE_ORDER'
 )
 $restoreEnv = @{}
+# The gates depend on `live --mode`, so read the mode rather than the verb.
 $command = if ($args.Count -gt 0) { $args[0] } else { '' }
-$autoEnvGates = if ($command -eq 'live-execute') {
+$modeIndex = [Array]::IndexOf([string[]]$args, '--mode')
+$mode = if ($modeIndex -ge 0 -and $modeIndex + 1 -lt $args.Count) { $args[$modeIndex + 1] } else { '' }
+$autoEnvGates = if ($command -eq 'live' -and $mode -eq 'execute') {
     $liveExecuteEnvGates
 }
-elseif ($command -eq 'live-dry-run') {
+elseif ($command -eq 'live' -and $mode -eq 'dry-run') {
     @('LUX_READONLY_BROKER')
 }
 else {

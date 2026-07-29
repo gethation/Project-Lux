@@ -171,7 +171,7 @@ def use_fake_brokers(monkeypatch, fake_case: str) -> None:
 
 def test_live_status_reports_no_state(tmp_path: Path, capsys) -> None:
     args = build_parser().parse_args(
-        ["live-status", "--config", str(write_config(tmp_path))]
+        ["status", "live", "--config", str(write_config(tmp_path))]
     )
     assert command_live_status(args) == 0
     output = capsys.readouterr().out
@@ -182,7 +182,7 @@ def test_live_status_reports_paused_position(tmp_path: Path, capsys) -> None:
     config_path = write_config(tmp_path)
     seed_state(config_path, state=StrategyState.PAUSED, with_position=True)
 
-    args = build_parser().parse_args(["live-status", "--config", str(config_path)])
+    args = build_parser().parse_args(["status", "live", "--config", str(config_path)])
     assert command_live_status(args) == 0
 
     output = capsys.readouterr().out
@@ -204,7 +204,7 @@ def test_recover_manual_flat_dry_run_does_not_change_state(
     use_fake_brokers(monkeypatch, "matched")
 
     args = build_parser().parse_args(
-        ["recover-manual-flat", "--config", str(config_path), "--readonly"]
+        ["recover", "manual-flat", "--config", str(config_path), "--readonly"]
     )
     assert command_recover_manual_flat(args) == 0
     state = load_persisted_state(config_path)
@@ -224,7 +224,7 @@ def test_recover_manual_flat_apply_offsets_ledger_and_remains_paused(
 
     args = build_parser().parse_args(
         [
-            "recover-manual-flat",
+            "recover", "manual-flat",
             "--config",
             str(config_path),
             "--readonly",
@@ -267,7 +267,7 @@ def test_recover_then_clear_pause_reaches_flat(
     use_fake_brokers(monkeypatch, "matched")
     recover_args = build_parser().parse_args(
         [
-            "recover-manual-flat",
+            "recover", "manual-flat",
             "--config",
             str(config_path),
             "--readonly",
@@ -279,7 +279,7 @@ def test_recover_then_clear_pause_reaches_flat(
     assert command_recover_manual_flat(recover_args) == 0
 
     clear_args = build_parser().parse_args(
-        ["clear-pause", "--config", str(config_path), "--readonly"]
+        ["recover", "clear-pause", "--config", str(config_path), "--readonly"]
     )
     assert command_clear_pause(clear_args) == 0
     state = load_persisted_state(config_path)
@@ -294,7 +294,7 @@ def test_recover_manual_flat_refuses_nonflat_broker(
     seed_state(config_path, state=StrategyState.PAUSED, with_position=True)
     use_fake_brokers(monkeypatch, "mismatch")
     args = build_parser().parse_args(
-        ["recover-manual-flat", "--config", str(config_path), "--readonly"]
+        ["recover", "manual-flat", "--config", str(config_path), "--readonly"]
     )
     assert command_recover_manual_flat(args) == 1
     assert load_persisted_state(config_path).umc_units == -100.0
@@ -310,7 +310,7 @@ def test_clear_pause_matched_clears_to_open_with_position(
     seed_state(config_path, state=StrategyState.PAUSED, with_position=True)
     use_fake_brokers(monkeypatch, "matched")
 
-    args = build_parser().parse_args(["clear-pause", "--config", str(config_path)])
+    args = build_parser().parse_args(["recover", "clear-pause", "--config", str(config_path)])
     assert command_clear_pause(args) == 0
 
     output = capsys.readouterr().out
@@ -325,7 +325,7 @@ def test_clear_pause_matched_clears_to_flat_without_position(
     seed_state(config_path, state=StrategyState.PAUSED, with_position=False)
     use_fake_brokers(monkeypatch, "matched")
 
-    args = build_parser().parse_args(["clear-pause", "--config", str(config_path)])
+    args = build_parser().parse_args(["recover", "clear-pause", "--config", str(config_path)])
     assert command_clear_pause(args) == 0
 
     output = capsys.readouterr().out
@@ -340,7 +340,7 @@ def test_clear_pause_mismatch_refuses_and_keeps_paused(
     seed_state(config_path, state=StrategyState.PAUSED, with_position=True)
     use_fake_brokers(monkeypatch, "mismatch")
 
-    args = build_parser().parse_args(["clear-pause", "--config", str(config_path)])
+    args = build_parser().parse_args(["recover", "clear-pause", "--config", str(config_path)])
     assert command_clear_pause(args) == 1
 
     output = capsys.readouterr().out
@@ -356,7 +356,7 @@ def test_clear_pause_noop_when_not_paused(
     seed_state(config_path, state=StrategyState.FLAT, with_position=False)
     use_fake_brokers(monkeypatch, "matched")
 
-    args = build_parser().parse_args(["clear-pause", "--config", str(config_path)])
+    args = build_parser().parse_args(["recover", "clear-pause", "--config", str(config_path)])
     assert command_clear_pause(args) == 0
     assert "nothing to clear" in capsys.readouterr().out
 
@@ -368,7 +368,7 @@ def test_clear_pause_without_readonly_refuses_real_brokers(
     config_path = write_config(tmp_path)
     seed_state(config_path, state=StrategyState.PAUSED, with_position=False)
 
-    args = build_parser().parse_args(["clear-pause", "--config", str(config_path)])
+    args = build_parser().parse_args(["recover", "clear-pause", "--config", str(config_path)])
     try:
         command_clear_pause(args)
     except SystemExit as exc:

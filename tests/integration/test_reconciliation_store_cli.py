@@ -114,7 +114,7 @@ def test_reconcile_brokers_fake_matched_records_report(
 ) -> None:
     config_path = write_config(tmp_path)
     use_fake_brokers(monkeypatch, "matched")
-    args = build_parser().parse_args(["reconcile-brokers", "--config", str(config_path)])
+    args = build_parser().parse_args(["status", "reconcile", "--config", str(config_path)])
 
     exit_code = command_reconcile_brokers(args)
 
@@ -136,7 +136,7 @@ def test_reconcile_brokers_fake_mismatch_warns_but_exits_zero(
 ) -> None:
     use_fake_brokers(monkeypatch, "mismatch")
     args = build_parser().parse_args(
-        ["reconcile-brokers", "--config", str(write_config(tmp_path))]
+        ["status", "reconcile", "--config", str(write_config(tmp_path))]
     )
 
     exit_code = command_reconcile_brokers(args)
@@ -154,7 +154,7 @@ def test_reconcile_brokers_fake_error_exits_nonzero(
 ) -> None:
     use_fake_brokers(monkeypatch, "error")
     args = build_parser().parse_args(
-        ["reconcile-brokers", "--config", str(write_config(tmp_path))]
+        ["status", "reconcile", "--config", str(write_config(tmp_path))]
     )
 
     exit_code = command_reconcile_brokers(args)
@@ -172,7 +172,7 @@ def test_reconcile_brokers_readonly_requires_env_flag(
     monkeypatch.delenv("LUX_READONLY_BROKER", raising=False)
     args = build_parser().parse_args(
         [
-            "reconcile-brokers",
+            "status", "reconcile",
             "--config",
             str(write_config(tmp_path)),
             "--readonly",
@@ -193,7 +193,7 @@ def test_reconcile_brokers_without_readonly_refuses_real_brokers(
 ) -> None:
     monkeypatch.delenv("LUX_READONLY_BROKER", raising=False)
     args = build_parser().parse_args(
-        ["reconcile-brokers", "--config", str(write_config(tmp_path))]
+        ["status", "reconcile", "--config", str(write_config(tmp_path))]
     )
 
     try:
@@ -217,7 +217,7 @@ def test_reconcile_brokers_allows_live_order_config_for_readonly_check(
     use_fake_brokers(monkeypatch, "matched")
     args = build_parser().parse_args(
         [
-            "reconcile-brokers",
+            "status", "reconcile",
             "--config",
             str(config_path),
             "--readonly",

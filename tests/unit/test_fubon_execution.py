@@ -915,7 +915,7 @@ def test_fubon_exec_smoke_requires_lot_arg(tmp_path: Path) -> None:
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "fubon",
+            "admin", "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -937,7 +937,7 @@ def test_fubon_exec_smoke_rejects_missing_env_gates(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "fubon",
+            "admin", "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -962,7 +962,7 @@ def test_fubon_exec_smoke_rejects_symbol_mismatch(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "fubon",
+            "admin", "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -992,7 +992,7 @@ def test_fubon_exec_smoke_rejects_existing_position(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "fubon",
+            "admin", "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -1025,7 +1025,7 @@ def test_fubon_exec_smoke_rejects_existing_open_orders(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "fubon",
+            "admin", "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -1059,7 +1059,7 @@ def test_fubon_exec_smoke_opens_then_closes(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "fubon",
+            "admin", "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -1108,7 +1108,7 @@ def test_fubon_exec_smoke_entry_unknown_prints_diagnostics_without_close(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "fubon",
+            "admin", "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -1148,7 +1148,7 @@ def test_fubon_order_records_readonly_prints_position_and_records(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "broker-status",
+            "status", "broker",
             "--config",
             str(write_config(tmp_path)),
             "--orders",
@@ -1177,7 +1177,7 @@ def test_fubon_manual_close_requires_env_gates(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "manual-close", "--venue", "fubon",
+            "admin", "manual-close", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -1203,7 +1203,7 @@ def test_fubon_manual_close_rejects_confirm_symbol_mismatch(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "manual-close", "--venue", "fubon",
+            "admin", "manual-close", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -1235,7 +1235,7 @@ def test_fubon_manual_close_rejects_open_orders(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "manual-close", "--venue", "fubon",
+            "admin", "manual-close", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -1270,7 +1270,7 @@ def test_fubon_manual_close_sends_close_order_and_reports_success(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "manual-close", "--venue", "fubon",
+            "admin", "manual-close", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -1316,7 +1316,7 @@ def test_fubon_manual_close_partial_fill_requires_manual_intervention(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "manual-close", "--venue", "fubon",
+            "admin", "manual-close", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",
@@ -1354,7 +1354,7 @@ def test_fubon_exec_smoke_close_failure_warns_manual_intervention(
     parser = build_parser()
     args = parser.parse_args(
         [
-            "exec-smoke", "--venue", "fubon",
+            "admin", "exec-smoke", "--venue", "fubon",
             "--config",
             str(write_config(tmp_path)),
             "--symbol",

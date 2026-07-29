@@ -394,9 +394,41 @@ SQLITE_SCHEMA = r"""
 """
 
 
+# Column names carrying the leg identity. A store written by the QFF/TSM build
+# has qff_/tsm_ columns instead, and ensure_column would happily bolt the ccf_
+# ones on beside them -- leaving a store where the position lives in columns
+# nothing reads. Refusing is the only safe answer: the CCF/UMC system is a fresh
+# deployment with no history worth migrating.
+LEGACY_LEG_COLUMNS = ("qff_symbol", "qff_close_filled", "tsm_units")
+
+
 def initialize_schema(connection: sqlite3.Connection) -> None:
+    reject_legacy_store(connection)
     connection.executescript(SQLITE_SCHEMA)
     ensure_live_metadata_columns(connection)
+
+
+def reject_legacy_store(connection: sqlite3.Connection) -> None:
+    tables = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    for table in ("bars", "trades", "warmup_bars"):
+        if table not in tables:
+            continue
+        columns = {
+            str(row[1])
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        legacy = sorted(columns.intersection(LEGACY_LEG_COLUMNS))
+        if legacy:
+            raise RuntimeError(
+                f"Refusing to open a QFF/TSM store: {table} still has {legacy}. "
+                "This build trades CCF/UMC and does not migrate the old schema. "
+                "Point paths.store_path at a new file, or pass --reset-store."
+            )
 
 
 def ensure_live_metadata_columns(connection: sqlite3.Connection) -> None:

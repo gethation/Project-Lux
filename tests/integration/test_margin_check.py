@@ -514,7 +514,7 @@ def test_margin_check_cli_prints_guidance_and_records(
     )
     monkeypatch.setattr(commands_live, "fetch_usd_twd_rate", lambda config: USD_TWD)
 
-    args = build_parser().parse_args(["margin-check", "--config", str(config_path)])
+    args = build_parser().parse_args(["status", "margin", "--config", str(config_path)])
     exit_code = command_margin_check(args)
 
     output = capsys.readouterr().out
@@ -558,7 +558,7 @@ def test_margin_check_cli_red_line_exits_nonzero(
     )
     monkeypatch.setattr(commands_live, "fetch_usd_twd_rate", lambda config: USD_TWD)
 
-    args = build_parser().parse_args(["margin-check", "--config", str(config_path)])
+    args = build_parser().parse_args(["status", "margin", "--config", str(config_path)])
     exit_code = command_margin_check(args)
 
     output = capsys.readouterr().out
@@ -570,7 +570,7 @@ def test_margin_check_cli_red_line_exits_nonzero(
 def test_margin_check_cli_requires_env_gate(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("LUX_READONLY_BROKER", raising=False)
     args = build_parser().parse_args(
-        ["margin-check", "--config", str(write_config(tmp_path))]
+        ["status", "margin", "--config", str(write_config(tmp_path))]
     )
     with pytest.raises(SystemExit, match="LUX_READONLY_BROKER=1"):
         command_margin_check(args)
@@ -581,7 +581,7 @@ def test_margin_check_cli_requires_enabled_config(
 ) -> None:
     monkeypatch.setenv("LUX_READONLY_BROKER", "1")
     args = build_parser().parse_args(
-        ["margin-check", "--config", str(write_config(tmp_path, margin_enabled=False))]
+        ["status", "margin", "--config", str(write_config(tmp_path, margin_enabled=False))]
     )
     with pytest.raises(SystemExit, match="enabled=true"):
         command_margin_check(args)
