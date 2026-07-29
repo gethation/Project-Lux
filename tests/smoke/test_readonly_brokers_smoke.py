@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from lux_trader.config import load_config
-from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
+from lux_trader.integrations.venues import open_umc_readonly_broker  # noqa: F401
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 
 
@@ -41,19 +41,3 @@ def test_fubon_readonly_smoke() -> None:
     assert len(snapshot.open_orders) >= 0
 
 
-def test_binance_readonly_smoke() -> None:
-    config = smoke_config()
-    broker = BinanceReadOnlyBroker(
-        config.live.binance_symbol,
-        config.live.fubon_env_path,
-    )
-    try:
-        snapshot = broker.fetch_snapshot()
-    finally:
-        broker.close()
-
-    assert snapshot.broker.value == "IBKR_UMC"
-    assert snapshot.account_id == "BINANCE_USDM"
-    assert len(snapshot.margins) >= 0
-    assert len(snapshot.positions) >= 0
-    assert len(snapshot.open_orders) >= 0

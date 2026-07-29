@@ -54,29 +54,29 @@ class LiveMinuteBarBuilder:
     def _update_current_quotes(self, quote_set: LiveQuoteSet) -> None:
         self.current_quotes["ccf"] = quote_set.ccf
         self.current_quotes["umc"] = quote_set.umc
-        self.current_quotes["usdttwd"] = quote_set.usdttwd
+        self.current_quotes["usd_twd"] = quote_set.usd_twd
 
     def _finalize_current_minute(self) -> MinuteBuildResult:
         if self.current_minute is None:
             return MinuteBuildResult(None, "no_current_minute")
 
         umc = self.current_quotes.get("umc")
-        usdttwd = self.current_quotes.get("usdttwd")
+        usd_twd = self.current_quotes.get("usd_twd")
         ccf = self.current_quotes.get("ccf")
-        if umc is None or usdttwd is None:
+        if umc is None or usd_twd is None:
             return MinuteBuildResult(
                 None,
                 "missing_required_quote",
                 {"minute": self.current_minute.isoformat()},
             )
         quote_set = (
-            LiveQuoteSet(ccf=ccf, umc=umc, usdttwd=usdttwd)
+            LiveQuoteSet(ccf=ccf, umc=umc, usd_twd=usd_twd)
             if ccf is not None
             else None
         )
 
         close_time = self.current_minute + timedelta(minutes=1)
-        for name, quote in (("umc", umc), ("usdttwd", usdttwd)):
+        for name, quote in (("umc", umc), ("usd_twd", usd_twd)):
             age = abs((close_time - ensure_taipei(quote.timestamp)).total_seconds())
             if age > self.stale_seconds:
                 return MinuteBuildResult(
@@ -93,7 +93,7 @@ class LiveMinuteBarBuilder:
             )
             ccf_is_fresh = ccf_age <= self.stale_seconds
 
-        skew_quotes = [umc, usdttwd]
+        skew_quotes = [umc, usd_twd]
         if ccf is not None and ccf_is_fresh:
             skew_quotes.append(ccf)
         timestamps = [ensure_taipei(quote.timestamp) for quote in skew_quotes]
@@ -116,7 +116,7 @@ class LiveMinuteBarBuilder:
                 quote_set=quote_set,
             )
 
-        umc_twd_fair = umc.price * usdttwd.price / 5.0
+        umc_twd_fair = umc.price * usd_twd.price / 5.0
         spread = (
             (umc_twd_fair - self.last_ccf_close)
             / (umc_twd_fair + self.last_ccf_close)

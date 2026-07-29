@@ -19,7 +19,7 @@ from lux_trader.config import (
 
 
 # LEGACY QFF/TSM fixtures -- these files really do hold QFF, Binance TSM and
-# BitoPro USDT/TWD data, not CCF/UMC. They stay under their true names while
+# BitoPro USD/TWD data, not CCF/UMC. They stay under their true names while
 # this branch rebuilds around CCF/UMC, because they are the only reference that
 # can prove a refactor did not move the numbers. Phase C of
 # docs/CCF_UMC_PLAN.md replaces them with a CCF/UMC golden and deletes these.
@@ -67,7 +67,7 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
         store_path=tmp_path / "project_lux.sqlite3",
         ccf_ohlcv_csv=LEGACY_QFF_OHLCV,
         umc_ohlcv_csv=LEGACY_TSM_OHLCV,
-        usdttwd_ohlcv_csv=LEGACY_USDTTWD_OHLCV,
+        usd_twd_ohlcv_csv=LEGACY_USDTTWD_OHLCV,
         strategy=StrategyConfig(
             entry_z=2.0,
             exit_z=1.0,
@@ -108,8 +108,8 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             warmup_minutes=500,
             ccf_product="CCF",
             ccf_symbol="auto",
-            binance_symbol="TSM/USDT:USDT",
-            bitopro_symbol="USDT/TWD",
+            umc_symbol="UMC",
+            fx_symbol="USD/TWD",
             fubon_env_path=None,
             taifex_ccf_1m_csv=None,
             taifex_use_network=False,
@@ -131,7 +131,7 @@ def make_app_config(tmp_path: Path, validate_expected_zscore: bool = True) -> Ap
             enabled=False,
             fubon_symbol="TMFG6",
             fubon_lots=1,
-            binance_symbol="TSM/USDT:USDT",
+            umc_symbol="UMC",
             umc_units=0.1,
             ccf_expiry="202607",
         ),

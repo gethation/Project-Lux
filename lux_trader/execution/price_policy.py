@@ -46,7 +46,7 @@ def _apply_leg_price_policy(
     umc_contract_multiplier: float,
 ) -> ExecutionLeg:
     if leg.broker == BrokerName.IBKR_UMC:
-        return _apply_binance_tsm_price_policy(
+        return _apply_umc_price_policy(
             leg,
             quote_set,
             umc_contract_multiplier=umc_contract_multiplier,
@@ -56,7 +56,7 @@ def _apply_leg_price_policy(
     return leg
 
 
-def _apply_binance_tsm_price_policy(
+def _apply_umc_price_policy(
     leg: ExecutionLeg,
     quote_set: LiveQuoteSet,
     *,
@@ -64,17 +64,17 @@ def _apply_binance_tsm_price_policy(
 ) -> ExecutionLeg:
     trigger_bid = _combined_umc_contract_twd_price(
         quote_set.umc.bid,
-        quote_set.usdttwd.bid,
+        quote_set.usd_twd.bid,
         umc_contract_multiplier,
     )
     trigger_ask = _combined_umc_contract_twd_price(
         quote_set.umc.ask,
-        quote_set.usdttwd.ask,
+        quote_set.usd_twd.ask,
         umc_contract_multiplier,
     )
     trigger_mid = _combined_umc_contract_twd_price(
         quote_set.umc.price,
-        quote_set.usdttwd.price,
+        quote_set.usd_twd.price,
         umc_contract_multiplier,
     )
     expected = _side_expected_price(
@@ -89,10 +89,10 @@ def _apply_binance_tsm_price_policy(
         "umc_ask": quote_set.umc.ask,
         "umc_price": quote_set.umc.price,
         "umc_timestamp": quote_set.umc.timestamp,
-        "usdttwd_bid": quote_set.usdttwd.bid,
-        "usdttwd_ask": quote_set.usdttwd.ask,
-        "usdttwd_price": quote_set.usdttwd.price,
-        "usdttwd_timestamp": quote_set.usdttwd.timestamp,
+        "usd_twd_bid": quote_set.usd_twd.bid,
+        "usd_twd_ask": quote_set.usd_twd.ask,
+        "usd_twd_price": quote_set.usd_twd.price,
+        "usd_twd_timestamp": quote_set.usd_twd.timestamp,
         "umc_contract_multiplier": umc_contract_multiplier,
         "accounting_price": leg.price,
     }
@@ -104,7 +104,7 @@ def _apply_binance_tsm_price_policy(
         trigger_bid=trigger_bid,
         trigger_ask=trigger_ask,
         trigger_mid=trigger_mid,
-        price_source="umc_usdttwd_top_of_book_twd_fair",
+        price_source="umc_usd_twd_top_of_book_twd_fair",
         raw=raw,
     )
 
@@ -152,19 +152,19 @@ def _side_expected_price(
 
 def _combined_umc_twd_price(
     umc_price: float | None,
-    usdttwd_price: float | None,
+    usd_twd_price: float | None,
 ) -> float | None:
-    if umc_price is None or usdttwd_price is None:
+    if umc_price is None or usd_twd_price is None:
         return None
-    return umc_price * usdttwd_price / 5.0
+    return umc_price * usd_twd_price / 5.0
 
 
 def _combined_umc_contract_twd_price(
     umc_price: float | None,
-    usdttwd_price: float | None,
+    usd_twd_price: float | None,
     multiplier: float,
 ) -> float | None:
-    umc_twd_price = _combined_umc_twd_price(umc_price, usdttwd_price)
+    umc_twd_price = _combined_umc_twd_price(umc_price, usd_twd_price)
     if umc_twd_price is None:
         return None
     return umc_twd_price * float(multiplier)

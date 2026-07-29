@@ -20,7 +20,7 @@ class QuoteLike(Protocol):
 class QuoteSetLike(Protocol):
     ccf: QuoteLike
     umc: QuoteLike
-    usdttwd: QuoteLike
+    usd_twd: QuoteLike
 
 
 @dataclass(frozen=True)
@@ -55,7 +55,7 @@ def estimate_tradable_spreads(
         stale_seconds=stale_seconds,
         ccf_book_stale_seconds=ccf_book_stale_seconds,
         umc_side="bid",
-        usdttwd_side="bid",
+        usd_twd_side="bid",
         ccf_side="ask",
     )
     long_spread, long_missing = estimate_directional_spread(
@@ -64,7 +64,7 @@ def estimate_tradable_spreads(
         stale_seconds=stale_seconds,
         ccf_book_stale_seconds=ccf_book_stale_seconds,
         umc_side="ask",
-        usdttwd_side="ask",
+        usd_twd_side="ask",
         ccf_side="bid",
     )
     missing_reason = short_missing or long_missing
@@ -89,7 +89,7 @@ def estimate_mid_spread(
     observed = ensure_taipei(observed_at)
     if not quote_is_fresh(quote_set.umc, observed, stale_seconds):
         return None
-    if not quote_is_fresh(quote_set.usdttwd, observed, stale_seconds):
+    if not quote_is_fresh(quote_set.usd_twd, observed, stale_seconds):
         return None
 
     ccf_price = last_ccf_close
@@ -98,7 +98,7 @@ def estimate_mid_spread(
     if ccf_price is None:
         return None
 
-    umc_twd_fair = quote_set.umc.price * quote_set.usdttwd.price / 5.0
+    umc_twd_fair = quote_set.umc.price * quote_set.usd_twd.price / 5.0
     return spread_from_prices(umc_twd_fair, ccf_price)
 
 
@@ -109,13 +109,13 @@ def estimate_directional_spread(
     stale_seconds: float,
     ccf_book_stale_seconds: float,
     umc_side: str,
-    usdttwd_side: str,
+    usd_twd_side: str,
     ccf_side: str,
 ) -> tuple[float | None, str | None]:
     observed = ensure_taipei(observed_at)
     for name, quote in (
         ("umc", quote_set.umc),
-        ("usdttwd", quote_set.usdttwd),
+        ("usd_twd", quote_set.usd_twd),
     ):
         if not quote_is_fresh(quote, observed, stale_seconds):
             return None, f"stale_{name}"
@@ -125,12 +125,12 @@ def estimate_directional_spread(
         return None, "stale_ccf"
 
     umc_price = book_price(quote_set.umc, umc_side)
-    usdttwd_price = book_price(quote_set.usdttwd, usdttwd_side)
+    usd_twd_price = book_price(quote_set.usd_twd, usd_twd_side)
     ccf_price = book_price(quote_set.ccf, ccf_side)
-    if umc_price is None or usdttwd_price is None or ccf_price is None:
+    if umc_price is None or usd_twd_price is None or ccf_price is None:
         return None, "missing_book"
 
-    umc_twd_fair = umc_price * usdttwd_price / 5.0
+    umc_twd_fair = umc_price * usd_twd_price / 5.0
     return spread_from_prices(umc_twd_fair, ccf_price), None
 
 

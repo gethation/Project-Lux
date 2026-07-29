@@ -6,7 +6,7 @@ store_path = 'data\project_lux_live_dryrun.sqlite3'
 input_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff_tsm_spread_zscore_1m_taipei_qff_session_w500.csv'
 ccf_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
 umc_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\binance_tsmusdtp_1m_taipei.csv'
-usdttwd_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\bitopro_usdttwd_1m_taipei.csv'
+usd_twd_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\bitopro_usdttwd_1m_taipei.csv'
 
 [strategy]
 entry_z = 2.0
@@ -75,8 +75,8 @@ warmup_forward_fill_max_ratio = 0.9
 warmup_ccf_max_trailing_fill_minutes = 5
 ccf_product = 'CCF'
 ccf_symbol = 'auto'
-binance_symbol = 'TSM/USDT:USDT'
-bitopro_symbol = 'USDT/TWD'
+umc_symbol = 'UMC'
+fx_symbol = 'USD/TWD'
 fubon_env_path = 'env'
 taifex_use_network = true
 taifex_cache_dir = 'data\taifex_cache'
@@ -94,11 +94,6 @@ require_readonly_reconciliation = true
 max_plan_age_seconds = 120
 ccf_first = true
 
-[binance_execution]
-leverage = 1
-margin_mode = 'cross'
-enforce_leverage = true
-
 [margin_management]
 # Completed 10:00 Taipei waterline policy from PoC docs/margin_management_analysis.md.
 # Checks are read-only: set LUX_READONLY_BROKER=1 to run the live loop margin panel
@@ -106,8 +101,8 @@ enforce_leverage = true
 enabled = true
 check_time = '10:00'
 red_line_interval_minutes = 240
-binance_transfer_ratio = 0.11
-binance_red_line_ratio = 0.05
+umc_transfer_ratio = 0.11
+umc_red_line_ratio = 0.05
 fubon_transfer_ratio = 0.20
 fubon_red_line_ratio = 0.135
 target_ratio = 0.30

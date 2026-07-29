@@ -63,8 +63,8 @@ class LiveMarketDataConfig:
     warmup_minutes: int
     ccf_product: str
     ccf_symbol: str
-    binance_symbol: str
-    bitopro_symbol: str
+    umc_symbol: str
+    fx_symbol: str
     fubon_env_path: Path | None
     taifex_ccf_1m_csv: Path | None
     taifex_use_network: bool
@@ -99,16 +99,14 @@ class LiveExecutionSmokeConfig:
     enabled: bool
     fubon_symbol: str
     fubon_lots: int
-    binance_symbol: str
+    umc_symbol: str
     umc_units: float
     ccf_expiry: str | None = None
 
 
-@dataclass(frozen=True)
-class BinanceExecutionConfig:
-    leverage: int
-    margin_mode: str
-    enforce_leverage: bool
+# There is deliberately no UMC execution config block. Binance's leverage /
+# margin_mode / enforce_leverage were USD-M futures settings with no
+# cash-equity analogue; whatever IBKR needs arrives with the adapter in Phase D.
 
 
 @dataclass(frozen=True)
@@ -120,8 +118,8 @@ class MarginManagementConfig:
     enabled: bool = False
     check_time: str = "10:00"
     red_line_interval_minutes: int = 15
-    binance_transfer_ratio: float = 0.11
-    binance_red_line_ratio: float = 0.05
+    umc_transfer_ratio: float = 0.11
+    umc_red_line_ratio: float = 0.05
     fubon_transfer_ratio: float = 0.20
     fubon_red_line_ratio: float = 0.135
     target_ratio: float = 0.30
@@ -146,7 +144,7 @@ class AppConfig:
     store_path: Path
     ccf_ohlcv_csv: Path | None
     umc_ohlcv_csv: Path | None
-    usdttwd_ohlcv_csv: Path | None
+    usd_twd_ohlcv_csv: Path | None
     strategy: StrategyConfig
     fees: FeeConfig
     safety: SafetyConfig
@@ -156,13 +154,6 @@ class AppConfig:
     broker_reconciliation: BrokerReconciliationConfig
     live_execution: LiveExecutionConfig
     live_execution_smoke: LiveExecutionSmokeConfig
-    binance_execution: BinanceExecutionConfig = field(
-        default_factory=lambda: BinanceExecutionConfig(
-            leverage=1,
-            margin_mode="cross",
-            enforce_leverage=True,
-        )
-    )
     margin_management: MarginManagementConfig = field(
         default_factory=MarginManagementConfig
     )
@@ -184,7 +175,6 @@ def load_config(path: Path) -> AppConfig:
     broker_reconciliation = raw.get("broker_reconciliation", {})
     live_execution = raw.get("live_execution", {})
     live_execution_smoke = raw.get("live_execution_smoke", {})
-    binance_execution = raw.get("binance_execution", {})
     margin_management = raw.get("margin_management", {})
     ntfy = raw.get("ntfy", {})
 
@@ -194,7 +184,7 @@ def load_config(path: Path) -> AppConfig:
         store_path = root / store_path
     ccf_ohlcv_csv = optional_path(paths.get("ccf_ohlcv_csv"), root)
     umc_ohlcv_csv = optional_path(paths.get("umc_ohlcv_csv"), root)
-    usdttwd_ohlcv_csv = optional_path(paths.get("usdttwd_ohlcv_csv"), root)
+    usd_twd_ohlcv_csv = optional_path(paths.get("usd_twd_ohlcv_csv"), root)
     fubon_env_path = optional_path(live.get("fubon_env_path"), root)
     taifex_ccf_1m_csv = optional_path(live.get("taifex_ccf_1m_csv"), root)
     taifex_cache_dir = required_path(
@@ -206,7 +196,7 @@ def load_config(path: Path) -> AppConfig:
         store_path=store_path,
         ccf_ohlcv_csv=ccf_ohlcv_csv,
         umc_ohlcv_csv=umc_ohlcv_csv,
-        usdttwd_ohlcv_csv=usdttwd_ohlcv_csv,
+        usd_twd_ohlcv_csv=usd_twd_ohlcv_csv,
         strategy=StrategyConfig(
             entry_z=float(strategy.get("entry_z", 2.0)),
             exit_z=float(strategy.get("exit_z", 1.0)),
@@ -273,8 +263,8 @@ def load_config(path: Path) -> AppConfig:
             warmup_minutes=int(live.get("warmup_minutes", 500)),
             ccf_product=str(live.get("ccf_product", "CCF")).strip().upper(),
             ccf_symbol=str(live.get("ccf_symbol", "auto")).strip(),
-            binance_symbol=str(live.get("binance_symbol", "TSM/USDT:USDT")).strip(),
-            bitopro_symbol=str(live.get("bitopro_symbol", "USDT/TWD")).strip(),
+            umc_symbol=str(live.get("umc_symbol", "UMC")).strip(),
+            fx_symbol=str(live.get("fx_symbol", "USD/TWD")).strip(),
             fubon_env_path=fubon_env_path,
             taifex_ccf_1m_csv=taifex_ccf_1m_csv,
             taifex_use_network=bool(live.get("taifex_use_network", True)),
@@ -322,10 +312,10 @@ def load_config(path: Path) -> AppConfig:
                 "live_execution_smoke.fubon_lots",
             )
             or 1,
-            binance_symbol=str(
+            umc_symbol=str(
                 live_execution_smoke.get(
-                    "binance_symbol",
-                    live.get("binance_symbol", "TSM/USDT:USDT"),
+                    "umc_symbol",
+                    live.get("umc_symbol", "UMC"),
                 )
             ).strip(),
             umc_units=optional_positive_float(
@@ -338,22 +328,17 @@ def load_config(path: Path) -> AppConfig:
             or 0.1,
             ccf_expiry=optional_text(live_execution_smoke.get("ccf_expiry")),
         ),
-        binance_execution=BinanceExecutionConfig(
-            leverage=int(binance_execution.get("leverage", 1)),
-            margin_mode=str(binance_execution.get("margin_mode", "cross")).strip().lower(),
-            enforce_leverage=bool(binance_execution.get("enforce_leverage", True)),
-        ),
         margin_management=MarginManagementConfig(
             enabled=bool(margin_management.get("enabled", False)),
             check_time=str(margin_management.get("check_time", "10:00")),
             red_line_interval_minutes=int(
                 margin_management.get("red_line_interval_minutes", 15)
             ),
-            binance_transfer_ratio=float(
-                margin_management.get("binance_transfer_ratio", 0.11)
+            umc_transfer_ratio=float(
+                margin_management.get("umc_transfer_ratio", 0.11)
             ),
-            binance_red_line_ratio=float(
-                margin_management.get("binance_red_line_ratio", 0.05)
+            umc_red_line_ratio=float(
+                margin_management.get("umc_red_line_ratio", 0.05)
             ),
             fubon_transfer_ratio=float(
                 margin_management.get("fubon_transfer_ratio", 0.20)

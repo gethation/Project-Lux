@@ -1,12 +1,16 @@
-"""M6 execution-channel smoke — SENDS TINY REAL TWO-LEG ORDERS.
+"""Execution-channel smoke — SENDS TINY REAL TWO-LEG ORDERS.
 
 Skipped by default. It runs only when every live-order env gate is set AND the
 gitignored configs/config.live.exec.smoke.local.toml exists with
 allow_live_order=true and [live_execution_smoke] enabled=true.
 
-This test intentionally bypasses live warmup/signal generation. M6 validates the
-execution channel only: Fubon TMF 1 lot + Binance UMC 0.1 unit entry, then the
-matching exit, with read-only reconciliation after each stage.
+This test intentionally bypasses live warmup/signal generation; it validates the
+execution channel only: one Fubon CCF lot + the matching UMC quantity, then the
+exit, with read-only reconciliation after each stage.
+
+CANNOT PASS UNTIL PHASE D. The UMC half needs an IBKR execution adapter, which
+does not exist yet -- open_umc_execution_adapter raises. The wiring is kept
+rather than deleted so Phase D has a working acceptance test to fill in.
 """
 from __future__ import annotations
 
@@ -32,10 +36,12 @@ from lux_trader.execution.intent import (
 )
 from lux_trader.execution.outcome import ExecutionOutcome
 from lux_trader.execution.real_coordinator import RealExecutionCoordinator
-from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
-from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
+from lux_trader.integrations.venues import (
+    open_umc_execution_adapter,
+    open_umc_readonly_broker,
+)
 from lux_trader.reconciliation import ReconciliationStatus
 from lux_trader.reconciliation.post_trade import PostTradeReconciler
 from lux_trader.store import SQLiteStore
@@ -51,7 +57,7 @@ REQUIRED_ENV_GATES = (
     "LUX_READONLY_BROKER",
     "PROJECT_LUX_ALLOW_LIVE_ORDER",
     "FUBON_ALLOW_LIVE_ORDER",
-    "BINANCE_ALLOW_LIVE_ORDER",
+    "IBKR_ALLOW_LIVE_ORDER",
 )
 
 pytestmark = [
@@ -80,7 +86,7 @@ def load_exec_smoke_config() -> AppConfig:
     assert smoke.fubon_symbol == SMOKE_FUBON_SYMBOL
     assert smoke.fubon_lots == int(SMOKE_FUBON_LOTS)
     assert smoke.umc_units == pytest.approx(SMOKE_UMC_UNITS)
-    assert smoke.binance_symbol == config.live.binance_symbol
+    assert smoke.umc_symbol == config.live.umc_symbol
     return config
 
 
@@ -98,7 +104,7 @@ def smoke_readonly_brokers(config: AppConfig):
     smoke = config.live_execution_smoke
     return (
         FubonReadOnlyBroker(config.live.fubon_env_path, symbol=smoke.fubon_symbol),
-        BinanceReadOnlyBroker(smoke.binance_symbol, config.live.fubon_env_path),
+        open_umc_readonly_broker(smoke.umc_symbol, config.live.fubon_env_path),
     )
 
 
@@ -146,7 +152,7 @@ def record_reconciliation(
             store=store,
             strategy_state=state,
             brokers=brokers,
-            umc_symbol=config.live_execution_smoke.binance_symbol,
+            umc_symbol=config.live_execution_smoke.umc_symbol,
             ccf_symbol=config.live_execution_smoke.fubon_symbol,
             timestamp=datetime.now(TAIPEI_TZ),
         )
@@ -174,10 +180,10 @@ def build_smoke_plan(
     timestamp = datetime.now(TAIPEI_TZ)
     if plan_type == ExecutionPlanType.ENTRY:
         fubon_side = OrderSide.BUY
-        binance_side = OrderSide.SELL
+        umc_side = OrderSide.SELL
     else:
         fubon_side = OrderSide.SELL
-        binance_side = OrderSide.BUY
+        umc_side = OrderSide.BUY
     common = {
         "timestamp": timestamp,
         "row_index": row_index,
@@ -200,8 +206,8 @@ def build_smoke_plan(
         ),
         ExecutionLeg(
             broker=BrokerName.IBKR_UMC,
-            symbol=smoke.binance_symbol,
-            side=binance_side,
+            symbol=smoke.umc_symbol,
+            side=umc_side,
             quantity=float(smoke.umc_units),
             price=1.0,
             ccf_symbol=smoke.fubon_symbol,
@@ -292,10 +298,10 @@ def assert_smoke_quantities(
 ) -> None:
     legs = latest_plan_legs(connection, plan_type)
     fubon_leg = legs["FUBON_CCF"]
-    binance_leg = legs["IBKR_UMC"]
+    umc_leg = legs["IBKR_UMC"]
     assert fubon_leg["symbol"] == SMOKE_FUBON_SYMBOL
     assert fubon_leg["quantity"] == pytest.approx(SMOKE_FUBON_LOTS)
-    assert binance_leg["quantity"] == pytest.approx(SMOKE_UMC_UNITS)
+    assert umc_leg["quantity"] == pytest.approx(SMOKE_UMC_UNITS)
 
 
 def latest_outcome_payload(connection: sqlite3.Connection, plan_type: str) -> dict:
@@ -347,19 +353,16 @@ def test_real_live_execute_entry_and_exit_returns_flat() -> None:
         "smoke quantities "
         f"fubon_symbol={smoke.fubon_symbol} "
         f"fubon_lots={smoke.fubon_lots:g} "
-        f"umc_symbol={smoke.binance_symbol} "
+        f"umc_symbol={smoke.umc_symbol} "
         f"umc_units={smoke.umc_units:g}"
     )
     remove_sqlite_family(config.store_path)
     print_m6_stage("sqlite store reset")
 
     store = SQLiteStore(config.store_path)
-    binance_adapter = BinanceTsmExecutionAdapter(
-        smoke.binance_symbol,
+    umc_adapter = open_umc_execution_adapter(
+        smoke.umc_symbol,
         config.live.fubon_env_path,
-        leverage=config.binance_execution.leverage,
-        margin_mode=config.binance_execution.margin_mode,
-        enforce_leverage=config.binance_execution.enforce_leverage,
     )
     fubon_adapter = FubonFutureExecutionAdapter(
         smoke.fubon_symbol,
@@ -376,7 +379,7 @@ def test_real_live_execute_entry_and_exit_returns_flat() -> None:
 
         coordinator = RealExecutionCoordinator(
             store=store,
-            binance_adapter=binance_adapter,
+            umc_adapter=umc_adapter,
             fubon_adapter=fubon_adapter,
             ccf_first=config.live_execution.ccf_first,
         )
@@ -409,7 +412,7 @@ def test_real_live_execute_entry_and_exit_returns_flat() -> None:
             label="post-exit flat",
         )
     finally:
-        close_all((binance_adapter, fubon_adapter))
+        close_all((umc_adapter, fubon_adapter))
         store.close()
 
     print_m6_stage("final broker flat reconciliation passed")

@@ -29,14 +29,14 @@ class RealExecutionCoordinator:
         self,
         *,
         store: Any,
-        binance_adapter: ExecutionAdapter,
+        umc_adapter: ExecutionAdapter,
         fubon_adapter: ExecutionAdapter,
         ccf_first: bool = True,
         clock: Any | None = None,
     ) -> None:
         self.store = store
         self.adapters = {
-            BrokerName.IBKR_UMC: binance_adapter,
+            BrokerName.IBKR_UMC: umc_adapter,
             BrokerName.FUBON_CCF: fubon_adapter,
         }
         self.ccf_first = bool(ccf_first)
@@ -70,8 +70,8 @@ class RealExecutionCoordinator:
             return recorded, outcome
 
         ccf_leg = single_leg(recorded, BrokerName.FUBON_CCF)
-        binance_leg = single_leg(recorded, BrokerName.IBKR_UMC)
-        if ccf_leg is None or binance_leg is None:
+        umc_leg = single_leg(recorded, BrokerName.IBKR_UMC)
+        if ccf_leg is None or umc_leg is None:
             outcome = ExecutionOutcome(
                 plan_id=recorded.plan_id,
                 timestamp=self.clock(),
@@ -87,7 +87,7 @@ class RealExecutionCoordinator:
         primary_leg_timings: dict[BrokerName, dict[str, Any]] = {}
         emergency_outcomes: list[ExecutionOutcome] = []
         events: list[RecordedExecutionEvent] = []
-        sequence = [ccf_leg, binance_leg]
+        sequence = [ccf_leg, umc_leg]
 
         first_leg = sequence[0]
         first_outcome = self._execute_leg(
@@ -552,7 +552,7 @@ def validate_live_execution_plan(
     add(
         "required_brokers",
         broker_counts == {BrokerName.IBKR_UMC: 1, BrokerName.FUBON_CCF: 1},
-        "live execution plan must contain one Binance leg and one Fubon leg",
+        "live execution plan must contain one IBKR leg and one Fubon leg",
         payload={broker.value: count for broker, count in broker_counts.items()},
     )
 

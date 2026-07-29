@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile_brokers.add_argument(
         "--readonly",
         action="store_true",
-        help="Use real Fubon and Binance read-only brokers "
+        help="Use real Fubon and IBKR read-only brokers "
         "(requires LUX_READONLY_BROKER=1)",
     )
 
@@ -100,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     clear_pause.add_argument(
         "--readonly",
         action="store_true",
-        help="Use real Fubon and Binance read-only brokers "
+        help="Use real Fubon and IBKR read-only brokers "
         "(requires LUX_READONLY_BROKER=1)",
     )
 
@@ -161,19 +161,13 @@ def build_parser() -> argparse.ArgumentParser:
         "(SENDS REAL ORDERS behind env gates)",
     )
     exec_smoke.add_argument("--config", type=Path, required=True)
-    exec_smoke.add_argument(
-        "--venue", choices=("fubon", "binance"), required=True
-    )
+    # Only fubon until the IBKR execution adapter lands in Phase D.
+    exec_smoke.add_argument("--venue", choices=("fubon",), required=True)
     exec_smoke.add_argument(
         "--symbol", help="Fubon futures symbol (required for --venue fubon)"
     )
     exec_smoke.add_argument(
         "--lot", type=int, help="Fubon lot count (required for --venue fubon)"
-    )
-    exec_smoke.add_argument(
-        "--quantity",
-        type=float,
-        help="Binance quantity (required for --venue binance)",
     )
     exec_smoke.add_argument("--confirm-symbol", required=True)
     exec_smoke.add_argument(
@@ -188,18 +182,11 @@ def build_parser() -> argparse.ArgumentParser:
         "(SENDS A REAL ORDER behind env gates)",
     )
     manual_close.add_argument("--config", type=Path, required=True)
-    manual_close.add_argument(
-        "--venue", choices=("fubon", "binance"), required=True
-    )
+    manual_close.add_argument("--venue", choices=("fubon",), required=True)
     manual_close.add_argument("--symbol", required=True)
     manual_close.add_argument("--side", choices=("buy", "sell"), required=True)
     manual_close.add_argument(
         "--lot", type=int, help="Fubon lot count (required for --venue fubon)"
-    )
-    manual_close.add_argument(
-        "--quantity",
-        type=float,
-        help="Binance quantity (required for --venue binance)",
     )
     manual_close.add_argument("--confirm-symbol", required=True)
     manual_close.add_argument(

@@ -15,7 +15,7 @@ from lux_trader.core.time import TAIPEI_TZ
 from lux_trader.market_data import floor_minute
 from lux_trader.runtime.live import LiveDryRunRunner
 from lux_trader.core.models import Direction, StrategyState
-from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
+from lux_trader.integrations.venues import open_umc_readonly_broker
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.reconciliation import BrokerReconciler, ReconciliationStatus
 from lux_trader.store import SQLiteStore
@@ -113,7 +113,7 @@ def record_real_readonly_reconciliation(
     state: StrategyRuntimeState,
 ) -> None:
     brokers = (
-        BinanceReadOnlyBroker(config.live.binance_symbol, config.live.fubon_env_path),
+        open_umc_readonly_broker(config.live.umc_symbol, config.live.fubon_env_path),
         FubonReadOnlyBroker(config.live.fubon_env_path),
     )
     try:
@@ -123,7 +123,7 @@ def record_real_readonly_reconciliation(
         ).reconcile(
             strategy_state=state,
             brokers=brokers,
-            umc_symbol=config.live.binance_symbol,
+            umc_symbol=config.live.umc_symbol,
             ccf_symbol=config.live.ccf_symbol,
         )
     finally:
@@ -196,7 +196,7 @@ def test_real_live_dry_run_simulates_entry_exit_and_resume() -> None:
                 "SELECT source, COUNT(*) FROM market_ticks GROUP BY source"
             ).fetchall()
         }
-        assert {"fubon_ccf", "binanceusdm", "bitopro"}.issubset(source_counts)
+        assert {"fubon_ccf", "ibkr", "twelvedata"}.issubset(source_counts)
 
         latest_plan = connection.execute(
             """

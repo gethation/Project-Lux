@@ -49,7 +49,7 @@ def reconcile(
     return BrokerReconciler().reconcile(
         strategy_state=state,
         brokers=brokers,
-        umc_symbol="TSM/USDT:USDT",
+        umc_symbol="UMC",
         ccf_symbol="CCFG6",
         timestamp=ts(),
     )
@@ -73,7 +73,7 @@ def test_flat_state_with_nonzero_broker_position_warns() -> None:
         StrategyRuntimeState(state=StrategyState.FLAT),
         FakeReadOnlyBroker(
             BrokerName.IBKR_UMC,
-            positions=(position(BrokerName.IBKR_UMC, "TSM/USDT:USDT", 12.0),),
+            positions=(position(BrokerName.IBKR_UMC, "UMC", 12.0),),
             fetched_at=ts(),
         ),
     )
@@ -97,7 +97,7 @@ def test_open_short_position_matches_signed_broker_quantities() -> None:
         state,
         FakeReadOnlyBroker(
             BrokerName.IBKR_UMC,
-            positions=(position(BrokerName.IBKR_UMC, "TSM/USDT:USDT", -2150.5),),
+            positions=(position(BrokerName.IBKR_UMC, "UMC", -2150.5),),
             fetched_at=ts(),
         ),
         FakeReadOnlyBroker(
@@ -125,11 +125,11 @@ def test_umc_quantity_mismatch_warns_when_over_tolerance() -> None:
         brokers=(
             FakeReadOnlyBroker(
                 BrokerName.IBKR_UMC,
-                positions=(position(BrokerName.IBKR_UMC, "TSM/USDT:USDT", -99.0),),
+                positions=(position(BrokerName.IBKR_UMC, "UMC", -99.0),),
                 fetched_at=ts(),
             ),
         ),
-        umc_symbol="TSM/USDT:USDT",
+        umc_symbol="UMC",
         ccf_symbol="CCFG6",
         timestamp=ts(),
     )
@@ -206,7 +206,7 @@ def test_paused_state_with_position_still_expects_open_exposure() -> None:
         state,
         FakeReadOnlyBroker(
             BrokerName.IBKR_UMC,
-            positions=(position(BrokerName.IBKR_UMC, "TSM/USDT:USDT", -2150.5),),
+            positions=(position(BrokerName.IBKR_UMC, "UMC", -2150.5),),
             fetched_at=ts(),
         ),
         FakeReadOnlyBroker(

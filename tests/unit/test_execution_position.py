@@ -16,7 +16,7 @@ from lux_trader.execution.position import (
 )
 
 
-UMC_SYMBOL = "TSM/USDT:USDT"
+UMC_SYMBOL = "UMC"
 CCF_SYMBOL = "CCFG6"
 
 

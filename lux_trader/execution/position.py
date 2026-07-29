@@ -36,7 +36,7 @@ def position_sizing_from_fills(
         symbol=ccf_symbol,
     )
     if not umc_fills:
-        raise ExecutedPositionError("missing Binance UMC fill")
+        raise ExecutedPositionError("missing IBKR UMC fill")
     if not ccf_fills:
         raise ExecutedPositionError("missing Fubon CCF fill")
 

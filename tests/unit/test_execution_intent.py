@@ -50,7 +50,7 @@ def short_entry_plan(*, legs: tuple[ExecutionLeg, ...] | None = None) -> PairExe
         row_index=88,
         legs=legs
         or (
-            leg(BrokerName.IBKR_UMC, "TSM/USDT:USDT", OrderSide.SELL, 125.5, 720.0),
+            leg(BrokerName.IBKR_UMC, "UMC", OrderSide.SELL, 125.5, 720.0),
             leg(BrokerName.FUBON_CCF, "CCFG6", OrderSide.BUY, 3, 1180.0),
         ),
         reason="entry_zscore_crossed",
@@ -123,7 +123,7 @@ def test_missing_leg_is_rejected() -> None:
     validated = validate_pair_execution_plan(
         short_entry_plan(
             legs=(
-                leg(BrokerName.IBKR_UMC, "TSM/USDT:USDT", OrderSide.SELL, 125.5, 720.0),
+                leg(BrokerName.IBKR_UMC, "UMC", OrderSide.SELL, 125.5, 720.0),
             )
         )
     )
@@ -136,7 +136,7 @@ def test_wrong_side_is_rejected() -> None:
     validated = validate_pair_execution_plan(
         short_entry_plan(
             legs=(
-                leg(BrokerName.IBKR_UMC, "TSM/USDT:USDT", OrderSide.BUY, 125.5, 720.0),
+                leg(BrokerName.IBKR_UMC, "UMC", OrderSide.BUY, 125.5, 720.0),
                 leg(BrokerName.FUBON_CCF, "CCFG6", OrderSide.BUY, 3, 1180.0),
             )
         )
@@ -150,7 +150,7 @@ def test_bad_quantity_price_and_non_integer_ccf_contracts_are_rejected() -> None
     validated = validate_pair_execution_plan(
         short_entry_plan(
             legs=(
-                leg(BrokerName.IBKR_UMC, "TSM/USDT:USDT", OrderSide.SELL, 0, 720.0),
+                leg(BrokerName.IBKR_UMC, "UMC", OrderSide.SELL, 0, 720.0),
                 leg(BrokerName.FUBON_CCF, "CCFG6", OrderSide.BUY, 1.5, -1180.0),
             )
         )
@@ -165,7 +165,7 @@ def test_ccf_symbol_mismatch_is_rejected() -> None:
     validated = validate_pair_execution_plan(
         short_entry_plan(
             legs=(
-                leg(BrokerName.IBKR_UMC, "TSM/USDT:USDT", OrderSide.SELL, 125.5, 720.0),
+                leg(BrokerName.IBKR_UMC, "UMC", OrderSide.SELL, 125.5, 720.0),
                 leg(BrokerName.FUBON_CCF, "CCFH6", OrderSide.BUY, 3, 1180.0),
             )
         )
@@ -186,7 +186,7 @@ def test_build_plan_from_order_requests_preserves_metadata() -> None:
     requests = (
         OrderRequest(
             broker=BrokerName.IBKR_UMC,
-            symbol="TSM/USDT:USDT",
+            symbol="UMC",
             side=OrderSide.SELL,
             quantity=125.5,
             price=720.0,

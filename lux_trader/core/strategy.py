@@ -210,7 +210,7 @@ class PairStrategy:
         broker: Broker,
         state: StrategyRuntimeState | None = None,
         *,
-        umc_symbol: str = "TSM/USDT:USDT",
+        umc_symbol: str = "UMC",
     ) -> None:
         self.strategy = strategy
         self.fees = fees

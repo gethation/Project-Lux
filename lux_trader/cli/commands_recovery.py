@@ -68,7 +68,7 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
         ).reconcile(
             strategy_state=prospective_state,
             brokers=brokers,
-            umc_symbol=config.live.binance_symbol,
+            umc_symbol=config.live.umc_symbol,
             ccf_symbol=helpers.reconciliation_ccf_symbol(config, state),
             timestamp=observed_at,
         )
@@ -94,7 +94,7 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
         print(
             "Manual-flat recovery verified: "
             f"recovery_id={recovery_id}, "
-            f"binance_adjustment={-state.umc_units:g}, "
+            f"umc_adjustment={-state.umc_units:g}, "
             f"fubon_adjustment={-state.ccf_contracts:g}, "
             "brokers=flat, open_orders=0, pnl_status=pending"
         )
@@ -108,7 +108,7 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
             created_at=observed_at,
             row_index=resume_state.row_index,
             ccf_symbol=ccf_symbol,
-            umc_symbol=config.live.binance_symbol,
+            umc_symbol=config.live.umc_symbol,
             umc_adjustment=-float(state.umc_units),
             ccf_adjustment=-float(state.ccf_contracts),
             reason=str(args.reason).strip(),

@@ -24,7 +24,7 @@ from lux_trader.store import SQLiteStore
 from lux_trader.core.strategy import StrategyRuntimeState
 
 
-SYMBOL_UMC = "TSM/USDT:USDT"
+SYMBOL_UMC = "UMC"
 SYMBOL_CCF = "CCFG6"
 
 

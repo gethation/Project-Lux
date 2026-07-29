@@ -47,7 +47,7 @@ class SystemRunner:
                 self.config.input_csv,
                 ccf_ohlcv_path=self.config.ccf_ohlcv_csv,
                 umc_ohlcv_path=self.config.umc_ohlcv_csv,
-                usdttwd_ohlcv_path=self.config.usdttwd_ohlcv_csv,
+                usd_twd_ohlcv_path=self.config.usd_twd_ohlcv_csv,
             ).load()
             if resume_state is None:
                 indicator = IndicatorEngine(window=self.config.strategy.zscore_window)
@@ -68,7 +68,7 @@ class SystemRunner:
                 self.config.fees,
                 broker,
                 state=strategy_state,
-                umc_symbol=self.config.live.binance_symbol,
+                umc_symbol=self.config.live.umc_symbol,
             )
 
             rows_processed = 0

@@ -760,7 +760,7 @@ def write_config(
                 "",
                 "[live_market_data]",
                 "ccf_symbol = 'CCFG6'",
-                "binance_symbol = 'TSM/USDT:USDT'",
+                "umc_symbol = 'UMC'",
                 "fubon_env_path = '.env'",
                 f"taifex_cache_dir = '{(tmp_path / 'taifex').as_posix()}'",
                 "",

@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
 from lux_trader.config import AppConfig
 from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, CcfContractSelection
 from lux_trader.core.calendar import is_weekend_force_exit_bar, live_session_status
@@ -25,13 +24,10 @@ from lux_trader.execution import (
 )
 from lux_trader.execution.recorder import DryRunExecutionRecorder
 from lux_trader.execution.price_policy import apply_live_touch_market_price_policy
-from lux_trader.integrations.binance.market_data import BinanceMarketData
-from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
 from lux_trader.integrations.fubon.contracts import normalize_fubon_order_symbol
 from lux_trader.integrations.fubon.market_data import FubonCcfMarketData
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
-from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.taifex.downloader import TaifexCcfTradeDownloader
 from lux_trader.core.fees import fill_costs
 from lux_trader.core.indicator import IndicatorEngine
@@ -291,7 +287,7 @@ def switch_to_contract(
     *,
     ccf_provider: CcfWarmupProvider,
     umc_provider: OhlcvProvider,
-    usdttwd_provider: OhlcvProvider,
+    usd_twd_provider: OhlcvProvider,
     end: datetime,
 ) -> tuple[str, str | None, IndicatorEngine, list[Any]]:
     state.trading_ccf_symbol = contract.symbol
@@ -309,7 +305,7 @@ def switch_to_contract(
         policy_state=contract.policy_state,
         ccf_provider=ccf_provider,
         umc_provider=umc_provider,
-        usdttwd_provider=usdttwd_provider,
+        usd_twd_provider=usd_twd_provider,
         end=end,
         force_rebuild=True,
     )

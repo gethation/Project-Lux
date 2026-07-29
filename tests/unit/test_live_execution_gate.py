@@ -35,7 +35,7 @@ def required_env() -> dict[str, str]:
     return {
         "PROJECT_LUX_ALLOW_LIVE_ORDER": "1",
         "FUBON_ALLOW_LIVE_ORDER": "1",
-        "BINANCE_ALLOW_LIVE_ORDER": "1",
+        "IBKR_ALLOW_LIVE_ORDER": "1",
     }
 
 
@@ -45,7 +45,7 @@ def matched_report(config, timestamp: datetime) -> ReconciliationReport:
         status=ReconciliationStatus.MATCHED,
         expected=ExpectedBrokerState(
             timestamp=timestamp,
-            umc_symbol=config.live.binance_symbol,
+            umc_symbol=config.live.umc_symbol,
             ccf_symbol=config.live.ccf_symbol,
             expected_umc_units=0.0,
             expected_ccf_contracts=0,

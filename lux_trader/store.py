@@ -740,22 +740,22 @@ class SQLiteStore:
             """
             INSERT INTO margin_checks (
                 checked_at, check_type,
-                binance_equity, binance_maint_margin, binance_ratio,
+                umc_equity, umc_maint_margin, umc_ratio,
                 fubon_equity, fubon_maint_margin, fubon_ratio,
-                usdttwd_rate, level, transfer_amount_twd, transfer_direction,
+                usd_twd_rate, level, transfer_amount_twd, transfer_direction,
                 guidance, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 timestamp_text(decision.checked_at),
                 decision.check_type,
-                decision.binance.equity_twd,
-                decision.binance.maint_margin_twd,
-                decision.binance.ratio,
+                decision.umc.equity_twd,
+                decision.umc.maint_margin_twd,
+                decision.umc.ratio,
                 decision.fubon.equity_twd,
                 decision.fubon.maint_margin_twd,
                 decision.fubon.ratio,
-                decision.usdttwd_rate,
+                decision.usd_twd_rate,
                 decision.level,
                 decision.transfer_amount_twd,
                 decision.transfer_direction,

@@ -42,13 +42,13 @@ class CsvReplayMarketData:
         *,
         ccf_ohlcv_path: Path | None = None,
         umc_ohlcv_path: Path | None = None,
-        usdttwd_ohlcv_path: Path | None = None,
+        usd_twd_ohlcv_path: Path | None = None,
     ) -> None:
         self.csv_path = csv_path
         self.calendar = calendar or TradingCalendar()
         self.ccf_ohlcv_path = ccf_ohlcv_path
         self.umc_ohlcv_path = umc_ohlcv_path
-        self.usdttwd_ohlcv_path = usdttwd_ohlcv_path
+        self.usd_twd_ohlcv_path = usd_twd_ohlcv_path
 
     def load(self) -> list[MarketBar]:
         if not self.csv_path.exists():
@@ -87,11 +87,11 @@ class CsvReplayMarketData:
         if (
             self.ccf_ohlcv_path is not None
             and self.umc_ohlcv_path is not None
-            and self.usdttwd_ohlcv_path is not None
+            and self.usd_twd_ohlcv_path is not None
         ):
             ccf_open = read_open_series(self.ccf_ohlcv_path, "ccf").reindex(index)
             umc_open = read_open_series(self.umc_ohlcv_path, "umc").reindex(index)
-            usd_open = read_open_series(self.usdttwd_ohlcv_path, "usdttwd").reindex(index)
+            usd_open = read_open_series(self.usd_twd_ohlcv_path, "usd_twd").reindex(index)
             if umc_open.isna().any() or usd_open.isna().any():
                 first_missing = umc_open[umc_open.isna()].index.union(
                     usd_open[usd_open.isna()].index

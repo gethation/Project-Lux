@@ -20,7 +20,7 @@ from lux_trader.reconciliation.models import BrokerMarginSnapshot
 from lux_trader.store import SQLiteStore
 
 
-USDTTWD = 31.8
+USD_TWD = 31.8
 NOTIONAL = 1_000_000.0
 
 
@@ -51,7 +51,7 @@ def write_config(
                 "",
                 "[live_market_data]",
                 f"ccf_symbol = '{ccf_symbol}'",
-                "binance_symbol = 'TSM/USDT:USDT'",
+                "umc_symbol = 'UMC'",
                 f"taifex_cache_dir = '{cache_dir}'",
                 "",
                 "[margin_management]",
@@ -85,14 +85,14 @@ def fubon_broker(equity_twd: float, maint_twd: float = 103_500.0) -> FakeReadOnl
     )
 
 
-def binance_broker(equity_usdt: float, maint_usdt: float = 800.0) -> FakeReadOnlyBroker:
+def umc_broker(equity_usdt: float, maint_usdt: float = 800.0) -> FakeReadOnlyBroker:
     return FakeReadOnlyBroker(
         BrokerName.IBKR_UMC,
         account_id="FAKE-BINANCE",
         margins=(
             BrokerMarginSnapshot(
                 broker=BrokerName.IBKR_UMC,
-                currency="USDT",
+                currency="USD",
                 equity=equity_usdt,
                 raw={
                     "totalMarginBalance": equity_usdt,
@@ -136,8 +136,8 @@ def test_service_reads_snapshots_and_records_decision(tmp_path: Path) -> None:
     try:
         service = MarginCheckService(
             config,
-            brokers=(fubon_broker(300_000.0), binance_broker(300_000.0 / USDTTWD)),
-            usdttwd_rate=lambda: USDTTWD,
+            brokers=(fubon_broker(300_000.0), umc_broker(300_000.0 / USD_TWD)),
+            usd_twd_rate=lambda: USD_TWD,
             clock=lambda: ts("2026-07-06T10:00:05+08:00"),
         )
         decision = service.run_check(check_type="daily", position_open=True)
@@ -145,11 +145,11 @@ def test_service_reads_snapshots_and_records_decision(tmp_path: Path) -> None:
         store.commit()
 
         assert decision.level == "ok"
-        assert decision.binance.ratio == pytest.approx(0.30)
+        assert decision.umc.ratio == pytest.approx(0.30)
         assert decision.fubon.ratio == pytest.approx(0.30)
         # maintenance margin flows from broker raw payloads
         assert decision.fubon.maint_margin_twd == pytest.approx(103_500.0)
-        assert decision.binance.maint_margin_twd == pytest.approx(800.0 * USDTTWD)
+        assert decision.umc.maint_margin_twd == pytest.approx(800.0 * USD_TWD)
         assert reporter.codes() == ["margin_check"]
 
         row = store.load_last_margin_check()
@@ -168,8 +168,8 @@ def test_service_transfer_decision_reports_warn(tmp_path: Path) -> None:
     try:
         service = MarginCheckService(
             config,
-            brokers=(fubon_broker(500_000.0), binance_broker(usd_ratio(0.10))),
-            usdttwd_rate=lambda: USDTTWD,
+            brokers=(fubon_broker(500_000.0), umc_broker(usd_ratio(0.10))),
+            usd_twd_rate=lambda: USD_TWD,
         )
         decision = service.run_check(check_type="daily", position_open=True)
         record_and_report_decision(decision, store=store, reporter=reporter)
@@ -178,14 +178,14 @@ def test_service_transfer_decision_reports_warn(tmp_path: Path) -> None:
         assert decision.level == "transfer"
         assert reporter.codes() == ["margin_transfer_required"]
         row = store.load_last_margin_check()
-        assert row["transfer_direction"] == "fubon->binance"
+        assert row["transfer_direction"] == "fubon->ibkr"
         assert row["transfer_amount_twd"] == pytest.approx(200_000.0)
     finally:
         store.close()
 
 
 def usd_ratio(ratio: float) -> float:
-    return ratio * NOTIONAL / USDTTWD
+    return ratio * NOTIONAL / USD_TWD
 
 
 # --- monitor scheduling -----------------------------------------------------
@@ -199,13 +199,13 @@ def open_state() -> StrategyRuntimeState:
     return StrategyRuntimeState(state=StrategyState.OPEN)
 
 
-def make_monitor(config, *, fubon=None, binance=None) -> MarginMonitor:
+def make_monitor(config, *, fubon=None, umc=None) -> MarginMonitor:
     return MarginMonitor(
         config,
-        usdttwd_rate=lambda: USDTTWD,
+        usd_twd_rate=lambda: USD_TWD,
         brokers_factory=lambda: (
             fubon or fubon_broker(300_000.0),
-            binance or binance_broker(usd_ratio(0.30)),
+            umc or umc_broker(usd_ratio(0.30)),
         ),
     )
 
@@ -304,7 +304,7 @@ def test_monitor_margin_notional_prefers_fixed_ccf_lots(
     monitor = make_monitor(
         config,
         fubon=fubon_broker(75_000.0),
-        binance=binance_broker(75_000.0 / USDTTWD),
+        umc=umc_broker(75_000.0 / USD_TWD),
     )
     try:
         store.record_warmup_bars(
@@ -330,7 +330,7 @@ def test_monitor_margin_notional_prefers_fixed_ccf_lots(
         assert reporter.codes() == ["margin_check"]
         row = store.load_last_margin_check("daily")
         assert row is not None
-        assert row["binance_ratio"] == pytest.approx(0.30)
+        assert row["umc_ratio"] == pytest.approx(0.30)
         assert row["fubon_ratio"] == pytest.approx(0.30)
     finally:
         store.close()
@@ -363,7 +363,7 @@ def test_monitor_red_line_cadence_while_open(tmp_path: Path, monkeypatch) -> Non
     reporter = RecordingReporter()
     monitor = make_monitor(
         config,
-        binance=binance_broker(usd_ratio(0.04), maint_usdt=usd_ratio(0.035)),
+        umc=umc_broker(usd_ratio(0.04), maint_usdt=usd_ratio(0.035)),
     )
     try:
         # 11:00 (daily already due; run it first so red-line cadence is clean)
@@ -437,8 +437,8 @@ def test_monitor_broker_failure_warns_and_retries_after_backoff(
     )
     monitor = MarginMonitor(
         config,
-        usdttwd_rate=lambda: USDTTWD,
-        brokers_factory=lambda: (failing, binance_broker(usd_ratio(0.30))),
+        usd_twd_rate=lambda: USD_TWD,
+        brokers_factory=lambda: (failing, umc_broker(usd_ratio(0.30))),
     )
     try:
         monitor.maybe_run(
@@ -502,9 +502,9 @@ def test_margin_check_cli_prints_guidance_and_records(
     monkeypatch.setattr(
         commands_live,
         "build_margin_brokers",
-        lambda config: (fubon_broker(500_000.0), binance_broker(usd_ratio(0.10))),
+        lambda config: (fubon_broker(500_000.0), umc_broker(usd_ratio(0.10))),
     )
-    monkeypatch.setattr(commands_live, "fetch_usdttwd_rate", lambda config: USDTTWD)
+    monkeypatch.setattr(commands_live, "fetch_usd_twd_rate", lambda config: USD_TWD)
 
     args = build_parser().parse_args(["margin-check", "--config", str(config_path)])
     exit_code = command_margin_check(args)
@@ -512,7 +512,7 @@ def test_margin_check_cli_prints_guidance_and_records(
     output = capsys.readouterr().out
     assert exit_code == 0
     assert "level=transfer" in output
-    assert "fubon->binance" in output
+    assert "fubon->ibkr" in output
     assert "10:00" in output
 
     connection = sqlite3.connect(tmp_path / "project_lux.sqlite3")
@@ -546,9 +546,9 @@ def test_margin_check_cli_red_line_exits_nonzero(
     monkeypatch.setattr(
         commands_live,
         "build_margin_brokers",
-        lambda config: (fubon_broker(500_000.0), binance_broker(usd_ratio(0.04))),
+        lambda config: (fubon_broker(500_000.0), umc_broker(usd_ratio(0.04))),
     )
-    monkeypatch.setattr(commands_live, "fetch_usdttwd_rate", lambda config: USDTTWD)
+    monkeypatch.setattr(commands_live, "fetch_usd_twd_rate", lambda config: USD_TWD)
 
     args = build_parser().parse_args(["margin-check", "--config", str(config_path)])
     exit_code = command_margin_check(args)

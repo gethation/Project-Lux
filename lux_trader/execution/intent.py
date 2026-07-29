@@ -148,7 +148,7 @@ class PairExecutionPlanValidator:
         add(
             "required_brokers",
             broker_counts == {BrokerName.IBKR_UMC: 1, BrokerName.FUBON_CCF: 1},
-            "pair execution plan must contain one Binance UMC leg and one Fubon CCF leg",
+            "pair execution plan must contain one IBKR UMC leg and one Fubon CCF leg",
             payload={broker.value: count for broker, count in broker_counts.items()},
         )
 

@@ -41,11 +41,11 @@ def reading_from_snapshot(snapshot: BrokerAccountSnapshot, venue: str) -> Margin
             venue=venue,
             equity=None,
             maint_margin=None,
-            currency="TWD" if venue == "fubon" else "USDT",
+            currency="TWD" if venue == "fubon" else "USD",
             fetched_at=snapshot.fetched_at,
         )
     margin = snapshot.margins[0]
-    if venue == "binance":
+    if venue == "ibkr":
         maint = raw_float(margin.raw, "totalMaintMargin", "maintMargin")
     else:
         maint = raw_float(margin.raw, "maintenance_margin", "maintenanceMargin")
@@ -95,9 +95,9 @@ class MarginCheckService:
     """Runs daily / red-line margin checks against read-only brokers.
 
     ``brokers`` order matches helpers.build_real_readonly_brokers: (fubon,
-    binance). ``usdttwd_rate`` is a callable returning the current USDT/TWD
+    umc). ``usd_twd_rate`` is a callable returning the current USD/TWD
     price (injected: live loop passes the latest polled quote; the CLI fetches
-    one from BitoPro).
+    one from the FX provider).
     """
 
     def __init__(
@@ -105,12 +105,12 @@ class MarginCheckService:
         config: AppConfig,
         *,
         brokers: tuple[ReadOnlyBroker, ReadOnlyBroker],
-        usdttwd_rate: Callable[[], float | None],
+        usd_twd_rate: Callable[[], float | None],
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.config = config
-        self.fubon_broker, self.binance_broker = brokers
-        self.usdttwd_rate = usdttwd_rate
+        self.fubon_broker, self.umc_broker = brokers
+        self.usd_twd_rate = usd_twd_rate
         self.clock = clock or (lambda: datetime.now().astimezone())
 
     def run_check(
@@ -123,16 +123,16 @@ class MarginCheckService:
     ) -> MarginDecision:
         checked_at = checked_at or self.clock()
         fubon_snapshot = fetch_margin_snapshot(self.fubon_broker)
-        binance_snapshot = fetch_margin_snapshot(self.binance_broker)
+        umc_snapshot = fetch_margin_snapshot(self.umc_broker)
         margin_config = self.config.margin_management
         if leg_notional_twd is not None and leg_notional_twd > 0:
             margin_config = replace(margin_config, leg_notional_twd=leg_notional_twd)
         return evaluate_margin_policy(
-            binance=reading_from_snapshot(binance_snapshot, "binance"),
+            umc=reading_from_snapshot(umc_snapshot, "ibkr"),
             fubon=reading_from_snapshot(fubon_snapshot, "fubon"),
             config=margin_config,
             leg_notional_twd=self.config.strategy.leg_notional_twd,
-            usdttwd_rate=self.usdttwd_rate(),
+            usd_twd_rate=self.usd_twd_rate(),
             position_open=position_open,
             checked_at=checked_at,
             check_type=check_type,

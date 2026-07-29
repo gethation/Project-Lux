@@ -29,8 +29,8 @@ def write_live_execute_config(tmp_path: Path) -> Path:
                 "",
                 "[live_market_data]",
                 "ccf_symbol = 'CCFG6'",
-                "binance_symbol = 'TSM/USDT:USDT'",
-                "bitopro_symbol = 'USDT/TWD'",
+                "umc_symbol = 'UMC'",
+                "fx_symbol = 'USD/TWD'",
                 f"taifex_cache_dir = '{cache_dir}'",
                 "",
                 "[broker_reconciliation]",
@@ -55,7 +55,7 @@ def set_live_order_env(monkeypatch) -> None:
     monkeypatch.setenv("LUX_READONLY_BROKER", "1")
     monkeypatch.setenv("PROJECT_LUX_ALLOW_LIVE_ORDER", "1")
     monkeypatch.setenv("FUBON_ALLOW_LIVE_ORDER", "1")
-    monkeypatch.setenv("BINANCE_ALLOW_LIVE_ORDER", "1")
+    monkeypatch.setenv("IBKR_ALLOW_LIVE_ORDER", "1")
 
 
 def latest_reconciliation(store_path: Path):

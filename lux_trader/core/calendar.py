@@ -149,10 +149,16 @@ def is_weekend_force_exit_bar(
 
     True when ``timestamp`` is a trading minute within ``grace_minutes`` of the end
     of the last trading session before a market break that crosses into a new ISO
-    week (a weekend, or a weekend extended by a Monday/holiday). The live loop uses
-    this to flatten an open position before CCF is frozen over the weekend while the
-    Binance UMC perpetual keeps trading 24/7 — the uncovered-leg gap risk the PoC
-    strategy always closes out.
+    week (a weekend, or a weekend extended by a Monday/holiday).
+
+    INHERITED FROM QFF/TSM, AND MEASURED WRONG FOR CCF/UMC. The rule exists
+    because Binance's TSM perpetual traded 24/7 while TAIFEX froze, so holding
+    over a weekend left one leg uncovered. CCF/UMC has no such structure --
+    TAIFEX and NYSE both close -- and removing the rule measured +19.7% net with
+    an IDENTICAL max drawdown, consistently across 1m, 5m and 15m sampling.
+    Phase A3 turns it into a policy switch defaulting to 'none'; it stays wired
+    only so the QFF/TSM replay golden keeps working as a tripwire until the
+    CCF/UMC golden replaces it in Phase C. See docs/CCF_UMC_PLAN.md.
 
     Known limitation: a holiday on the *Friday* itself is not covered, because the
     live calendar treats the early-morning hours of a closed date as non-trading,

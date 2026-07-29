@@ -35,13 +35,13 @@ POSITION_OPEN_STATES = (StrategyState.OPEN, StrategyState.EXIT_PENDING)
 def build_default_margin_brokers(
     config: AppConfig,
 ) -> tuple[ReadOnlyBroker, ReadOnlyBroker]:
-    from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
     from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
+    from lux_trader.integrations.venues import open_umc_readonly_broker
 
     return (
         FubonReadOnlyBroker(config.live.fubon_env_path),
-        BinanceReadOnlyBroker(
-            config.live.binance_symbol,
+        open_umc_readonly_broker(
+            config.live.umc_symbol,
             config.live.fubon_env_path,
         ),
     )
@@ -52,14 +52,14 @@ class MarginMonitor:
         self,
         config: AppConfig,
         *,
-        usdttwd_rate: Callable[[], float | None],
+        usd_twd_rate: Callable[[], float | None],
         brokers_factory: Callable[[], tuple[ReadOnlyBroker, ReadOnlyBroker]]
         | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.config = config
         self.enabled = bool(config.margin_management.enabled)
-        self.usdttwd_rate = usdttwd_rate
+        self.usd_twd_rate = usd_twd_rate
         self.brokers_factory = brokers_factory or (
             lambda: build_default_margin_brokers(config)
         )
@@ -209,7 +209,7 @@ class MarginMonitor:
             self._service = MarginCheckService(
                 self.config,
                 brokers=self._brokers,
-                usdttwd_rate=self.usdttwd_rate,
+                usd_twd_rate=self.usd_twd_rate,
                 clock=self.clock,
             )
         return self._service

@@ -315,7 +315,7 @@ def test_live_terminal_reporter_bar_renders_account_pnl_and_margin() -> None:
         1_000_000.0,
         account_display=AccountDisplay(
             combined_upnl_twd=12_345.0,
-            binance_ratio=1.42,
+            umc_ratio=1.42,
             fubon_ratio=1.38,
         ),
     )
@@ -344,7 +344,7 @@ def test_live_terminal_reporter_bar_marks_stale_account_display() -> None:
         "no_action",
         0.0,
         1_000_000.0,
-        account_display=AccountDisplay(binance_ratio=1.42, fubon_ratio=1.38, stale=True),
+        account_display=AccountDisplay(umc_ratio=1.42, fubon_ratio=1.38, stale=True),
     )
 
     output = stream.getvalue()
@@ -459,7 +459,7 @@ def test_tradable_spread_uses_bid_ask_and_does_not_mutate_indicator() -> None:
     quote_set = LiveQuoteSet(
         ccf=quote("ccf", "2026-06-18T09:00:10+08:00", 100.0, bid=99.0, ask=101.0),
         umc=quote("umc", "2026-06-18T09:00:10+08:00", 20.0, bid=19.5, ask=20.5),
-        usdttwd=quote("usd", "2026-06-18T09:00:10+08:00", 30.0, bid=29.9, ask=30.1),
+        usd_twd=quote("usd", "2026-06-18T09:00:10+08:00", 30.0, bid=29.9, ask=30.1),
     )
 
     snapshot = estimate_tradable_spreads(
@@ -490,7 +490,7 @@ def test_tradable_spread_uses_ccf_specific_stale_threshold() -> None:
         LiveQuoteSet(
             ccf=quote("ccf", "2026-06-18T08:59:06+08:00", 100.0, bid=99.0, ask=101.0),
             umc=quote("umc", "2026-06-18T08:59:59+08:00", 20.0, bid=19.5, ask=20.5),
-            usdttwd=quote("usd", "2026-06-18T08:59:59+08:00", 30.0, bid=29.9, ask=30.1),
+            usd_twd=quote("usd", "2026-06-18T08:59:59+08:00", 30.0, bid=29.9, ask=30.1),
         ),
         observed_at,
         indicator,
@@ -502,7 +502,7 @@ def test_tradable_spread_uses_ccf_specific_stale_threshold() -> None:
         LiveQuoteSet(
             ccf=quote("ccf", "2026-06-18T08:59:04+08:00", 100.0, bid=99.0, ask=101.0),
             umc=quote("umc", "2026-06-18T08:59:59+08:00", 20.0, bid=19.5, ask=20.5),
-            usdttwd=quote("usd", "2026-06-18T08:59:59+08:00", 30.0, bid=29.9, ask=30.1),
+            usd_twd=quote("usd", "2026-06-18T08:59:59+08:00", 30.0, bid=29.9, ask=30.1),
         ),
         observed_at,
         indicator,
@@ -518,7 +518,7 @@ def test_tradable_spread_uses_ccf_specific_stale_threshold() -> None:
     assert stale_ccf.missing_reason == "stale_ccf"
 
 
-def test_tradable_spread_keeps_umc_and_usdttwd_at_global_stale_threshold() -> None:
+def test_tradable_spread_keeps_umc_and_usd_twd_at_global_stale_threshold() -> None:
     indicator = IndicatorEngine(window=3)
     for spread in (1.0, 2.0, 3.0):
         indicator.update(bar(spread))
@@ -528,7 +528,7 @@ def test_tradable_spread_keeps_umc_and_usdttwd_at_global_stale_threshold() -> No
         LiveQuoteSet(
             ccf=quote("ccf", "2026-06-18T08:59:30+08:00", 100.0, bid=99.0, ask=101.0),
             umc=quote("umc", "2026-06-18T08:59:49+08:00", 20.0, bid=19.5, ask=20.5),
-            usdttwd=quote("usd", "2026-06-18T08:59:59+08:00", 30.0, bid=29.9, ask=30.1),
+            usd_twd=quote("usd", "2026-06-18T08:59:59+08:00", 30.0, bid=29.9, ask=30.1),
         ),
         observed_at,
         indicator,
@@ -540,7 +540,7 @@ def test_tradable_spread_keeps_umc_and_usdttwd_at_global_stale_threshold() -> No
         LiveQuoteSet(
             ccf=quote("ccf", "2026-06-18T08:59:30+08:00", 100.0, bid=99.0, ask=101.0),
             umc=quote("umc", "2026-06-18T08:59:59+08:00", 20.0, bid=19.5, ask=20.5),
-            usdttwd=quote("usd", "2026-06-18T08:59:49+08:00", 30.0, bid=29.9, ask=30.1),
+            usd_twd=quote("usd", "2026-06-18T08:59:49+08:00", 30.0, bid=29.9, ask=30.1),
         ),
         observed_at,
         indicator,
@@ -550,7 +550,7 @@ def test_tradable_spread_keeps_umc_and_usdttwd_at_global_stale_threshold() -> No
     )
 
     assert stale_umc.missing_reason == "stale_umc"
-    assert stale_usd.missing_reason == "stale_usdttwd"
+    assert stale_usd.missing_reason == "stale_usd_twd"
 
 
 def test_tradable_spread_requires_bid_ask_but_mid_can_forward_fill_ccf() -> None:
@@ -561,7 +561,7 @@ def test_tradable_spread_requires_bid_ask_but_mid_can_forward_fill_ccf() -> None
     quote_set = LiveQuoteSet(
         ccf=quote("ccf", "2026-06-18T08:59:00+08:00", 105.0, bid=104.0, ask=106.0),
         umc=quote("umc", "2026-06-18T09:00:10+08:00", 20.0, bid=19.5, ask=20.5),
-        usdttwd=quote("usd", "2026-06-18T09:00:10+08:00", 30.0, bid=29.9, ask=30.1),
+        usd_twd=quote("usd", "2026-06-18T09:00:10+08:00", 30.0, bid=29.9, ask=30.1),
     )
 
     snapshot = estimate_tradable_spreads(
@@ -580,7 +580,7 @@ def test_tradable_spread_requires_bid_ask_but_mid_can_forward_fill_ccf() -> None
     missing_book = LiveQuoteSet(
         ccf=quote("ccf", "2026-06-18T09:00:10+08:00", 100.0, ask=101.0),
         umc=quote("umc", "2026-06-18T09:00:10+08:00", 20.0, bid=19.5, ask=20.5),
-        usdttwd=quote("usd", "2026-06-18T09:00:10+08:00", 30.0, bid=29.9, ask=30.1),
+        usd_twd=quote("usd", "2026-06-18T09:00:10+08:00", 30.0, bid=29.9, ask=30.1),
     )
     missing_snapshot = estimate_tradable_spreads(
         missing_book,
@@ -612,7 +612,7 @@ def test_tradable_spread_treats_ccf_diagnostic_quote_as_stale_ccf() -> None:
         LiveQuoteSet(
             ccf=ccf_diagnostic_quote,
             umc=quote("umc", "2026-06-18T09:00:10+08:00", 20.0, bid=19.5, ask=20.5),
-            usdttwd=quote("usd", "2026-06-18T09:00:10+08:00", 30.0, bid=29.9, ask=30.1),
+            usd_twd=quote("usd", "2026-06-18T09:00:10+08:00", 30.0, bid=29.9, ask=30.1),
         ),
         observed_at,
         indicator,

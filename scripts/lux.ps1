@@ -27,7 +27,7 @@ $liveExecuteEnvGates = @(
     'LUX_READONLY_BROKER',
     'PROJECT_LUX_ALLOW_LIVE_ORDER',
     'FUBON_ALLOW_LIVE_ORDER',
-    'BINANCE_ALLOW_LIVE_ORDER'
+    'IBKR_ALLOW_LIVE_ORDER'
 )
 $restoreEnv = @{}
 $command = if ($args.Count -gt 0) { $args[0] } else { '' }

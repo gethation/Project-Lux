@@ -114,7 +114,7 @@ def test_bar_does_not_publish_periodic_status() -> None:
     )
     account = SimpleNamespace(
         combined_upnl_twd=12345.0,
-        binance_ratio=1.42,
+        umc_ratio=1.42,
         fubon_ratio=1.38,
         stale=False,
     )
@@ -154,7 +154,7 @@ def test_dry_run_filled_execution_is_clearly_labeled_and_lists_both_fills() -> N
             fill_id="f1",
             order_id="o1",
             broker=BrokerName.IBKR_UMC,
-            symbol="TSM/USDT:USDT",
+            symbol="UMC",
             side=OrderSide.SELL,
             quantity=2.5,
             price=105.25,
@@ -190,7 +190,7 @@ def test_dry_run_filled_execution_is_clearly_labeled_and_lists_both_fills() -> N
     assert message.priority == ALERT_PRIORITY
     assert "[DRY-RUN]" in message.title
     assert "mode=DRY-RUN" in message.message
-    assert "IBKR_UMC TSM/USDT:USDT sell qty=2.5 price=105.25" in message.message
+    assert "IBKR_UMC UMC sell qty=2.5 price=105.25" in message.message
     assert "FUBON_CCF CCFQ6 buy qty=1 price=842" in message.message
     assert "trade_pnl_twd" not in message.message
 
@@ -268,7 +268,7 @@ def test_partial_execution_publishes_fill_and_error_notifications() -> None:
         fill_id="f1",
         order_id="o1",
         broker=BrokerName.IBKR_UMC,
-        symbol="TSM/USDT:USDT",
+        symbol="UMC",
         side=OrderSide.SELL,
         quantity=1.0,
         price=100.0,

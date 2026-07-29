@@ -4,8 +4,8 @@ Display-only sibling of :mod:`lux_trader.margin.monitor`. The monitor owns the
 scheduled daily/red-line *decisions*; this provider owns the per-bar *display*
 numbers the terminal UI shows in place of the synthetic model pnl/equity:
 
-- ``combined_upnl_twd`` — Binance position uPnL (USDT→TWD) + Fubon position uPnL.
-- ``binance_ratio`` / ``fubon_ratio`` — 保證金水位 = ``equity_twd / notional_twd``
+- ``combined_upnl_twd`` — IBKR position uPnL (USD→TWD) + Fubon position uPnL.
+- ``umc_ratio`` / ``fubon_ratio`` — 保證金水位 = ``equity_twd / notional_twd``
   where ``notional_twd`` is the *current-price* leg notional passed in by the
   engine (so the水位 shows even when flat).
 
@@ -52,9 +52,9 @@ class AccountDisplay:
     """UI-side snapshot of real account numbers. All-None means unavailable."""
 
     combined_upnl_twd: float | None = None
-    binance_ratio: float | None = None
+    umc_ratio: float | None = None
     fubon_ratio: float | None = None
-    binance_equity_twd: float | None = None
+    umc_equity_twd: float | None = None
     fubon_equity_twd: float | None = None
     stale: bool = False
     fetched_at: datetime | None = None
@@ -66,13 +66,13 @@ class AccountDisplayProvider:
         self,
         config: AppConfig,
         *,
-        usdttwd_rate: Callable[[], float | None],
+        usd_twd_rate: Callable[[], float | None],
         brokers_factory: Callable[[], tuple[ReadOnlyBroker, ReadOnlyBroker]]
         | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.config = config
-        self.usdttwd_rate = usdttwd_rate
+        self.usd_twd_rate = usd_twd_rate
         self._brokers_factory = brokers_factory or (
             lambda: build_default_margin_brokers(config)
         )
@@ -88,7 +88,7 @@ class AccountDisplayProvider:
         return os.getenv(READONLY_BROKER_ENV, "").strip() == "1"
 
     def ensure_brokers(self) -> tuple[ReadOnlyBroker, ReadOnlyBroker]:
-        """Build the shared (fubon, binance) broker pair lazily, once."""
+        """Build the shared (fubon, umc) broker pair lazily, once."""
         if self._brokers is None:
             self._brokers = self._brokers_factory()
         return self._brokers
@@ -103,14 +103,14 @@ class AccountDisplayProvider:
             self._latest = AccountDisplay(fetched_at=self.clock())
             return self._latest
         try:
-            fubon_broker, binance_broker = self.ensure_brokers()
+            fubon_broker, umc_broker = self.ensure_brokers()
             fubon_snapshot = fetch_margin_snapshot(fubon_broker)
-            binance_snapshot = fetch_margin_snapshot(binance_broker)
+            umc_snapshot = fetch_margin_snapshot(umc_broker)
             self._latest = self._compute(
-                binance_snapshot=binance_snapshot,
+                umc_snapshot=umc_snapshot,
                 fubon_snapshot=fubon_snapshot,
                 notional_twd=notional_twd,
-                rate=self.usdttwd_rate(),
+                rate=self.usd_twd_rate(),
             )
         except Exception as exc:
             # A refresh must never kill the trading loop; keep the last values.
@@ -135,17 +135,17 @@ class AccountDisplayProvider:
     def _compute(
         self,
         *,
-        binance_snapshot: BrokerAccountSnapshot,
+        umc_snapshot: BrokerAccountSnapshot,
         fubon_snapshot: BrokerAccountSnapshot,
         notional_twd: float,
         rate: float | None,
     ) -> AccountDisplay:
-        binance = assess_venue(
-            reading_from_snapshot(binance_snapshot, "binance"),
+        umc = assess_venue(
+            reading_from_snapshot(umc_snapshot, "ibkr"),
             notional_twd=notional_twd,
-            usdttwd_rate=rate,
-            red_line_ratio=self.config.margin_management.binance_red_line_ratio,
-            transfer_ratio=self.config.margin_management.binance_transfer_ratio,
+            usd_twd_rate=rate,
+            red_line_ratio=self.config.margin_management.umc_red_line_ratio,
+            transfer_ratio=self.config.margin_management.umc_transfer_ratio,
             target_ratio=self.config.margin_management.target_ratio,
             red_line_maint_multiplier=self.config.margin_management.red_line_maint_multiplier,
             position_open=False,
@@ -154,7 +154,7 @@ class AccountDisplayProvider:
         fubon = assess_venue(
             reading_from_snapshot(fubon_snapshot, "fubon"),
             notional_twd=notional_twd,
-            usdttwd_rate=rate,
+            usd_twd_rate=rate,
             red_line_ratio=self.config.margin_management.fubon_red_line_ratio,
             transfer_ratio=self.config.margin_management.fubon_transfer_ratio,
             target_ratio=self.config.margin_management.target_ratio,
@@ -162,37 +162,42 @@ class AccountDisplayProvider:
             position_open=False,
             check_type="display",
         )
-        binance_upnl = self._binance_upnl_twd(binance_snapshot, rate)
+        umc_upnl = self._umc_upnl_twd(umc_snapshot, rate)
         fubon_upnl = self._fubon_upnl_twd(fubon_snapshot)
         combined = (
-            binance_upnl + fubon_upnl
-            if binance_upnl is not None and fubon_upnl is not None
+            umc_upnl + fubon_upnl
+            if umc_upnl is not None and fubon_upnl is not None
             else None
         )
         return AccountDisplay(
             combined_upnl_twd=combined,
-            binance_ratio=binance.ratio,
+            umc_ratio=umc.ratio,
             fubon_ratio=fubon.ratio,
-            binance_equity_twd=binance.equity_twd,
+            umc_equity_twd=umc.equity_twd,
             fubon_equity_twd=fubon.equity_twd,
             stale=False,
             fetched_at=self.clock(),
         )
 
     @staticmethod
-    def _binance_upnl_twd(
+    def _umc_upnl_twd(
         snapshot: BrokerAccountSnapshot, rate: float | None
     ) -> float | None:
         if not snapshot.margins or rate is None:
             return None
         margin = snapshot.margins[0]
-        upnl_usdt = raw_float(margin.raw, "totalUnrealizedProfit")
-        if upnl_usdt is None:
+        # PHASE B: "totalUnrealizedProfit" / "totalWalletBalance" are Binance
+        # USD-M account fields. IBKR reports unrealized PnL under different
+        # names, so this lookup returns None against an IBKR snapshot and the
+        # panel shows no UMC uPnL -- blank, never a wrong number. Remap when the
+        # IBKR read-only broker lands.
+        upnl_usd = raw_float(margin.raw, "totalUnrealizedProfit")
+        if upnl_usd is None:
             wallet = raw_float(margin.raw, "totalWalletBalance")
             if margin.equity is None or wallet is None:
                 return None
-            upnl_usdt = margin.equity - wallet
-        return upnl_usdt * rate
+            upnl_usd = margin.equity - wallet
+        return upnl_usd * rate
 
     @staticmethod
     def _fubon_upnl_twd(snapshot: BrokerAccountSnapshot) -> float | None:

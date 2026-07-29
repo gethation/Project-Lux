@@ -46,7 +46,7 @@ def write_config(tmp_path: Path, *, allow_live_order: bool = False) -> Path:
                 "",
                 "[live_market_data]",
                 "ccf_symbol = 'CCFG6'",
-                "binance_symbol = 'TSM/USDT:USDT'",
+                "umc_symbol = 'UMC'",
                 f"taifex_cache_dir = '{cache_dir}'",
                 "",
                 "[broker_reconciliation]",
@@ -104,7 +104,7 @@ def seed_recorded_exposure(config_path: Path) -> None:
             (
                 "entry-binance",
                 BrokerName.IBKR_UMC,
-                config.live.binance_symbol,
+                config.live.umc_symbol,
                 OrderSide.SELL,
                 100.0,
             ),
@@ -245,7 +245,7 @@ def test_recover_manual_flat_apply_offsets_ledger_and_remains_paused(
         assert resume.strategy.pnl_status == "pending"
         assert store.load_pending_manual_close() is not None
         exposure = store.load_recorded_fill_exposure(
-            umc_symbol=config.live.binance_symbol,
+            umc_symbol=config.live.umc_symbol,
             ccf_symbol="CCFG6",
         )
         assert exposure[BrokerName.IBKR_UMC] == 0.0

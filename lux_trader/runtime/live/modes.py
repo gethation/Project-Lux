@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
 from lux_trader.config import AppConfig
 from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, CcfContractSelection
 from lux_trader.core.calendar import live_session_status
@@ -27,12 +26,13 @@ from lux_trader.execution import (
 )
 from lux_trader.execution.recorder import DryRunExecutionRecorder
 from lux_trader.execution.price_policy import apply_live_touch_market_price_policy
-from lux_trader.integrations.binance.market_data import BinanceMarketData
-from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.execution_process import FubonFutureExecutionProcess
 from lux_trader.integrations.fubon.market_data import FubonCcfMarketData
-from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.taifex.downloader import TaifexCcfTradeDownloader
+from lux_trader.integrations.venues import (
+    open_umc_execution_adapter,
+    open_umc_readonly_broker,
+)
 from lux_trader.core.fees import fill_costs
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.execution.gate import (
@@ -399,13 +399,13 @@ class LiveExecuteModeHandler(LiveModeHandler):
         self,
         config: AppConfig,
         *,
-        binance_adapter: Any | None = None,
+        umc_adapter: Any | None = None,
         fubon_adapter: Any | None = None,
         readonly_brokers: tuple[ReadOnlyBroker, ...] | None = None,
         post_trade_reconciler: PostTradeReconciler | None = None,
     ) -> None:
         self.config = config
-        self.binance_adapter = binance_adapter
+        self.umc_adapter = umc_adapter
         self.fubon_adapter = fubon_adapter
         self.readonly_brokers = readonly_brokers
         self.post_trade_reconciler = post_trade_reconciler
@@ -428,13 +428,10 @@ class LiveExecuteModeHandler(LiveModeHandler):
         ccf_symbol: str,
         ccf_expiry: str | None,
     ) -> None:
-        if self.binance_adapter is None:
-            self.binance_adapter = BinanceTsmExecutionAdapter(
-                self.config.live.binance_symbol,
+        if self.umc_adapter is None:
+            self.umc_adapter = open_umc_execution_adapter(
+                self.config.live.umc_symbol,
                 self.config.live.fubon_env_path,
-                leverage=self.config.binance_execution.leverage,
-                margin_mode=self.config.binance_execution.margin_mode,
-                enforce_leverage=self.config.binance_execution.enforce_leverage,
             )
         if self.fubon_adapter is None:
             self.fubon_adapter = FubonFutureExecutionProcess(
@@ -444,8 +441,8 @@ class LiveExecuteModeHandler(LiveModeHandler):
         if self.readonly_brokers is None:
             self.readonly_brokers = (
                 self.fubon_adapter,
-                BinanceReadOnlyBroker(
-                    self.config.live.binance_symbol,
+                open_umc_readonly_broker(
+                    self.config.live.umc_symbol,
                     self.config.live.fubon_env_path,
                 ),
             )
@@ -460,7 +457,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
             )
         self.coordinator = RealExecutionCoordinator(
             store=store,
-            binance_adapter=self.binance_adapter,
+            umc_adapter=self.umc_adapter,
             fubon_adapter=self.fubon_adapter,
             ccf_first=self.config.live_execution.ccf_first,
         )
@@ -508,7 +505,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
             store=store,
             strategy_state=state,
             brokers=self.readonly_brokers,
-            umc_symbol=self.config.live.binance_symbol,
+            umc_symbol=self.config.live.umc_symbol,
             ccf_symbol=state.trading_ccf_symbol or ccf_symbol,
             timestamp=timestamp,
         )
@@ -555,7 +552,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 store=store,
                 strategy_state=state,
                 brokers=self.readonly_brokers,
-                umc_symbol=self.config.live.binance_symbol,
+                umc_symbol=self.config.live.umc_symbol,
                 ccf_symbol=state.trading_ccf_symbol or ccf_symbol,
                 timestamp=timestamp,
             )
@@ -594,7 +591,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
         )
 
     def close(self) -> None:
-        for adapter in (self.binance_adapter, self.fubon_adapter):
+        for adapter in (self.umc_adapter, self.fubon_adapter):
             close = getattr(adapter, "close", None)
             if callable(close):
                 close()
@@ -787,7 +784,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
             store=store,
             strategy_state=strategy.state,
             brokers=self.readonly_brokers,
-            umc_symbol=self.config.live.binance_symbol,
+            umc_symbol=self.config.live.umc_symbol,
             ccf_symbol=strategy.state.trading_ccf_symbol or ccf_symbol,
             timestamp=bar.timestamp,
         )
@@ -835,7 +832,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 store=store,
                 strategy_state=strategy.state,
                 brokers=self.readonly_brokers,
-                umc_symbol=self.config.live.binance_symbol,
+                umc_symbol=self.config.live.umc_symbol,
                 ccf_symbol=strategy.state.trading_ccf_symbol or ccf_symbol,
                 timestamp=bar.timestamp,
             )

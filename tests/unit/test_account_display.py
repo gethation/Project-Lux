@@ -13,7 +13,7 @@ from lux_trader.reconciliation.models import BrokerAccountSnapshot, BrokerMargin
 
 
 NOTIONAL = 1_000_000.0
-RATE = 30.0  # USDT/TWD
+RATE = 30.0  # USD/TWD
 
 
 def config() -> SimpleNamespace:
@@ -21,7 +21,7 @@ def config() -> SimpleNamespace:
     return SimpleNamespace(margin_management=MarginManagementConfig())
 
 
-def binance_margin(*, upnl: float | None = 500.0, equity: float = 10_000.0) -> BrokerMarginSnapshot:
+def umc_margin(*, upnl: float | None = 500.0, equity: float = 10_000.0) -> BrokerMarginSnapshot:
     raw: dict[str, object] = {
         "totalMarginBalance": equity,
         "totalWalletBalance": equity - (upnl or 0.0),
@@ -30,7 +30,7 @@ def binance_margin(*, upnl: float | None = 500.0, equity: float = 10_000.0) -> B
         raw["totalUnrealizedProfit"] = upnl
     return BrokerMarginSnapshot(
         broker=BrokerName.IBKR_UMC,
-        currency="USDT",
+        currency="USD",
         equity=equity,
         available=equity,
         margin_used=0.0,
@@ -55,31 +55,31 @@ def fubon_margin(*, upnl: float | None = -20_000.0, equity: float = 900_000.0) -
 def provider(brokers, *, rate: float | None = RATE) -> AccountDisplayProvider:
     return AccountDisplayProvider(
         config(),
-        usdttwd_rate=lambda: rate,
+        usd_twd_rate=lambda: rate,
         brokers_factory=lambda: brokers,
     )
 
 
-def fakes(binance: tuple = (), fubon: tuple = ()) -> tuple:
-    # Provider expects (fubon, binance).
+def fakes(umc: tuple = (), fubon: tuple = ()) -> tuple:
+    # Provider expects (fubon, umc).
     return (
         FakeReadOnlyBroker(BrokerName.FUBON_CCF, margins=fubon),
-        FakeReadOnlyBroker(BrokerName.IBKR_UMC, margins=binance),
+        FakeReadOnlyBroker(BrokerName.IBKR_UMC, margins=umc),
     )
 
 
 def test_combined_upnl_and_ratios_from_snapshots(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LUX_READONLY_BROKER", "1")
-    p = provider(fakes(binance=(binance_margin(),), fubon=(fubon_margin(),)))
+    p = provider(fakes(umc=(umc_margin(),), fubon=(fubon_margin(),)))
 
     display = p.refresh(notional_twd=NOTIONAL)
 
-    # equity_twd: binance 10,000 * 30 = 300,000 -> ratio 0.30; fubon 900,000 -> 0.90
-    assert display.binance_ratio == pytest.approx(0.30)
+    # equity_twd: umc 10,000 * 30 = 300,000 -> ratio 0.30; fubon 900,000 -> 0.90
+    assert display.umc_ratio == pytest.approx(0.30)
     assert display.fubon_ratio == pytest.approx(0.90)
-    assert display.binance_equity_twd == pytest.approx(300_000.0)
+    assert display.umc_equity_twd == pytest.approx(300_000.0)
     assert display.fubon_equity_twd == pytest.approx(900_000.0)
-    # uPnL: binance 500 * 30 = 15,000; fubon -20,000; combined = -5,000
+    # uPnL: umc 500 * 30 = 15,000; fubon -20,000; combined = -5,000
     assert display.combined_upnl_twd == pytest.approx(-5_000.0)
     assert display.stale is False
 
@@ -89,7 +89,7 @@ def test_flat_still_reports_margin_level(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("LUX_READONLY_BROKER", "1")
     p = provider(
         fakes(
-            binance=(binance_margin(upnl=0.0),),
+            umc=(umc_margin(upnl=0.0),),
             fubon=(fubon_margin(upnl=0.0),),
         )
     )
@@ -97,19 +97,19 @@ def test_flat_still_reports_margin_level(monkeypatch: pytest.MonkeyPatch) -> Non
     display = p.refresh(notional_twd=NOTIONAL)
 
     assert display.combined_upnl_twd == pytest.approx(0.0)
-    assert display.binance_ratio == pytest.approx(0.30)
+    assert display.umc_ratio == pytest.approx(0.30)
     assert display.fubon_ratio == pytest.approx(0.90)
 
 
 def test_margin_level_tracks_notional_denominator(monkeypatch: pytest.MonkeyPatch) -> None:
     # Halving the (current-price) notional doubles the water level.
     monkeypatch.setenv("LUX_READONLY_BROKER", "1")
-    p = provider(fakes(binance=(binance_margin(),), fubon=(fubon_margin(),)))
+    p = provider(fakes(umc=(umc_margin(),), fubon=(fubon_margin(),)))
 
     tight = p.refresh(notional_twd=NOTIONAL)
     loose = p.refresh(notional_twd=NOTIONAL / 2)
 
-    assert loose.binance_ratio == pytest.approx(tight.binance_ratio * 2)
+    assert loose.umc_ratio == pytest.approx(tight.umc_ratio * 2)
 
 
 def test_missing_fubon_upnl_key_yields_na_pnl_but_keeps_ratios(
@@ -117,7 +117,7 @@ def test_missing_fubon_upnl_key_yields_na_pnl_but_keeps_ratios(
 ) -> None:
     monkeypatch.setenv("LUX_READONLY_BROKER", "1")
     p = provider(
-        fakes(binance=(binance_margin(),), fubon=(fubon_margin(upnl=None),))
+        fakes(umc=(umc_margin(),), fubon=(fubon_margin(upnl=None),))
     )
 
     display = p.refresh(notional_twd=NOTIONAL)
@@ -130,13 +130,13 @@ def test_disabled_without_env_returns_na_and_builds_no_brokers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LUX_READONLY_BROKER", raising=False)
-    p = provider(fakes(binance=(binance_margin(),), fubon=(fubon_margin(),)))
+    p = provider(fakes(umc=(umc_margin(),), fubon=(fubon_margin(),)))
 
     display = p.refresh(notional_twd=NOTIONAL)
 
     assert display == AccountDisplay(fetched_at=display.fetched_at)
     assert display.combined_upnl_twd is None
-    assert display.binance_ratio is None
+    assert display.umc_ratio is None
     assert p._brokers is None  # brokers never constructed while disabled
 
 
@@ -144,7 +144,7 @@ def test_fetch_failure_keeps_last_known_and_marks_stale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LUX_READONLY_BROKER", "1")
-    p = provider(fakes(binance=(binance_margin(),), fubon=(fubon_margin(),)))
+    p = provider(fakes(umc=(umc_margin(),), fubon=(fubon_margin(),)))
 
     good = p.refresh(notional_twd=NOTIONAL)
     assert good.stale is False
@@ -158,7 +158,7 @@ def test_fetch_failure_keeps_last_known_and_marks_stale(
 
     assert stale.stale is True
     assert stale.combined_upnl_twd == pytest.approx(good.combined_upnl_twd)
-    assert stale.binance_ratio == pytest.approx(good.binance_ratio)
+    assert stale.umc_ratio == pytest.approx(good.umc_ratio)
 
 
 class MarginsOnlyBroker:
@@ -192,13 +192,13 @@ def test_provider_prefers_lightweight_fetch_margins(
 ) -> None:
     monkeypatch.setenv("LUX_READONLY_BROKER", "1")
     fubon = MarginsOnlyBroker(BrokerName.FUBON_CCF, (fubon_margin(),))
-    binance = MarginsOnlyBroker(BrokerName.IBKR_UMC, (binance_margin(),))
-    p = provider((fubon, binance))
+    umc = MarginsOnlyBroker(BrokerName.IBKR_UMC, (umc_margin(),))
+    p = provider((fubon, umc))
 
     display = p.refresh(notional_twd=NOTIONAL)
 
-    assert fubon.margins_calls == 1 and binance.margins_calls == 1
-    assert fubon.snapshot_calls == 0 and binance.snapshot_calls == 0
+    assert fubon.margins_calls == 1 and umc.margins_calls == 1
+    assert fubon.snapshot_calls == 0 and umc.snapshot_calls == 0
     assert display.fubon_ratio == pytest.approx(0.90)
     assert display.combined_upnl_twd == pytest.approx(-5_000.0)
 
@@ -218,4 +218,4 @@ def test_first_fetch_failure_returns_na_without_raising(
 
     assert display.stale is True
     assert display.combined_upnl_twd is None
-    assert display.binance_ratio is None
+    assert display.umc_ratio is None

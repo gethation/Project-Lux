@@ -5,10 +5,6 @@ from datetime import datetime
 import pytest
 
 from lux_trader.core.models import BrokerName, OrderSide
-from lux_trader.integrations.binance.readonly import (
-    BinanceReadOnlyBroker,
-    normalize_binance_position,
-)
 from lux_trader.integrations.fubon.auth import (
     checked_result_data,
     select_futopt_account,
@@ -91,45 +87,6 @@ class FakeFubonSdk:
 
     def logout(self) -> None:
         self.logged_out = True
-
-
-class FakeBinanceExchange:
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-        self.closed = False
-
-    def load_markets(self) -> None:
-        self.calls.append("load_markets")
-
-    def fetch_balance(self):
-        self.calls.append("fetch_balance")
-        return {"USDT": {"total": 1000.0, "free": 900.0, "used": 100.0}}
-
-    def fetch_positions(self, symbols):
-        self.calls.append(f"fetch_positions:{symbols[0]}")
-        return [
-            {
-                "symbol": "TSM/USDT:USDT",
-                "contracts": 0.0,
-                "side": "short",
-                "info": {"positionAmt": "-12.5"},
-            }
-        ]
-
-    def fetch_open_orders(self, symbol):
-        self.calls.append(f"fetch_open_orders:{symbol}")
-        return [
-            {
-                "id": "BINANCE-1",
-                "symbol": symbol,
-                "side": "sell",
-                "amount": 2.5,
-                "status": "open",
-            }
-        ]
-
-    def close(self) -> None:
-        self.closed = True
 
 
 def test_fubon_readonly_broker_fetches_margin_positions_and_orders() -> None:
@@ -231,67 +188,3 @@ def test_fubon_empty_position_result_can_be_treated_as_empty() -> None:
         checked_result_data(result, "single_position")
 
 
-def test_binance_readonly_broker_fetches_balance_positions_and_orders() -> None:
-    exchange = FakeBinanceExchange()
-    broker = BinanceReadOnlyBroker(
-        "TSM/USDT:USDT",
-        exchange=exchange,
-        clock=lambda: datetime.fromisoformat("2026-06-18T09:00:00+08:00"),
-    )
-
-    snapshot = broker.fetch_snapshot()
-    broker.close()
-
-    assert snapshot.broker == BrokerName.IBKR_UMC
-    assert snapshot.positions[0].symbol == "TSM/USDT:USDT"
-    assert snapshot.positions[0].quantity == -12.5
-    assert snapshot.open_orders[0].order_id == "BINANCE-1"
-    assert snapshot.open_orders[0].side == OrderSide.SELL
-    assert snapshot.margins[0].currency == "USDT"
-    assert snapshot.margins[0].available == 900.0
-    assert exchange.calls == [
-        "fetch_balance",
-        "fetch_positions:TSM/USDT:USDT",
-        "fetch_open_orders:TSM/USDT:USDT",
-    ]
-    assert exchange.closed
-
-
-def test_binance_exchange_factory_uses_env_credentials(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    def exchange_factory(options):
-        captured.update(options)
-        return FakeBinanceExchange()
-
-    monkeypatch.setenv("BINANCE_API_KEY", "key")
-    monkeypatch.setenv("BINANCE_SECRET", "secret")
-    broker = BinanceReadOnlyBroker(
-        "TSM/USDT:USDT",
-        exchange_factory=exchange_factory,
-    )
-
-    broker.fetch_snapshot()
-
-    assert captured["apiKey"] == "key"
-    assert captured["secret"] == "secret"
-    assert captured["enableRateLimit"] is True
-
-
-def test_binance_missing_env_fails_fast(monkeypatch) -> None:
-    monkeypatch.delenv("BINANCE_API_KEY", raising=False)
-    monkeypatch.delenv("BINANCE_SECRET", raising=False)
-    broker = BinanceReadOnlyBroker("TSM/USDT:USDT")
-
-    with pytest.raises(RuntimeError, match="BINANCE_API_KEY"):
-        broker.fetch_snapshot()
-
-
-def test_binance_position_normalizer_ignores_other_symbols() -> None:
-    assert (
-        normalize_binance_position(
-            {"symbol": "BTC/USDT:USDT", "info": {"positionAmt": "1"}},
-            "TSM/USDT:USDT",
-        )
-        is None
-    )

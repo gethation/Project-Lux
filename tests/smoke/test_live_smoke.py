@@ -11,8 +11,10 @@ import pytest
 
 from lux_trader.config import AppConfig, load_config
 from lux_trader.core.time import TAIPEI_TZ
-from lux_trader.integrations.binance.market_data import BinanceMarketData
-from lux_trader.integrations.bitopro.market_data import BitoProMarketData
+from lux_trader.integrations.venues import (
+    open_fx_quote_provider,
+    open_umc_quote_provider,
+)
 from lux_trader.integrations.fubon.market_data import FubonCcfMarketData
 from lux_trader.market_data import floor_minute
 from lux_trader.runtime.live import (
@@ -83,22 +85,25 @@ def test_live_marketdata_providers_fetch_quotes_and_ccf_candles() -> None:
     finally:
         ccf.close()
 
-    binance_quote = BinanceMarketData().fetch_quote(
-        config.live.binance_symbol
+    # Raises UsLegVenueNotWired until Phase B builds the IBKR and Twelve Data
+    # providers. This smoke is env-gated and skipped by default; when someone
+    # does run it, failing here is the correct answer.
+    umc_quote = open_umc_quote_provider(config).fetch_quote(
+        config.live.umc_symbol
     )
-    bitopro_quote = BitoProMarketData().fetch_quote(
-        config.live.bitopro_symbol
+    fx_quote = open_fx_quote_provider(config).fetch_quote(
+        config.live.fx_symbol
     )
-    assert binance_quote.price > 0
-    assert binance_quote.bid is not None
-    assert binance_quote.ask is not None
-    assert binance_quote.bid > 0
-    assert binance_quote.ask > 0
-    assert bitopro_quote.price > 0
-    assert bitopro_quote.bid is not None
-    assert bitopro_quote.ask is not None
-    assert bitopro_quote.bid > 0
-    assert bitopro_quote.ask > 0
+    assert umc_quote.price > 0
+    assert umc_quote.bid is not None
+    assert umc_quote.ask is not None
+    assert umc_quote.bid > 0
+    assert umc_quote.ask > 0
+    assert fx_quote.price > 0
+    assert fx_quote.bid is not None
+    assert fx_quote.ask is not None
+    assert fx_quote.bid > 0
+    assert fx_quote.ask > 0
 
 
 def test_ccf_warmup_check_smoke_uses_fubon_and_taifex_network() -> None:
@@ -185,7 +190,7 @@ def test_live_startup_smoke_auto_warmup_and_resume() -> None:
                 "SELECT source, COUNT(*) FROM market_ticks GROUP BY source"
             ).fetchall()
         }
-        assert {"fubon_ccf", "binanceusdm", "bitopro"}.issubset(source_counts)
+        assert {"fubon_ccf", "ibkr", "twelvedata"}.issubset(source_counts)
         book_counts = {
             source: count
             for source, count in connection.execute(
@@ -197,8 +202,8 @@ def test_live_startup_smoke_auto_warmup_and_resume() -> None:
                 """
             ).fetchall()
         }
-        assert book_counts.get("binanceusdm", 0) > 0
-        assert book_counts.get("bitopro", 0) > 0
+        assert book_counts.get("ibkr", 0) > 0
+        assert book_counts.get("twelvedata", 0) > 0
         null_count = connection.execute(
             """
             SELECT COUNT(*)

@@ -66,8 +66,8 @@ warmup_minutes = 500
 warmup_ccf_max_trailing_fill_minutes = 5
 ccf_product = 'CCF'
 ccf_symbol = 'auto'
-binance_symbol = 'TSM/USDT:USDT'
-bitopro_symbol = 'USDT/TWD'
+umc_symbol = 'UMC'
+fx_symbol = 'USD/TWD'
 fubon_env_path = '.env'
 taifex_use_network = true
 taifex_cache_dir = 'data\taifex_cache'
@@ -85,11 +85,6 @@ require_readonly_reconciliation = true
 max_plan_age_seconds = 120
 ccf_first = true
 
-[binance_execution]
-leverage = 1
-margin_mode = 'cross'
-enforce_leverage = true
-
 [margin_management]
 # Semi-automatic dual-account margin policy (PoC margin_management_analysis).
 # The system only computes and reports transfer guidance; transfers and closes
@@ -97,8 +92,8 @@ enforce_leverage = true
 enabled = false
 check_time = '10:00'
 red_line_interval_minutes = 15
-binance_transfer_ratio = 0.11
-binance_red_line_ratio = 0.05
+umc_transfer_ratio = 0.11
+umc_red_line_ratio = 0.05
 fubon_transfer_ratio = 0.20
 fubon_red_line_ratio = 0.135
 target_ratio = 0.30

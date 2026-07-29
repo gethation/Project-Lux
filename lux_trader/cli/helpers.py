@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import os
 
-from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
+from lux_trader.integrations.venues import open_umc_readonly_broker
 from lux_trader.reconciliation import ReadOnlyBroker
 
 
@@ -48,8 +48,8 @@ def build_real_readonly_brokers(
         fubon_symbol = str(ccf_symbol).strip()
     return (
         FubonReadOnlyBroker(config.live.fubon_env_path, symbol=fubon_symbol),
-        BinanceReadOnlyBroker(
-            config.live.binance_symbol,
+        open_umc_readonly_broker(
+            config.live.umc_symbol,
             config.live.fubon_env_path,
         ),
     )

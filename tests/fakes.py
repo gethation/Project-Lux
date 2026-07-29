@@ -40,7 +40,7 @@ def build_fake_reconciliation_brokers(
     )
     expected = reconciler.expected_from_strategy(
         strategy_state,
-        umc_symbol=config.live.binance_symbol,
+        umc_symbol=config.live.umc_symbol,
         ccf_symbol=reconciliation_ccf_symbol(config, strategy_state),
         timestamp=timestamp,
     )
@@ -62,7 +62,7 @@ def build_fake_reconciliation_brokers(
         (
             BrokerPositionSnapshot(
                 broker=BrokerName.IBKR_UMC,
-                symbol=config.live.binance_symbol,
+                symbol=config.live.umc_symbol,
                 quantity=umc_quantity,
             ),
         )
@@ -106,14 +106,14 @@ def build_fake_execution_plan(
     ccf_symbol = str(config.live.ccf_symbol)
     if ccf_symbol.lower() == "auto":
         ccf_symbol = "CCFG6"
-    binance_side = OrderSide.SELL
+    umc_side = OrderSide.SELL
     if fake_case == "rejected":
-        binance_side = OrderSide.BUY
+        umc_side = OrderSide.BUY
     requests = (
         OrderRequest(
             broker=BrokerName.IBKR_UMC,
-            symbol=config.live.binance_symbol,
-            side=binance_side,
+            symbol=config.live.umc_symbol,
+            side=umc_side,
             quantity=125.5,
             price=720.0,
             timestamp=timestamp,

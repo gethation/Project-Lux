@@ -64,14 +64,14 @@ class WarmupBuilder:
         ccf_intraday_provider: CcfWarmupProvider | None,
         ccf_fallback_provider: CcfWarmupProvider | None,
         umc_provider: OhlcvProvider,
-        usdttwd_provider: OhlcvProvider,
+        usd_twd_provider: OhlcvProvider,
         closed_dates: Iterable[date] = (),
     ) -> None:
         self.live_config = live_config
         self.ccf_intraday_provider = ccf_intraday_provider
         self.ccf_fallback_provider = ccf_fallback_provider
         self.umc_provider = umc_provider
-        self.usdttwd_provider = usdttwd_provider
+        self.usd_twd_provider = usd_twd_provider
         self.closed_dates = tuple(closed_dates)
 
     def build(
@@ -156,19 +156,19 @@ class WarmupBuilder:
         last_timestamp = index[-1].to_pydatetime()
         umc = close_series(
             self.umc_provider.fetch_ohlcv_1m(
-                self.live_config.binance_symbol,
+                self.live_config.umc_symbol,
                 start_minute,
                 last_timestamp,
             ),
             "umc",
         ).reindex(index)
         usd = close_series(
-            self.usdttwd_provider.fetch_ohlcv_1m(
-                self.live_config.bitopro_symbol,
+            self.usd_twd_provider.fetch_ohlcv_1m(
+                self.live_config.fx_symbol,
                 start_minute,
                 last_timestamp,
             ),
-            "usdttwd",
+            "usd_twd",
         ).reindex(index)
         missing = umc[umc.isna()].index.union(usd[usd.isna()].index)
         if len(missing):

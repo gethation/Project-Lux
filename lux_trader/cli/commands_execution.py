@@ -1,14 +1,14 @@
 """Real-execution CLI commands: live-execute, exec-smoke, manual-close, broker-status.
 
-Consolidated from the legacy per-venue commands (`fubon-exec-smoke` /
-`binance-exec-smoke` -> ``exec-smoke --venue``, `fubon-manual-close` /
-`binance-manual-close` -> ``manual-close --venue``, `broker-doctor` /
-`fubon-account-funds` / `fubon-order-records` -> ``broker-status``).
-Bodies are behavior-preserving; only the command surface changed.
-
 Everything here either sends REAL orders behind explicit config+env gates or
 reads real accounts read-only. Tests monkeypatch the adapter names on this
 module (e.g. ``commands_execution.FubonFutureExecutionAdapter``).
+
+``--venue`` accepts only ``fubon``. The UMC half of exec-smoke and manual-close
+went with Binance in Phase A2 and returns with the IBKR execution adapter in
+Phase D -- see docs/CCF_UMC_PLAN.md. Until then there is no way to
+emergency-close a UMC leg from this CLI, which is one more reason Phase D gates
+the first real two-leg order.
 """
 
 from __future__ import annotations
@@ -30,14 +30,6 @@ from lux_trader.execution.intent import (
     ExecutionPlanType,
     PairExecutionPlan,
 )
-from lux_trader.integrations.binance.execution import (
-    BINANCE_EXECUTION_SMOKE_ENV_GATES,
-    BINANCE_MANUAL_CLOSE_ENV_GATES,
-    BinanceTsmExecutionAdapter,
-    binance_manual_close_env_gates_open,
-    binance_smoke_env_gates_open,
-)
-from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.fubon.execution import (
     FUBON_EXECUTION_SMOKE_ENV_GATES,
     FUBON_MANUAL_CLOSE_ENV_GATES,
@@ -47,6 +39,7 @@ from lux_trader.integrations.fubon.execution import (
 )
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.integrations.fubon.execution_process import FubonFutureExecutionProcess
+from lux_trader.integrations.venues import open_umc_readonly_broker
 from lux_trader.reconciliation import ReadOnlyBroker
 from lux_trader.runtime.live import LiveExecuteRunner
 from lux_trader.runtime.live.lease import (
@@ -180,15 +173,15 @@ def build_live_execution_brokers(
     )
     return fubon, (
         fubon,
-        BinanceReadOnlyBroker(
-            config.live.binance_symbol,
+        open_umc_readonly_broker(
+            config.live.umc_symbol,
             config.live.fubon_env_path,
         ),
     )
 
 
 # ---------------------------------------------------------------------------
-# exec-smoke --venue {fubon,binance}
+# exec-smoke --venue {fubon}
 # ---------------------------------------------------------------------------
 
 
@@ -196,96 +189,11 @@ def command_exec_smoke(args: argparse.Namespace) -> int:
     if args.venue == "fubon":
         config = load_config(args.config)
         assert_live_lease_available(config.store_path)
-    if args.venue == "binance":
-        if args.quantity is None:
-            raise SystemExit("--quantity is required for --venue binance")
-        return binance_exec_smoke(args)
     if args.symbol is None:
         raise SystemExit("--symbol is required for --venue fubon")
     if args.lot is None:
         raise SystemExit("--lot is required for --venue fubon")
     return fubon_exec_smoke(args)
-
-
-def binance_exec_smoke(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    require_binance_exec_smoke_ready(config, args)
-
-    adapter = BinanceTsmExecutionAdapter(
-        config.live.binance_symbol,
-        config.live.fubon_env_path,
-        leverage=config.binance_execution.leverage,
-        margin_mode=config.binance_execution.margin_mode,
-        enforce_leverage=config.binance_execution.enforce_leverage,
-    )
-    try:
-        preflight = adapter.preflight()
-        if preflight.open_orders:
-            raise SystemExit(
-                "Refusing Binance execution smoke with existing open orders: "
-                f"{len(preflight.open_orders)}"
-            )
-        if abs(preflight.position_quantity) > 1e-12:
-            raise SystemExit(
-                "Refusing Binance execution smoke with nonzero position: "
-                f"{preflight.position_quantity}"
-            )
-
-        quantity = float(args.quantity)
-        timestamp = datetime.now().astimezone().replace(microsecond=0)
-        print(
-            "Binance execution smoke preflight passed: "
-            f"symbol={config.live.binance_symbol}, quantity={quantity}, "
-            f"margin_mode={config.binance_execution.margin_mode}, "
-            f"leverage={config.binance_execution.leverage}, "
-            f"enforce_leverage={config.binance_execution.enforce_leverage}"
-        )
-
-        entry_plan = build_binance_smoke_plan(
-            symbol=config.live.binance_symbol,
-            quantity=quantity,
-            side=OrderSide.BUY,
-            plan_type=ExecutionPlanType.ENTRY,
-            timestamp=timestamp,
-        )
-        entry_outcome = adapter.execute(entry_plan)
-        print_binance_smoke_outcome("entry", entry_outcome)
-        entry_filled_quantity = sum(fill.quantity for fill in entry_outcome.fills)
-        if entry_filled_quantity <= 0:
-            return 1
-
-        exit_plan = build_binance_smoke_plan(
-            symbol=config.live.binance_symbol,
-            quantity=entry_filled_quantity,
-            side=OrderSide.SELL,
-            plan_type=ExecutionPlanType.EXIT,
-            timestamp=datetime.now().astimezone().replace(microsecond=0),
-        )
-        exit_outcome = adapter.execute(exit_plan)
-        print_binance_smoke_outcome("exit", exit_outcome)
-
-        final_open_orders = adapter.fetch_open_orders()
-        final_position = adapter.fetch_position_quantity()
-        if (
-            not entry_outcome.filled
-            or not exit_outcome.filled
-            or final_open_orders
-            or abs(final_position) > 1e-12
-        ):
-            print("CRITICAL manual intervention required")
-            print(
-                "Binance execution smoke final state: "
-                f"position={final_position}, open_orders={len(final_open_orders)}"
-            )
-            return 1
-
-        print(
-            "Binance execution smoke complete: "
-            f"position={final_position}, open_orders={len(final_open_orders)}"
-        )
-        return 0
-    finally:
-        adapter.close()
 
 
 def fubon_exec_smoke(args: argparse.Namespace) -> int:
@@ -404,7 +312,7 @@ def fubon_exec_smoke(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# manual-close --venue {fubon,binance}
+# manual-close --venue {fubon}
 # ---------------------------------------------------------------------------
 
 
@@ -412,78 +320,9 @@ def command_manual_close(args: argparse.Namespace) -> int:
     if args.venue == "fubon":
         config = load_config(args.config)
         assert_live_lease_available(config.store_path)
-    if args.venue == "binance":
-        if args.quantity is None:
-            raise SystemExit("--quantity is required for --venue binance")
-        return binance_manual_close(args)
     if args.lot is None:
         raise SystemExit("--lot is required for --venue fubon")
     return fubon_manual_close(args)
-
-
-def binance_manual_close(args: argparse.Namespace) -> int:
-    """Emergency-close a Binance UMC position with a market order. Mirrors the
-    Fubon path so either stranded leg from a single-leg PAUSE can be flattened
-    by hand before clear-pause."""
-    config = load_config(args.config)
-    require_binance_manual_close_ready(config, args)
-
-    symbol = str(args.symbol).strip()
-    quantity = float(args.quantity)
-    side = OrderSide.BUY if str(args.side).lower() == "buy" else OrderSide.SELL
-    adapter = BinanceTsmExecutionAdapter(
-        symbol,
-        config.live.fubon_env_path,
-        leverage=config.binance_execution.leverage,
-        margin_mode=config.binance_execution.margin_mode,
-        enforce_leverage=config.binance_execution.enforce_leverage,
-    )
-    try:
-        pre_open_orders = adapter.fetch_open_orders()
-        pre_position = adapter.fetch_position_quantity()
-        print(
-            "Binance manual close precheck: "
-            f"symbol={symbol}, position={pre_position}, "
-            f"open_orders={len(pre_open_orders)}"
-        )
-        if pre_open_orders:
-            raise SystemExit(
-                "Refusing Binance manual close with existing open orders: "
-                f"{len(pre_open_orders)}"
-            )
-        if abs(pre_position) <= 1e-12:
-            print(
-                "WARN Binance position query returned zero before manual close; "
-                "continuing because --side/--quantity were explicitly provided"
-            )
-
-        timestamp = datetime.now().astimezone().replace(microsecond=0)
-        close_plan = build_binance_smoke_plan(
-            symbol=symbol,
-            quantity=quantity,
-            side=side,
-            plan_type=ExecutionPlanType.EXIT,
-            timestamp=timestamp,
-        )
-        outcome = adapter.execute(close_plan)
-        print_binance_smoke_outcome("manual_close", outcome)
-
-        final_open_orders = adapter.fetch_open_orders()
-        final_position = adapter.fetch_position_quantity()
-        print(
-            "Binance manual close after: "
-            f"position={final_position}, open_orders={len(final_open_orders)}"
-        )
-        if not outcome.filled or final_open_orders or abs(final_position) > 1e-12:
-            print("CRITICAL manual intervention required")
-            return 1
-        print(
-            "Binance manual close complete: "
-            f"position={final_position:g}, open_orders={len(final_open_orders)}"
-        )
-        return 0
-    finally:
-        adapter.close()
 
 
 def fubon_manual_close(args: argparse.Namespace) -> int:
@@ -687,29 +526,6 @@ def format_optional_number(value: float | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def require_binance_exec_smoke_ready(
-    config: object,
-    args: argparse.Namespace,
-) -> None:
-    if not config.safety.allow_live_order:
-        raise SystemExit("safety.allow_live_order=true is required")
-    if not config.live_execution.enabled:
-        raise SystemExit("live_execution.enabled=true is required")
-    if str(args.confirm_symbol).strip() != config.live.binance_symbol:
-        raise SystemExit(
-            "--confirm-symbol must match config live_market_data.binance_symbol"
-        )
-    if float(args.quantity) <= 0.0:
-        raise SystemExit("--quantity must be positive")
-    gates = binance_smoke_env_gates_open()
-    closed = [name for name in BINANCE_EXECUTION_SMOKE_ENV_GATES if not gates[name]]
-    if closed:
-        raise SystemExit(
-            "Binance execution smoke gates closed: "
-            + ", ".join(f"{name}=1" for name in closed)
-        )
-
-
 def require_fubon_exec_smoke_ready(
     config: object,
     args: argparse.Namespace,
@@ -730,28 +546,6 @@ def require_fubon_exec_smoke_ready(
     if closed:
         raise SystemExit(
             "Fubon execution smoke gates closed: "
-            + ", ".join(f"{name}=1" for name in closed)
-        )
-
-
-def require_binance_manual_close_ready(
-    config: object,
-    args: argparse.Namespace,
-) -> None:
-    if not config.safety.allow_live_order:
-        raise SystemExit("safety.allow_live_order=true is required")
-    symbol = str(args.symbol or "").strip()
-    if not symbol:
-        raise SystemExit("--symbol is required")
-    if str(args.confirm_symbol).strip() != symbol:
-        raise SystemExit("--confirm-symbol must match --symbol")
-    if float(args.quantity) <= 0.0:
-        raise SystemExit("--quantity must be positive")
-    gates = binance_manual_close_env_gates_open()
-    closed = [name for name in BINANCE_MANUAL_CLOSE_ENV_GATES if not gates[name]]
-    if closed:
-        raise SystemExit(
-            "Binance manual close gates closed: "
             + ", ".join(f"{name}=1" for name in closed)
         )
 
@@ -802,36 +596,6 @@ def fetch_fubon_position_with_retry(
     return last
 
 
-def build_binance_smoke_plan(
-    *,
-    symbol: str,
-    quantity: float,
-    side: OrderSide,
-    plan_type: ExecutionPlanType,
-    timestamp: datetime,
-) -> PairExecutionPlan:
-    return PairExecutionPlan(
-        plan_id=f"BINANCE-SMOKE-{timestamp.strftime('%Y%m%d%H%M%S')}-{plan_type.value}",
-        plan_type=plan_type,
-        direction=Direction.LONG_UMC_SHORT_CCF,
-        timestamp=timestamp,
-        row_index=-1,
-        legs=(
-            ExecutionLeg(
-                broker=BrokerName.IBKR_UMC,
-                symbol=symbol,
-                side=side,
-                quantity=quantity,
-                price=1.0,
-                timestamp=timestamp,
-                row_index=-1,
-            ),
-        ),
-        reason="binance_execution_smoke",
-        decision_spread_type="manual_smoke",
-    )
-
-
 def build_fubon_smoke_plan(
     *,
     symbol: str,
@@ -861,16 +625,6 @@ def build_fubon_smoke_plan(
         reason="fubon_execution_smoke",
         decision_spread_type="manual_smoke",
         ccf_symbol=symbol,
-    )
-
-
-def print_binance_smoke_outcome(label: str, outcome: object) -> None:
-    filled_quantity = sum(fill.quantity for fill in getattr(outcome, "fills", ()))
-    print(
-        "Binance execution smoke "
-        f"{label}: status={outcome.status.value}, "
-        f"fills={len(outcome.fills)}, filled_quantity={filled_quantity}, "
-        f"message={outcome.message}"
     )
 
 

@@ -26,7 +26,7 @@ class LiveQuote:
 class LiveQuoteSet:
     ccf: LiveQuote
     umc: LiveQuote
-    usdttwd: LiveQuote
+    usd_twd: LiveQuote
 
 
 @dataclass(frozen=True)

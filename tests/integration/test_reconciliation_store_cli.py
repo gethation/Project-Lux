@@ -31,7 +31,7 @@ def write_config(tmp_path: Path) -> Path:
                 "",
                 "[live_market_data]",
                 "ccf_symbol = 'CCFG6'",
-                "binance_symbol = 'TSM/USDT:USDT'",
+                "umc_symbol = 'UMC'",
                 f"taifex_cache_dir = '{cache_dir}'",
                 "",
                 "[broker_reconciliation]",
@@ -86,7 +86,7 @@ def test_store_records_and_loads_latest_reconciliation_report(tmp_path: Path) ->
                 FakeReadOnlyBroker(BrokerName.IBKR_UMC),
                 FakeReadOnlyBroker(BrokerName.FUBON_CCF),
             ),
-            umc_symbol="TSM/USDT:USDT",
+            umc_symbol="UMC",
             ccf_symbol="CCFG6",
         )
         run_id = store.record_reconciliation_report(report)

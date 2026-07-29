@@ -45,7 +45,7 @@ from lux_trader.terminal_ui import NullLiveReporter
 from conftest import make_app_config
 
 
-SYMBOL_UMC = "TSM/USDT:USDT"
+SYMBOL_UMC = "UMC"
 SYMBOL_CCF = "CCFG6"
 
 
@@ -217,12 +217,12 @@ def coordinator(
     store: FakeStore,
     *,
     ccf_outcomes: list[dict],
-    binance_outcomes: list[dict],
+    umc_outcomes: list[dict],
 ) -> RealExecutionCoordinator:
     return RealExecutionCoordinator(
         store=store,
         fubon_adapter=FakeExecutionAdapter(BrokerName.FUBON_CCF, ccf_outcomes),
-        binance_adapter=FakeExecutionAdapter(BrokerName.IBKR_UMC, binance_outcomes),
+        umc_adapter=FakeExecutionAdapter(BrokerName.IBKR_UMC, umc_outcomes),
         ccf_first=True,
         clock=ts,
     )
@@ -232,12 +232,12 @@ def event_types(store: FakeStore) -> list[str]:
     return [event["event_type"] for event in store.events]
 
 
-def test_ccf_and_binance_full_fill_combines_to_filled() -> None:
+def test_ccf_and_umc_full_fill_combines_to_filled() -> None:
     store = FakeStore()
     runner = coordinator(
         store,
         ccf_outcomes=[{"status": ExecutionOutcomeStatus.FILLED}],
-        binance_outcomes=[{"status": ExecutionOutcomeStatus.FILLED}],
+        umc_outcomes=[{"status": ExecutionOutcomeStatus.FILLED}],
     )
 
     recorded, outcome = runner.execute(pair_plan())
@@ -264,7 +264,7 @@ def test_pair_fill_records_primary_leg_timing_gap() -> None:
                 },
             }
         ],
-        binance_outcomes=[
+        umc_outcomes=[
             {
                 "status": ExecutionOutcomeStatus.FILLED,
                 "payload": {
@@ -284,7 +284,7 @@ def test_pair_fill_records_primary_leg_timing_gap() -> None:
     assert gap["submit_handoff_gap_seconds"] == pytest.approx(0.75)
 
 
-def test_ccf_full_fill_binance_failed_attempts_ccf_emergency_close() -> None:
+def test_ccf_full_fill_umc_failed_attempts_ccf_emergency_close() -> None:
     store = FakeStore()
     runner = coordinator(
         store,
@@ -292,7 +292,7 @@ def test_ccf_full_fill_binance_failed_attempts_ccf_emergency_close() -> None:
             {"status": ExecutionOutcomeStatus.FILLED},
             {"status": ExecutionOutcomeStatus.FILLED},
         ],
-        binance_outcomes=[{"status": ExecutionOutcomeStatus.FAILED}],
+        umc_outcomes=[{"status": ExecutionOutcomeStatus.FAILED}],
     )
 
     _, outcome = runner.execute(pair_plan())
@@ -314,7 +314,7 @@ def test_ccf_full_fill_binance_failed_attempts_ccf_emergency_close() -> None:
     assert emergency_fill.quantity == 2.0
 
 
-def test_ccf_full_fill_binance_failed_and_emergency_close_failed_is_critical() -> None:
+def test_ccf_full_fill_umc_failed_and_emergency_close_failed_is_critical() -> None:
     store = FakeStore()
     runner = coordinator(
         store,
@@ -322,7 +322,7 @@ def test_ccf_full_fill_binance_failed_and_emergency_close_failed_is_critical() -
             {"status": ExecutionOutcomeStatus.FILLED},
             {"status": ExecutionOutcomeStatus.FAILED},
         ],
-        binance_outcomes=[{"status": ExecutionOutcomeStatus.FAILED}],
+        umc_outcomes=[{"status": ExecutionOutcomeStatus.FAILED}],
     )
 
     _, outcome = runner.execute(pair_plan())
@@ -334,7 +334,7 @@ def test_ccf_full_fill_binance_failed_and_emergency_close_failed_is_critical() -
     assert (outcome.payload or {})["critical"] is True
 
 
-def test_ccf_partial_fill_does_not_send_binance_and_closes_partial_quantity() -> None:
+def test_ccf_partial_fill_does_not_send_umc_and_closes_partial_quantity() -> None:
     store = FakeStore()
     ccf_adapter = FakeExecutionAdapter(
         BrokerName.FUBON_CCF,
@@ -343,14 +343,14 @@ def test_ccf_partial_fill_does_not_send_binance_and_closes_partial_quantity() ->
             {"status": ExecutionOutcomeStatus.FILLED},
         ],
     )
-    binance_adapter = FakeExecutionAdapter(
+    umc_adapter = FakeExecutionAdapter(
         BrokerName.IBKR_UMC,
         [{"status": ExecutionOutcomeStatus.FILLED}],
     )
     runner = RealExecutionCoordinator(
         store=store,
         fubon_adapter=ccf_adapter,
-        binance_adapter=binance_adapter,
+        umc_adapter=umc_adapter,
         ccf_first=True,
         clock=ts,
     )
@@ -359,27 +359,27 @@ def test_ccf_partial_fill_does_not_send_binance_and_closes_partial_quantity() ->
 
     assert outcome.status == ExecutionOutcomeStatus.PARTIAL_FILL
     assert outcome.recommended_state == StrategyState.PAUSED
-    assert len(binance_adapter.plans) == 0
+    assert len(umc_adapter.plans) == 0
     assert len(ccf_adapter.plans) == 2
     assert ccf_adapter.plans[1].plan_type == ExecutionPlanType.EXIT
     assert ccf_adapter.plans[1].legs[0].quantity == 1.0
     assert ccf_adapter.plans[1].legs[0].side == OrderSide.SELL
 
 
-def test_ccf_rejected_zero_fill_does_not_send_binance_or_emergency_close() -> None:
+def test_ccf_rejected_zero_fill_does_not_send_umc_or_emergency_close() -> None:
     store = FakeStore()
     ccf_adapter = FakeExecutionAdapter(
         BrokerName.FUBON_CCF,
         [{"status": ExecutionOutcomeStatus.REJECTED}],
     )
-    binance_adapter = FakeExecutionAdapter(
+    umc_adapter = FakeExecutionAdapter(
         BrokerName.IBKR_UMC,
         [{"status": ExecutionOutcomeStatus.FILLED}],
     )
     runner = RealExecutionCoordinator(
         store=store,
         fubon_adapter=ccf_adapter,
-        binance_adapter=binance_adapter,
+        umc_adapter=umc_adapter,
         ccf_first=True,
         clock=ts,
     )
@@ -389,11 +389,11 @@ def test_ccf_rejected_zero_fill_does_not_send_binance_or_emergency_close() -> No
     assert outcome.status == ExecutionOutcomeStatus.REJECTED
     assert outcome.recommended_state == StrategyState.PAUSED
     assert len(ccf_adapter.plans) == 1
-    assert len(binance_adapter.plans) == 0
+    assert len(umc_adapter.plans) == 0
     assert store.events == []
 
 
-def test_binance_partial_after_qff_full_fill_unwinds_both_filled_legs() -> None:
+def test_umc_partial_after_ccf_full_fill_unwinds_both_filled_legs() -> None:
     store = FakeStore()
     ccf_adapter = FakeExecutionAdapter(
         BrokerName.FUBON_CCF,
@@ -402,7 +402,7 @@ def test_binance_partial_after_qff_full_fill_unwinds_both_filled_legs() -> None:
             {"status": ExecutionOutcomeStatus.FILLED},
         ],
     )
-    binance_adapter = FakeExecutionAdapter(
+    umc_adapter = FakeExecutionAdapter(
         BrokerName.IBKR_UMC,
         [
             {"status": ExecutionOutcomeStatus.PARTIAL_FILL, "fill_quantity": 40.0},
@@ -412,7 +412,7 @@ def test_binance_partial_after_qff_full_fill_unwinds_both_filled_legs() -> None:
     runner = RealExecutionCoordinator(
         store=store,
         fubon_adapter=ccf_adapter,
-        binance_adapter=binance_adapter,
+        umc_adapter=umc_adapter,
         ccf_first=True,
         clock=ts,
     )
@@ -423,10 +423,10 @@ def test_binance_partial_after_qff_full_fill_unwinds_both_filled_legs() -> None:
     assert outcome.recommended_state == StrategyState.PAUSED
     assert "imbalanced_pair_exposure" in event_types(store)
     assert len(ccf_adapter.plans) == 2
-    assert len(binance_adapter.plans) == 2
+    assert len(umc_adapter.plans) == 2
     assert ccf_adapter.plans[1].legs[0].side == OrderSide.SELL
-    assert binance_adapter.plans[1].legs[0].side == OrderSide.BUY
-    assert binance_adapter.plans[1].legs[0].quantity == 40.0
+    assert umc_adapter.plans[1].legs[0].side == OrderSide.BUY
+    assert umc_adapter.plans[1].legs[0].quantity == 40.0
 
 
 def test_ccf_first_false_rejects_without_calling_adapters() -> None:
@@ -435,14 +435,14 @@ def test_ccf_first_false_rejects_without_calling_adapters() -> None:
         BrokerName.FUBON_CCF,
         [{"status": ExecutionOutcomeStatus.FILLED}],
     )
-    binance_adapter = FakeExecutionAdapter(
+    umc_adapter = FakeExecutionAdapter(
         BrokerName.IBKR_UMC,
         [{"status": ExecutionOutcomeStatus.FILLED}],
     )
     runner = RealExecutionCoordinator(
         store=store,
         fubon_adapter=ccf_adapter,
-        binance_adapter=binance_adapter,
+        umc_adapter=umc_adapter,
         ccf_first=False,
         clock=ts,
     )
@@ -451,24 +451,24 @@ def test_ccf_first_false_rejects_without_calling_adapters() -> None:
 
     assert outcome.status == ExecutionOutcomeStatus.REJECTED
     assert len(ccf_adapter.plans) == 0
-    assert len(binance_adapter.plans) == 0
+    assert len(umc_adapter.plans) == 0
     assert store.plans[0].status.value == "rejected"
 
 
-def test_ccf_adapter_exception_stops_without_binance_and_pauses() -> None:
+def test_ccf_adapter_exception_stops_without_umc_and_pauses() -> None:
     store = FakeStore()
     ccf_adapter = FakeExecutionAdapter(
         BrokerName.FUBON_CCF,
         [{"raise": True, "message": "fubon sdk boom"}],
     )
-    binance_adapter = FakeExecutionAdapter(
+    umc_adapter = FakeExecutionAdapter(
         BrokerName.IBKR_UMC,
         [{"status": ExecutionOutcomeStatus.FILLED}],
     )
     runner = RealExecutionCoordinator(
         store=store,
         fubon_adapter=ccf_adapter,
-        binance_adapter=binance_adapter,
+        umc_adapter=umc_adapter,
         ccf_first=True,
         clock=ts,
     )
@@ -479,13 +479,13 @@ def test_ccf_adapter_exception_stops_without_binance_and_pauses() -> None:
     assert outcome.status == ExecutionOutcomeStatus.FAILED
     assert outcome.recommended_state == StrategyState.PAUSED
     assert len(ccf_adapter.plans) == 1
-    assert len(binance_adapter.plans) == 0  # second leg must not be sent
+    assert len(umc_adapter.plans) == 0  # second leg must not be sent
     assert store.events == []  # zero known CCF fill => no auto emergency close
     primary = (outcome.payload or {})["primary_outcomes"]
     assert "adapter raised" in primary[BrokerName.FUBON_CCF.value]["message"]
 
 
-def test_binance_adapter_exception_after_qff_fill_emergency_closes_qff() -> None:
+def test_umc_adapter_exception_after_ccf_fill_emergency_closes_ccf() -> None:
     store = FakeStore()
     ccf_adapter = FakeExecutionAdapter(
         BrokerName.FUBON_CCF,
@@ -494,14 +494,14 @@ def test_binance_adapter_exception_after_qff_fill_emergency_closes_qff() -> None
             {"status": ExecutionOutcomeStatus.FILLED},  # emergency close
         ],
     )
-    binance_adapter = FakeExecutionAdapter(
+    umc_adapter = FakeExecutionAdapter(
         BrokerName.IBKR_UMC,
         [{"raise": True, "message": "binance sdk boom"}],
     )
     runner = RealExecutionCoordinator(
         store=store,
         fubon_adapter=ccf_adapter,
-        binance_adapter=binance_adapter,
+        umc_adapter=umc_adapter,
         ccf_first=True,
         clock=ts,
     )
@@ -515,7 +515,7 @@ def test_binance_adapter_exception_after_qff_fill_emergency_closes_qff() -> None
     assert (outcome.payload or {})["critical"] is False
     assert len(ccf_adapter.plans) == 2  # primary + emergency close
     assert ccf_adapter.plans[1].legs[0].side == OrderSide.SELL
-    assert len(binance_adapter.plans) == 1  # raised once, not retried
+    assert len(umc_adapter.plans) == 1  # raised once, not retried
 
 
 def test_emergency_close_adapter_exception_is_critical_without_crash() -> None:
@@ -527,14 +527,14 @@ def test_emergency_close_adapter_exception_is_critical_without_crash() -> None:
             {"raise": True, "message": "emergency close boom"},
         ],
     )
-    binance_adapter = FakeExecutionAdapter(
+    umc_adapter = FakeExecutionAdapter(
         BrokerName.IBKR_UMC,
         [{"status": ExecutionOutcomeStatus.FAILED}],
     )
     runner = RealExecutionCoordinator(
         store=store,
         fubon_adapter=ccf_adapter,
-        binance_adapter=binance_adapter,
+        umc_adapter=umc_adapter,
         ccf_first=True,
         clock=ts,
     )
@@ -601,7 +601,7 @@ def test_live_entry_success_applies_strategy_open_position(tmp_path) -> None:
     runner = coordinator(
         store,
         ccf_outcomes=[{"status": ExecutionOutcomeStatus.FILLED}],
-        binance_outcomes=[{"status": ExecutionOutcomeStatus.FILLED}],
+        umc_outcomes=[{"status": ExecutionOutcomeStatus.FILLED}],
     )
 
     result, plan, outcome = execute_live_entry(
@@ -632,7 +632,7 @@ def test_live_entry_uses_actual_fills_for_state_and_exit_quantity(tmp_path) -> N
         ccf_outcomes=[
             {"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 10.0}
         ],
-        binance_outcomes=[
+        umc_outcomes=[
             {"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 909.0}
         ],
     )
@@ -687,7 +687,7 @@ def test_live_entry_pauses_when_filled_outcome_is_missing_a_leg_fill(tmp_path) -
     runner = coordinator(
         store,
         ccf_outcomes=[{"status": ExecutionOutcomeStatus.FILLED}],
-        binance_outcomes=[
+        umc_outcomes=[
             {"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 0.0}
         ],
     )
@@ -718,7 +718,7 @@ def test_live_entry_breach_pauses_without_creating_strategy_position(tmp_path) -
             {"status": ExecutionOutcomeStatus.FILLED},
             {"status": ExecutionOutcomeStatus.FILLED},
         ],
-        binance_outcomes=[{"status": ExecutionOutcomeStatus.FAILED}],
+        umc_outcomes=[{"status": ExecutionOutcomeStatus.FAILED}],
     )
 
     result, plan, outcome = execute_live_entry(
@@ -752,7 +752,7 @@ def test_live_execute_post_trade_reconciliation_match_keeps_open_state(tmp_path)
             BrokerName.FUBON_CCF,
             [{"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 10.0}],
         ),
-        binance_adapter=FakeExecutionAdapter(
+        umc_adapter=FakeExecutionAdapter(
             BrokerName.IBKR_UMC,
             [{"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 909.0}],
         ),
@@ -808,7 +808,7 @@ def test_live_execute_ledger_only_mismatch_does_not_pause(tmp_path) -> None:
             BrokerName.FUBON_CCF,
             [{"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 10.0}],
         ),
-        binance_adapter=FakeExecutionAdapter(
+        umc_adapter=FakeExecutionAdapter(
             BrokerName.IBKR_UMC,
             [{"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 909.0}],
         ),
@@ -868,7 +868,7 @@ def test_live_execute_query_failure_closes_entry_gate_without_pausing(tmp_path) 
             BrokerName.FUBON_CCF,
             [{"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 10.0}],
         ),
-        binance_adapter=FakeExecutionAdapter(
+        umc_adapter=FakeExecutionAdapter(
             BrokerName.IBKR_UMC,
             [{"status": ExecutionOutcomeStatus.FILLED, "fill_quantity": 909.0}],
         ),
@@ -916,7 +916,7 @@ def test_live_execute_post_trade_reconciliation_mismatch_pauses_strategy(
             BrokerName.FUBON_CCF,
             [{"status": ExecutionOutcomeStatus.FILLED}],
         ),
-        binance_adapter=FakeExecutionAdapter(
+        umc_adapter=FakeExecutionAdapter(
             BrokerName.IBKR_UMC,
             [{"status": ExecutionOutcomeStatus.FILLED}],
         ),

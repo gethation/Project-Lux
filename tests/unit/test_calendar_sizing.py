@@ -188,7 +188,7 @@ def test_position_sizing_direction_signs(strategy_config, fee_config) -> None:
     assert long_umc.ccf_units < 0
 
 
-def test_position_sizing_uses_binance_contract_quantity(strategy_config, fee_config) -> None:
+def test_position_sizing_uses_umc_contract_quantity(strategy_config, fee_config) -> None:
     sizing = size_position_for_direction(
         Direction.SHORT_UMC_LONG_CCF,
         umc_price=2880.31068,
@@ -234,7 +234,7 @@ def test_fixed_ccf_lots_preserves_direction_signs(strategy_config, fee_config) -
     assert sizing.umc_units == pytest.approx(6.0)
 
 
-def test_umc_fee_uses_binance_contract_twd_price(fee_config) -> None:
+def test_umc_fee_uses_umc_contract_twd_price(fee_config) -> None:
     costs = fill_costs(
         umc_units=-17.27244229,
         umc_price=2880.31068,

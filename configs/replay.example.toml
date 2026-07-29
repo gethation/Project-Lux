@@ -3,7 +3,7 @@ input_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff_tsm_spread_z
 store_path = 'data\project_lux.sqlite3'
 ccf_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\qff1_1m.csv'
 umc_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\binance_tsmusdtp_1m_taipei.csv'
-usdttwd_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\bitopro_usdttwd_1m_taipei.csv'
+usd_twd_ohlcv_csv = 'D:\Users\Documents\Proof of Concept\data\processed\bitopro_usdttwd_1m_taipei.csv'
 
 [strategy]
 entry_z = 2.0
@@ -61,7 +61,3 @@ require_readonly_reconciliation = true
 max_plan_age_seconds = 120
 ccf_first = true
 
-[binance_execution]
-leverage = 1
-margin_mode = 'cross'
-enforce_leverage = true

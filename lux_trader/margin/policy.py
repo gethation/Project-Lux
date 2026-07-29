@@ -13,8 +13,8 @@ only funding window is one transfer per day initiated at 10:00 Taipei (arrives
 - ``rebalance``:  flat and drifted below target — top up opportunistically.
 - ``ok``:         nothing to do.
 
-Ratios are account equity over per-leg notional (leg_notional_twd); the Binance
-side converts USDT equity to TWD with the current USDT/TWD rate. Red-line also
+Ratios are account equity over per-leg notional (leg_notional_twd); the IBKR
+side converts USD equity to TWD with the current USD/TWD rate. Red-line also
 cross-checks live API maintenance margin (equity < maint * multiplier) and the
 more severe verdict wins.
 """
@@ -33,7 +33,7 @@ LEVEL_ORDER = ("ok", "rebalance", "transfer", "red_line")
 
 @dataclass(frozen=True)
 class MarginReading:
-    venue: str  # "binance" | "fubon"
+    venue: str  # "ibkr" | "fubon"
     equity: float | None
     maint_margin: float | None
     currency: str
@@ -55,11 +55,11 @@ class MarginDecision:
     checked_at: datetime
     check_type: str  # "daily" | "red_line"
     level: str
-    binance: VenueAssessment
+    umc: VenueAssessment
     fubon: VenueAssessment
-    usdttwd_rate: float | None
+    usd_twd_rate: float | None
     transfer_amount_twd: float | None
-    transfer_direction: str | None  # e.g. "fubon->binance", "external->binance"
+    transfer_direction: str | None  # e.g. "fubon->umc", "external->umc"
     guidance: str
     payload: dict[str, Any] = field(default_factory=dict)
 
@@ -72,7 +72,7 @@ def assess_venue(
     reading: MarginReading,
     *,
     notional_twd: float,
-    usdttwd_rate: float | None,
+    usd_twd_rate: float | None,
     red_line_ratio: float,
     transfer_ratio: float,
     target_ratio: float,
@@ -93,7 +93,7 @@ def assess_venue(
     if reading.currency.upper() in ("TWD", "NTD"):
         rate = 1.0
     else:
-        rate = usdttwd_rate if usdttwd_rate is not None else None
+        rate = usd_twd_rate if usd_twd_rate is not None else None
     if rate is None:
         return VenueAssessment(
             venue=reading.venue,
@@ -101,7 +101,7 @@ def assess_venue(
             maint_margin_twd=None,
             ratio=None,
             level="ok",
-            reasons=("usdttwd_rate_unavailable",),
+            reasons=("usd_twd_rate_unavailable",),
         )
 
     equity_twd = reading.equity * rate
@@ -148,11 +148,11 @@ def assess_venue(
 
 def evaluate_margin_policy(
     *,
-    binance: MarginReading,
+    umc: MarginReading,
     fubon: MarginReading,
     config: MarginManagementConfig,
     leg_notional_twd: float,
-    usdttwd_rate: float | None,
+    usd_twd_rate: float | None,
     position_open: bool,
     checked_at: datetime,
     check_type: str,
@@ -160,12 +160,12 @@ def evaluate_margin_policy(
     notional = (
         config.leg_notional_twd if config.leg_notional_twd > 0 else leg_notional_twd
     )
-    binance_assessment = assess_venue(
-        binance,
+    umc_assessment = assess_venue(
+        umc,
         notional_twd=notional,
-        usdttwd_rate=usdttwd_rate,
-        red_line_ratio=config.binance_red_line_ratio,
-        transfer_ratio=config.binance_transfer_ratio,
+        usd_twd_rate=usd_twd_rate,
+        red_line_ratio=config.umc_red_line_ratio,
+        transfer_ratio=config.umc_transfer_ratio,
         target_ratio=config.target_ratio,
         red_line_maint_multiplier=config.red_line_maint_multiplier,
         position_open=position_open,
@@ -174,7 +174,7 @@ def evaluate_margin_policy(
     fubon_assessment = assess_venue(
         fubon,
         notional_twd=notional,
-        usdttwd_rate=usdttwd_rate,
+        usd_twd_rate=usd_twd_rate,
         red_line_ratio=config.fubon_red_line_ratio,
         transfer_ratio=config.fubon_transfer_ratio,
         target_ratio=config.target_ratio,
@@ -182,16 +182,16 @@ def evaluate_margin_policy(
         position_open=position_open,
         check_type=check_type,
     )
-    level = max_level(binance_assessment.level, fubon_assessment.level)
+    level = max_level(umc_assessment.level, fubon_assessment.level)
 
     transfer_amount_twd: float | None = None
     transfer_direction: str | None = None
     if level in ("transfer", "rebalance"):
         deficient, other = (
-            (binance_assessment, fubon_assessment)
-            if LEVEL_ORDER.index(binance_assessment.level)
+            (umc_assessment, fubon_assessment)
+            if LEVEL_ORDER.index(umc_assessment.level)
             >= LEVEL_ORDER.index(fubon_assessment.level)
-            else (fubon_assessment, binance_assessment)
+            else (fubon_assessment, umc_assessment)
         )
         if deficient.ratio is not None:
             transfer_amount_twd = max(
@@ -204,7 +204,7 @@ def evaluate_margin_policy(
     guidance = build_guidance(
         level=level,
         check_type=check_type,
-        binance=binance_assessment,
+        umc=umc_assessment,
         fubon=fubon_assessment,
         transfer_amount_twd=transfer_amount_twd,
         transfer_direction=transfer_direction,
@@ -214,16 +214,16 @@ def evaluate_margin_policy(
         checked_at=checked_at,
         check_type=check_type,
         level=level,
-        binance=binance_assessment,
+        umc=umc_assessment,
         fubon=fubon_assessment,
-        usdttwd_rate=usdttwd_rate,
+        usd_twd_rate=usd_twd_rate,
         transfer_amount_twd=transfer_amount_twd,
         transfer_direction=transfer_direction,
         guidance=guidance,
         payload={
             "notional_twd": notional,
             "position_open": position_open,
-            "binance": assessment_jsonable(binance_assessment),
+            "ibkr": assessment_jsonable(umc_assessment),
             "fubon": assessment_jsonable(fubon_assessment),
         },
     )
@@ -239,17 +239,17 @@ def build_guidance(
     *,
     level: str,
     check_type: str,
-    binance: VenueAssessment,
+    umc: VenueAssessment,
     fubon: VenueAssessment,
     transfer_amount_twd: float | None,
     transfer_direction: str | None,
     target_ratio: float,
 ) -> str:
-    ratios = f"{ratio_text(binance)} {ratio_text(fubon)}"
+    ratios = f"{ratio_text(umc)} {ratio_text(fubon)}"
     if level == "red_line":
         sides = ", ".join(
             f"{a.venue}({'; '.join(a.reasons)})"
-            for a in (binance, fubon)
+            for a in (umc, fubon)
             if a.level == "red_line"
         )
         return (

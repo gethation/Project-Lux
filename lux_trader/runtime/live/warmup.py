@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
 from lux_trader.config import AppConfig
 from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, CcfContractSelection
 from lux_trader.core.calendar import live_session_status
@@ -25,13 +24,14 @@ from lux_trader.execution import (
 )
 from lux_trader.execution.recorder import DryRunExecutionRecorder
 from lux_trader.execution.price_policy import apply_live_touch_market_price_policy
-from lux_trader.integrations.binance.market_data import BinanceMarketData
-from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
 from lux_trader.integrations.fubon.market_data import FubonCcfMarketData
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
-from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.taifex.downloader import TaifexCcfTradeDownloader
+from lux_trader.integrations.venues import (
+    open_fx_quote_provider,
+    open_umc_quote_provider,
+)
 from lux_trader.core.fees import fill_costs
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.execution.gate import (
@@ -100,13 +100,13 @@ class WarmupRunner:
         ccf_provider: FubonCcfMarketData | None = None,
         ccf_fallback_provider: CcfWarmupProvider | None = None,
         umc_provider: OhlcvProvider | None = None,
-        usdttwd_provider: OhlcvProvider | None = None,
+        usd_twd_provider: OhlcvProvider | None = None,
     ) -> None:
         self.config = config
         self.ccf_provider = ccf_provider
         self.ccf_fallback_provider = ccf_fallback_provider
         self.umc_provider = umc_provider
-        self.usdttwd_provider = usdttwd_provider
+        self.usd_twd_provider = usd_twd_provider
 
     def run(
         self,
@@ -130,14 +130,16 @@ class WarmupRunner:
                 fallback = TaifexCcfTradeDownloader(self.config.live.taifex_cache_dir)
             elif fallback is None and self.config.live.taifex_ccf_1m_csv is not None:
                 fallback = CsvCcfWarmupProvider(self.config.live.taifex_ccf_1m_csv)
-            umc_provider = self.umc_provider or BinanceMarketData()
-            usdttwd_provider = self.usdttwd_provider or BitoProMarketData()
+            umc_provider = self.umc_provider or open_umc_quote_provider(self.config)
+            usd_twd_provider = self.usd_twd_provider or open_fx_quote_provider(
+                self.config
+            )
             builder = WarmupBuilder(
                 live_config=self.config.live,
                 ccf_intraday_provider=ccf_provider,
                 ccf_fallback_provider=fallback,
                 umc_provider=umc_provider,
-                usdttwd_provider=usdttwd_provider,
+                usd_twd_provider=usd_twd_provider,
                 closed_dates=self.config.trading_calendar.closed_dates,
             )
             bars = builder.build(
@@ -295,7 +297,7 @@ def load_or_build_live_indicator(
     policy_state: str,
     ccf_provider: CcfWarmupProvider,
     umc_provider: OhlcvProvider,
-    usdttwd_provider: OhlcvProvider,
+    usd_twd_provider: OhlcvProvider,
     end: datetime,
     force_rebuild: bool = False,
     allow_rebuild: bool = True,
@@ -345,7 +347,7 @@ def load_or_build_live_indicator(
             ccf_intraday_provider=ccf_provider,
             ccf_fallback_provider=fallback,
             umc_provider=umc_provider,
-            usdttwd_provider=usdttwd_provider,
+            usd_twd_provider=usd_twd_provider,
             closed_dates=config.trading_calendar.closed_dates,
         )
         seed_bars = builder.build(

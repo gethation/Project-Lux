@@ -65,8 +65,8 @@ def build_live_reporter(args: argparse.Namespace, config: object, *, mode: str):
         DashboardReporter(
             mode=mode,
             ccf_symbol=config.live.ccf_symbol,
-            binance_symbol=config.live.binance_symbol,
-            bitopro_symbol=config.live.bitopro_symbol,
+            umc_symbol=config.live.umc_symbol,
+            fx_symbol=config.live.fx_symbol,
             gate_text=gate_text,
             color=color,
         ),
@@ -234,7 +234,7 @@ def reconcile_brokers_to_store(
         ).reconcile(
             strategy_state=strategy_state,
             brokers=active_brokers,
-            umc_symbol=config.live.binance_symbol,
+            umc_symbol=config.live.umc_symbol,
             ccf_symbol=helpers.reconciliation_ccf_symbol(config, strategy_state),
             timestamp=observed_at,
         )
@@ -288,7 +288,7 @@ def command_clear_pause(args: argparse.Namespace) -> int:
                 store=store,
                 strategy_state=state,
                 brokers=brokers,
-                umc_symbol=config.live.binance_symbol,
+                umc_symbol=config.live.umc_symbol,
                 ccf_symbol=helpers.reconciliation_ccf_symbol(config, state),
                 timestamp=timestamp,
             )
@@ -303,7 +303,7 @@ def command_clear_pause(args: argparse.Namespace) -> int:
             ).reconcile(
                 strategy_state=state,
                 brokers=brokers,
-                umc_symbol=config.live.binance_symbol,
+                umc_symbol=config.live.umc_symbol,
                 ccf_symbol=helpers.reconciliation_ccf_symbol(config, state),
                 timestamp=timestamp,
             )
@@ -388,7 +388,7 @@ def command_margin_check(args: argparse.Namespace) -> int:
         decision = MarginCheckService(
             config,
             brokers=brokers,
-            usdttwd_rate=lambda: fetch_usdttwd_rate(config),
+            usd_twd_rate=lambda: fetch_usd_twd_rate(config),
         ).run_check(
             check_type="daily",
             position_open=position_open,
@@ -404,7 +404,7 @@ def command_margin_check(args: argparse.Namespace) -> int:
         store.close()
 
     print(f"Margin check complete: check_id={check_id}, level={decision.level}")
-    for assessment in (decision.binance, decision.fubon):
+    for assessment in (decision.umc, decision.fubon):
         equity = (
             f"{assessment.equity_twd:,.0f}"
             if assessment.equity_twd is not None
@@ -420,20 +420,20 @@ def command_margin_check(args: argparse.Namespace) -> int:
             f"- {assessment.venue}: equity_twd={equity}, "
             f"maint_margin_twd={maint}, ratio={ratio}, level={assessment.level}"
         )
-    if decision.usdttwd_rate is not None:
-        print(f"- usdttwd_rate={decision.usdttwd_rate}")
+    if decision.usd_twd_rate is not None:
+        print(f"- usd_twd_rate={decision.usd_twd_rate}")
     print(f"- guidance: {decision.guidance}")
     return 1 if decision.level == "red_line" else 0
 
 
-def fetch_usdttwd_rate(config: object) -> float | None:
-    from lux_trader.integrations.bitopro.market_data import BitoProMarketData
+def fetch_usd_twd_rate(config: object) -> float | None:
+    from lux_trader.integrations.venues import open_fx_quote_provider
 
     try:
-        quote = BitoProMarketData().fetch_quote(config.live.bitopro_symbol)
+        quote = open_fx_quote_provider(config).fetch_quote(config.live.fx_symbol)
         return getattr(quote, "price", None)
     except Exception as exc:
-        print(f"WARN usdttwd rate unavailable: {type(exc).__name__}: {exc}")
+        print(f"WARN usd_twd rate unavailable: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -491,8 +491,6 @@ def run_live_doctor_checks(config: object) -> list[str]:
     probe.write_text("ok", encoding="utf-8")
     probe.unlink()
 
-    import ccxt
-
     observed_at = ensure_taipei(datetime.now().astimezone())
     session_status = live_session_status(
         observed_at,
@@ -504,18 +502,19 @@ def run_live_doctor_checks(config: object) -> list[str]:
         f"polling_seconds={config.live.polling_seconds}",
         f"warmup_minutes={config.live.warmup_minutes}",
         f"ccf_symbol={config.live.ccf_symbol}",
-        f"binance_symbol={config.live.binance_symbol}",
-        f"bitopro_symbol={config.live.bitopro_symbol}",
+        f"umc_symbol={config.live.umc_symbol}",
+        f"fx_symbol={config.live.fx_symbol}",
         f"live_session={live_session_label(session_status)}",
         f"next_trading_start={session_status.next_open_at.isoformat()}",
-        f"ccxt={ccxt.__version__}",
         f"live_order={config.safety.allow_live_order}",
     ]
 
     if helpers.live_marketdata_enabled():
-        from lux_trader.integrations.binance.market_data import BinanceMarketData
-        from lux_trader.integrations.bitopro.market_data import BitoProMarketData
         from lux_trader.integrations.fubon.market_data import FubonCcfMarketData
+        from lux_trader.integrations.venues import (
+            open_fx_quote_provider,
+            open_umc_quote_provider,
+        )
 
         ccf = FubonCcfMarketData(config.live.fubon_env_path)
         try:
@@ -554,24 +553,33 @@ def run_live_doctor_checks(config: object) -> list[str]:
                     "WARN ccf_book_unavailable "
                     f"{type(exc).__name__}: {exc}"
                 )
-            binance_quote = BinanceMarketData().fetch_quote(
-                config.live.binance_symbol
-            )
-            checks.append(
-                "binance_book="
-                f"price={binance_quote.price} bid={binance_quote.bid} "
-                f"ask={binance_quote.ask} bid_size={binance_quote.bid_size} "
-                f"ask_size={binance_quote.ask_size}"
-            )
-            bitopro_quote = BitoProMarketData().fetch_quote(
-                config.live.bitopro_symbol
-            )
-            checks.append(
-                "bitopro_book="
-                f"price={bitopro_quote.price} bid={bitopro_quote.bid} "
-                f"ask={bitopro_quote.ask} bid_size={bitopro_quote.bid_size} "
-                f"ask_size={bitopro_quote.ask_size}"
-            )
+            # The UMC and FX venues are unwired until Phase B. Report that as a
+            # check line rather than aborting: doctor's job is to say what is
+            # and is not working, and the CCF half above is real information.
+            try:
+                umc_quote = open_umc_quote_provider(config).fetch_quote(
+                    config.live.umc_symbol
+                )
+                checks.append(
+                    "umc_book="
+                    f"price={umc_quote.price} bid={umc_quote.bid} "
+                    f"ask={umc_quote.ask} bid_size={umc_quote.bid_size} "
+                    f"ask_size={umc_quote.ask_size}"
+                )
+            except Exception as exc:
+                checks.append(f"WARN umc_book_unavailable {type(exc).__name__}: {exc}")
+            try:
+                fx_quote = open_fx_quote_provider(config).fetch_quote(
+                    config.live.fx_symbol
+                )
+                checks.append(
+                    "fx_book="
+                    f"price={fx_quote.price} bid={fx_quote.bid} "
+                    f"ask={fx_quote.ask} bid_size={fx_quote.bid_size} "
+                    f"ask_size={fx_quote.ask_size}"
+                )
+            except Exception as exc:
+                checks.append(f"WARN fx_book_unavailable {type(exc).__name__}: {exc}")
         finally:
             ccf.close()
     else:

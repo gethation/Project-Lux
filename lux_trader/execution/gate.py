@@ -14,7 +14,7 @@ from ..reconciliation import ReconciliationReport, ReconciliationStatus
 LIVE_ORDER_ENV_GATES = (
     "PROJECT_LUX_ALLOW_LIVE_ORDER",
     "FUBON_ALLOW_LIVE_ORDER",
-    "BINANCE_ALLOW_LIVE_ORDER",
+    "IBKR_ALLOW_LIVE_ORDER",
 )
 
 

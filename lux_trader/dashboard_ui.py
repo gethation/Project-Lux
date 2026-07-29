@@ -67,8 +67,8 @@ class DashboardState:
     mode: str = ""
     ccf_symbol: str | None = None
     ccf_expiry: str | None = None
-    binance_symbol: str | None = None
-    bitopro_symbol: str | None = None
+    umc_symbol: str | None = None
+    fx_symbol: str | None = None
     session: str = "starting"
     next_open_text: str | None = None
     countdown_text: str | None = None
@@ -101,8 +101,8 @@ class DashboardReporter:
         *,
         mode: str,
         ccf_symbol: str | None = None,
-        binance_symbol: str | None = None,
-        bitopro_symbol: str | None = None,
+        umc_symbol: str | None = None,
+        fx_symbol: str | None = None,
         gate_text: str | None = None,
         stream: TextIO | None = None,
         color: bool | None = None,
@@ -111,8 +111,8 @@ class DashboardReporter:
         self.state = DashboardState(
             mode=mode,
             ccf_symbol=ccf_symbol,
-            binance_symbol=binance_symbol,
-            bitopro_symbol=bitopro_symbol,
+            umc_symbol=umc_symbol,
+            fx_symbol=fx_symbol,
             gate_text=gate_text,
         )
         force_terminal = True if color else None
@@ -319,8 +319,8 @@ class DashboardReporter:
             part
             for part in (
                 self._ccf_label(),
-                self.state.binance_symbol,
-                self.state.bitopro_symbol,
+                self.state.umc_symbol,
+                self.state.fx_symbol,
             )
             if part
         )
@@ -410,10 +410,10 @@ class DashboardReporter:
         account_display = self.state.bar_account_display
         upnl = account_pnl_text(account_display)
         stale_suffix = "  (stale)" if getattr(account_display, "stale", False) else ""
-        binance_ratio = format_pct(getattr(account_display, "binance_ratio", None))
+        umc_ratio = format_pct(getattr(account_display, "umc_ratio", None))
         fubon_ratio = format_pct(getattr(account_display, "fubon_ratio", None))
         table.add_row("uPnL (TWD)", f"{upnl}{stale_suffix}")
-        table.add_row("Margin bina/fubon", f"{binance_ratio} / {fubon_ratio}")
+        table.add_row("Margin bina/fubon", f"{umc_ratio} / {fubon_ratio}")
         return Panel(table, title="Strategy", border_style="green")
 
     def _margin_panel(self) -> Panel:

@@ -18,7 +18,6 @@ from lux_trader.execution import (
 )
 from lux_trader.execution.intent import PairExecutionPlan
 from lux_trader.core.indicator import IndicatorEngine
-from lux_trader.integrations.ccxt_market_data import CcxtTickerMarketData
 from lux_trader.integrations.fubon.market_data import (
     FubonCcfMarketData,
     parse_fubon_books_quote,
@@ -261,34 +260,6 @@ class FakeFubonIntraday:
         return response
 
 
-class FakeCcxtExchange:
-    def __init__(
-        self,
-        *,
-        order_book: dict[str, object],
-        ticker: dict[str, object] | None = None,
-        fail_first_order_book: Exception | None = None,
-        fail_order_books: list[Exception] | None = None,
-    ) -> None:
-        self.order_book = order_book
-        self.ticker = ticker or {"last": 20.0, "timestamp": 1781743501000}
-        self.fail_order_books = list(fail_order_books or [])
-        if fail_first_order_book is not None:
-            self.fail_order_books.insert(0, fail_first_order_book)
-        self.fetch_order_book_calls: list[tuple[str, int | None]] = []
-        self.fetch_ticker_calls: list[str] = []
-
-    def fetch_order_book(self, symbol: str, limit: int | None = None) -> dict[str, object]:
-        self.fetch_order_book_calls.append((symbol, limit))
-        if self.fail_order_books:
-            raise self.fail_order_books.pop(0)
-        return self.order_book
-
-    def fetch_ticker(self, symbol: str) -> dict[str, object]:
-        self.fetch_ticker_calls.append(symbol)
-        return self.ticker
-
-
 class FakeFubonWebSocket:
     def __init__(self) -> None:
         self.listeners: dict[str, object] = {}
@@ -371,8 +342,8 @@ def small_live_config(tmp_path: Path) -> AppConfig:
             warmup_minutes=3,
             ccf_product="CCF",
             ccf_symbol="auto",
-            binance_symbol="TSM/USDT:USDT",
-            bitopro_symbol="USDT/TWD",
+            umc_symbol="UMC",
+            fx_symbol="USD/TWD",
             fubon_env_path=None,
             taifex_ccf_1m_csv=None,
             taifex_use_network=False,
@@ -457,7 +428,7 @@ def test_load_config_reads_live_execution_smoke_config(tmp_path) -> None:
                 "enabled = true",
                 "fubon_symbol = 'TMFG6'",
                 "fubon_lots = 1",
-                "binance_symbol = 'TSM/USDT:USDT'",
+                "umc_symbol = 'UMC'",
                 "umc_units = 0.1",
                 "ccf_expiry = '202607'",
             ]
@@ -470,7 +441,7 @@ def test_load_config_reads_live_execution_smoke_config(tmp_path) -> None:
     assert config.live_execution_smoke.enabled is True
     assert config.live_execution_smoke.fubon_symbol == "TMFG6"
     assert config.live_execution_smoke.fubon_lots == 1
-    assert config.live_execution_smoke.binance_symbol == "TSM/USDT:USDT"
+    assert config.live_execution_smoke.umc_symbol == "UMC"
     assert config.live_execution_smoke.umc_units == pytest.approx(0.1)
     assert config.live_execution_smoke.ccf_expiry == "202607"
 
@@ -499,7 +470,7 @@ def test_live_startup_preflight_syncs_windows_time_and_accepts_clock_skew(tmp_pa
     )
 
     assert sync_timeouts == [15.0]
-    assert market_symbols == ["TSM/USDT:USDT"]
+    assert market_symbols == ["UMC"]
     output = terminal_output.getvalue()
     assert "EVENT startup sync_windows_time" in output
     assert "EVENT startup clock_ok skew=0.000s" in output
@@ -604,7 +575,7 @@ def test_live_runtime_clock_preflight_failure_stops_before_ccf_provider(
             config,
             ccf_provider=ccf,
             umc_provider=umc,
-            usdttwd_provider=usd,
+            usd_twd_provider=usd,
             sleeper=lambda _: None,
         ).run(max_iterations=0)
 
@@ -633,7 +604,7 @@ def test_live_runtime_skips_clock_preflight_when_clock_is_injected(
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=lambda: ts("2026-06-23T08:45:00+08:00"),
         sleeper=lambda _: None,
     ).run(max_iterations=0, skip_warmup=True)
@@ -773,7 +744,7 @@ def test_live_dry_run_closed_calendar_skips_market_data_bars_and_margin_checks(
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=dry_run_clock(
             [
                 "2026-06-20T02:30:00+08:00",
@@ -837,7 +808,7 @@ def test_live_runtime_tears_down_ccf_books_during_non_trading_and_restarts_on_op
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=dry_run_clock(
             [
                 "2026-06-23T04:58:00+08:00",
@@ -892,7 +863,7 @@ def test_live_runtime_ccf_watchdog_restarts_once_with_backoff(tmp_path) -> None:
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=dry_run_clock(
             [
                 "2026-06-23T08:45:00+08:00",
@@ -933,7 +904,7 @@ def test_live_runtime_uses_cached_quote_after_transient_fetch_failure(tmp_path) 
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=dry_run_clock(
             [
                 "2026-06-23T08:45:00+08:00",
@@ -978,7 +949,7 @@ def test_live_runtime_skips_iteration_when_fetch_fails_without_cached_quote(tmp_
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=lambda: ts("2026-06-23T08:45:00+08:00"),
         sleeper=lambda _: None,
         reporter=LiveTerminalReporter(terminal_output, color=False),
@@ -1144,103 +1115,6 @@ def test_parse_timestamp_accepts_fubon_microsecond_epoch() -> None:
     parsed = parse_timestamp(1781760623530000)
 
     assert parsed == ts("2026-06-18T13:30:23.530000+08:00")
-
-
-def test_ccxt_quote_uses_top_of_book_for_bid_ask() -> None:
-    provider = object.__new__(CcxtTickerMarketData)
-    provider.exchange_id = "fake"
-    provider.exchange = FakeCcxtExchange(
-        order_book={
-            "timestamp": 1781743501000,
-            "bids": [[20.12, 30.0]],
-            "asks": [[20.14, 25.0]],
-        }
-    )
-
-    fetched = provider.fetch_quote("TSM/USDT:USDT")
-
-    assert fetched.price == pytest.approx(20.13)
-    assert fetched.bid == 20.12
-    assert fetched.ask == 20.14
-    assert fetched.bid_size == 30.0
-    assert fetched.ask_size == 25.0
-    assert fetched.raw is not None
-    assert fetched.raw["book_missing"] is False
-    assert provider.exchange.fetch_order_book_calls == [("TSM/USDT:USDT", 1)]
-    assert provider.exchange.fetch_ticker_calls == []
-
-
-def test_ccxt_quote_retries_binance_invalid_depth_with_supported_limit() -> None:
-    provider = object.__new__(CcxtTickerMarketData)
-    provider.exchange_id = "binanceusdm"
-    provider.exchange = FakeCcxtExchange(
-        order_book={
-            "timestamp": 1781743501000,
-            "bids": [[459.6, 0.75]],
-            "asks": [[459.7, 1.15]],
-        },
-        fail_first_order_book=RuntimeError(
-            'binanceusdm {"code":-4021,"msg":"1 is not valid depth limit"}'
-        ),
-    )
-
-    fetched = provider.fetch_quote("TSM/USDT:USDT")
-
-    assert fetched.bid == 459.6
-    assert fetched.ask == 459.7
-    assert fetched.raw is not None
-    assert fetched.raw["book_limit_used"] == 5
-    assert provider.exchange.fetch_order_book_calls == [
-        ("TSM/USDT:USDT", 1),
-        ("TSM/USDT:USDT", 5),
-    ]
-
-
-def test_ccxt_quote_falls_back_to_ticker_when_supported_depth_retry_fails() -> None:
-    provider = object.__new__(CcxtTickerMarketData)
-    provider.exchange_id = "binanceusdm"
-    provider.exchange = FakeCcxtExchange(
-        order_book={},
-        ticker={"last": 459.65, "timestamp": 1781743501000},
-        fail_order_books=[
-            RuntimeError(
-                'binanceusdm {"code":-4021,"msg":"1 is not valid depth limit"}'
-            ),
-            TimeoutError("read timeout"),
-        ],
-    )
-
-    fetched = provider.fetch_quote("TSM/USDT:USDT")
-
-    assert fetched.price == pytest.approx(459.65)
-    assert fetched.bid is None
-    assert fetched.ask is None
-    assert fetched.raw is not None
-    assert fetched.raw["book_limit_used"] == 5
-    assert "retry_limit_5:TimeoutError" in fetched.raw["book_error"]
-    assert provider.exchange.fetch_order_book_calls == [
-        ("TSM/USDT:USDT", 1),
-        ("TSM/USDT:USDT", 5),
-    ]
-    assert provider.exchange.fetch_ticker_calls == ["TSM/USDT:USDT"]
-
-
-def test_ccxt_quote_empty_book_does_not_fallback_to_ticker_bid_ask() -> None:
-    provider = object.__new__(CcxtTickerMarketData)
-    provider.exchange_id = "fake"
-    provider.exchange = FakeCcxtExchange(
-        order_book={"bids": [], "asks": []},
-        ticker={"last": 20.5, "bid": 20.4, "ask": 20.6, "timestamp": 1781743501000},
-    )
-
-    fetched = provider.fetch_quote("TSM/USDT:USDT")
-
-    assert fetched.price == 20.5
-    assert fetched.bid is None
-    assert fetched.ask is None
-    assert fetched.raw is not None
-    assert fetched.raw["book_missing"] is True
-    assert provider.exchange.fetch_ticker_calls == ["TSM/USDT:USDT"]
 
 
 def test_parse_fubon_books_quote_reads_top_level_bid_ask_and_sizes() -> None:
@@ -1488,7 +1362,7 @@ def test_warmup_builder_combines_ccf_sources_and_forward_fills(tmp_path) -> None
         ccf_intraday_provider=intraday,
         ccf_fallback_provider=fallback,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
     ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:48:42+08:00"))
 
     assert len(bars) == 3
@@ -1533,7 +1407,7 @@ def test_warmup_builder_does_not_fetch_fallback_when_intraday_is_sufficient(
         ccf_intraday_provider=intraday,
         ccf_fallback_provider=fallback,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
     ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:48:42+08:00"))
 
     assert len(bars) == 3
@@ -1575,7 +1449,7 @@ def test_warmup_builder_refuses_wholly_missing_current_night_session(
             ccf_intraday_provider=FakeCcfProvider(day_only),
             ccf_fallback_provider=FakeCcfProvider(day_only),
             umc_provider=FakeOhlcvProvider(pd.DataFrame()),
-            usdttwd_provider=FakeOhlcvProvider(pd.DataFrame()),
+            usd_twd_provider=FakeOhlcvProvider(pd.DataFrame()),
         ).build(
             ccf_symbol="CCF202607",
             end=ts("2026-06-18T19:42:00+08:00"),
@@ -1623,7 +1497,7 @@ def test_warmup_builder_refuses_when_forward_fill_ratio_too_high(tmp_path) -> No
             ccf_intraday_provider=intraday,
             ccf_fallback_provider=fallback,
             umc_provider=umc,
-            usdttwd_provider=usd,
+            usd_twd_provider=usd,
         ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:48:42+08:00"))
 
 
@@ -1656,7 +1530,7 @@ def test_warmup_builder_refuses_stale_trailing_ccf_data(tmp_path) -> None:
             ccf_intraday_provider=stale_ccf,
             ccf_fallback_provider=None,
             umc_provider=FakeOhlcvProvider(current_rows),
-            usdttwd_provider=FakeOhlcvProvider(current_rows),
+            usd_twd_provider=FakeOhlcvProvider(current_rows),
         ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:53:00+08:00"))
 
 
@@ -1724,7 +1598,7 @@ def test_warmup_builder_uses_prior_ccf_close_to_seed_forward_fill(tmp_path) -> N
         ccf_intraday_provider=ccf,
         ccf_fallback_provider=None,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
     ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:48:00+08:00"))
 
     assert bars[0].ccf_close == 99.0
@@ -1760,7 +1634,7 @@ def test_warmup_builder_fails_when_initial_ccf_cannot_be_filled(tmp_path) -> Non
             ccf_intraday_provider=ccf,
             ccf_fallback_provider=None,
             umc_provider=umc,
-            usdttwd_provider=usd,
+            usd_twd_provider=usd,
         ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:48:00+08:00"))
 
 
@@ -1776,7 +1650,7 @@ def test_warmup_builder_fails_when_umc_or_usd_is_missing(tmp_path) -> None:
             ccf_intraday_provider=ccf,
             ccf_fallback_provider=None,
             umc_provider=umc,
-            usdttwd_provider=usd,
+            usd_twd_provider=usd,
         ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T08:48:00+08:00"))
 
 
@@ -1785,12 +1659,12 @@ def test_live_minute_bar_builder_finalizes_on_minute_crossing() -> None:
     first = LiveQuoteSet(
         ccf=quote("ccf", "2026-06-18T08:45:55+08:00", 100.0),
         umc=quote("umc", "2026-06-18T08:45:55+08:00", 20.0),
-        usdttwd=quote("usd", "2026-06-18T08:45:55+08:00", 30.0),
+        usd_twd=quote("usd", "2026-06-18T08:45:55+08:00", 30.0),
     )
     second = LiveQuoteSet(
         ccf=quote("ccf", "2026-06-18T08:46:01+08:00", 101.0),
         umc=quote("umc", "2026-06-18T08:46:01+08:00", 21.0),
-        usdttwd=quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
+        usd_twd=quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
     )
 
     assert builder.update(first, ts("2026-06-18T08:45:55+08:00")) is None
@@ -1807,12 +1681,12 @@ def test_live_minute_bar_builder_allows_ccf_forward_fill_but_skips_stale_umc() -
     first = LiveQuoteSet(
         ccf=quote("ccf", "2026-06-18T08:45:55+08:00", 100.0),
         umc=quote("umc", "2026-06-18T08:45:00+08:00", 20.0),
-        usdttwd=quote("usd", "2026-06-18T08:45:55+08:00", 30.0),
+        usd_twd=quote("usd", "2026-06-18T08:45:55+08:00", 30.0),
     )
     stale = LiveQuoteSet(
         ccf=quote("ccf", "2026-06-18T08:46:01+08:00", 101.0),
         umc=quote("umc", "2026-06-18T08:46:01+08:00", 21.0),
-        usdttwd=quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
+        usd_twd=quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
     )
 
     builder.update(first, ts("2026-06-18T08:45:55+08:00"))
@@ -1828,12 +1702,12 @@ def test_live_minute_bar_builder_forward_fills_stale_ccf_quote() -> None:
     first = LiveQuoteSet(
         ccf=quote("ccf", "2026-06-18T08:44:00+08:00", 100.0),
         umc=quote("umc", "2026-06-18T08:45:59+08:00", 20.0),
-        usdttwd=quote("usd", "2026-06-18T08:45:59+08:00", 30.0),
+        usd_twd=quote("usd", "2026-06-18T08:45:59+08:00", 30.0),
     )
     second = LiveQuoteSet(
         ccf=quote("ccf", "2026-06-18T08:46:01+08:00", 101.0),
         umc=quote("umc", "2026-06-18T08:46:01+08:00", 21.0),
-        usdttwd=quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
+        usd_twd=quote("usd", "2026-06-18T08:46:01+08:00", 30.0),
     )
 
     builder.update(first, ts("2026-06-18T08:45:59+08:00"))
@@ -1879,7 +1753,7 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
         ccf_provider=warmup_ccf,
         ccf_fallback_provider=None,
         umc_provider=warmup_umc,
-        usdttwd_provider=warmup_usd,
+        usd_twd_provider=warmup_usd,
     ).run(reset_store=True, end=ts("2026-06-18T08:45:00+08:00"))
 
     clocks = iter(
@@ -1940,7 +1814,7 @@ def test_live_runtime_minute_boundaries_and_no_signal_bar(tmp_path) -> None:
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=lambda: next(clocks),
         sleeper=lambda _: None,
         reporter=reporter,
@@ -2008,7 +1882,7 @@ def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
         ccf_provider=warmup_ccf,
         ccf_fallback_provider=None,
         umc_provider=warmup_umc,
-        usdttwd_provider=warmup_usd,
+        usd_twd_provider=warmup_usd,
     ).run(reset_store=True, end=ts("2026-06-18T08:45:00+08:00"))
 
     clocks = iter(
@@ -2064,7 +1938,7 @@ def test_live_runtime_terminal_reporter_warns_on_stale_minute(tmp_path) -> None:
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=lambda: next(clocks),
         sleeper=lambda _: None,
         reporter=LiveTerminalReporter(terminal_output, color=False),
@@ -2093,7 +1967,7 @@ def test_live_dry_run_records_simulated_entry_and_opens_position(tmp_path) -> No
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=dry_run_clock(
             [
                 "2026-06-18T08:45:00+08:00",
@@ -2175,7 +2049,7 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
     for name in (
         "PROJECT_LUX_ALLOW_LIVE_ORDER",
         "FUBON_ALLOW_LIVE_ORDER",
-        "BINANCE_ALLOW_LIVE_ORDER",
+        "IBKR_ALLOW_LIVE_ORDER",
     ):
         monkeypatch.setenv(name, "1")
     ccf, umc, usd = dry_run_quote_providers(
@@ -2188,16 +2062,16 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
         ]
     )
     ccf_adapter = FakeLiveExecutionAdapter(BrokerName.FUBON_CCF)
-    binance_adapter = FakeLiveExecutionAdapter(BrokerName.IBKR_UMC)
+    umc_adapter = FakeLiveExecutionAdapter(BrokerName.IBKR_UMC)
     terminal_output = io.StringIO()
 
     result = LiveExecuteRunner(
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         fubon_adapter=ccf_adapter,
-        binance_adapter=binance_adapter,
+        umc_adapter=umc_adapter,
         readonly_brokers=(
             FixedPositionReadOnlyBroker(
                 broker=BrokerName.FUBON_CCF,
@@ -2207,7 +2081,7 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
             ),
             FixedPositionReadOnlyBroker(
                 broker=BrokerName.IBKR_UMC,
-                symbol="TSM/USDT:USDT",
+                symbol="UMC",
                 quantity=-(1_000_000.0 / (120.0 * 5.0)),
                 fetched_at=ts("2026-06-18T08:47:01+08:00"),
             ),
@@ -2230,7 +2104,7 @@ def test_live_execute_uses_shared_runtime_and_real_adapter_pipeline(
     assert result.bars_processed == 2
     assert result.plans_recorded == 1
     assert len(ccf_adapter.plans) == 1
-    assert len(binance_adapter.plans) == 1
+    assert len(umc_adapter.plans) == 1
     output = terminal_output.getvalue()
     assert "EVENT warmup_auto start" in output
     assert "EVENT live_execution filled" in output
@@ -2274,7 +2148,7 @@ def _live_execute_resume_brokers(*, ccf_quantity: float, umc_quantity: float, at
         ),
         FixedPositionReadOnlyBroker(
             broker=BrokerName.IBKR_UMC,
-            symbol="TSM/USDT:USDT",
+            symbol="UMC",
             quantity=umc_quantity,
             fetched_at=ts(at),
         ),
@@ -2295,9 +2169,9 @@ def _run_live_execute_entry_to_open(config) -> None:
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         fubon_adapter=FakeLiveExecutionAdapter(BrokerName.FUBON_CCF),
-        binance_adapter=FakeLiveExecutionAdapter(BrokerName.IBKR_UMC),
+        umc_adapter=FakeLiveExecutionAdapter(BrokerName.IBKR_UMC),
         readonly_brokers=_live_execute_resume_brokers(
             ccf_quantity=100.0,
             umc_quantity=-(1_000_000.0 / (120.0 * 5.0)),
@@ -2356,9 +2230,9 @@ def _resume_live_execute(config, *, readonly):
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         fubon_adapter=FakeLiveExecutionAdapter(BrokerName.FUBON_CCF),
-        binance_adapter=FakeLiveExecutionAdapter(BrokerName.IBKR_UMC),
+        umc_adapter=FakeLiveExecutionAdapter(BrokerName.IBKR_UMC),
         readonly_brokers=readonly,
         clock=dry_run_clock(
             [
@@ -2386,7 +2260,7 @@ def _live_execute_resume_config(tmp_path, monkeypatch):
     for name in (
         "PROJECT_LUX_ALLOW_LIVE_ORDER",
         "FUBON_ALLOW_LIVE_ORDER",
-        "BINANCE_ALLOW_LIVE_ORDER",
+        "IBKR_ALLOW_LIVE_ORDER",
     ):
         monkeypatch.setenv(name, "1")
     return config
@@ -2472,7 +2346,7 @@ def test_live_execute_resume_keeps_position_when_broker_unreachable(
             _RaisingReadOnlyBroker(BrokerName.FUBON_CCF),
             FixedPositionReadOnlyBroker(
                 broker=BrokerName.IBKR_UMC,
-                symbol="TSM/USDT:USDT",
+                symbol="UMC",
                 quantity=-(1_000_000.0 / (120.0 * 5.0)),
                 fetched_at=ts("2026-06-18T08:47:30+08:00"),
             ),
@@ -2506,7 +2380,7 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
         config,
         ccf_provider=first_ccf,
         umc_provider=first_umc,
-        usdttwd_provider=first_usd,
+        usd_twd_provider=first_usd,
         clock=dry_run_clock(
             [
                 "2026-06-18T08:45:00+08:00",
@@ -2559,7 +2433,7 @@ def test_live_dry_run_resume_does_not_duplicate_recorded_intent(tmp_path) -> Non
         config,
         ccf_provider=second_ccf,
         umc_provider=second_umc,
-        usdttwd_provider=second_usd,
+        usd_twd_provider=second_usd,
         clock=dry_run_clock(
             [
                 "2026-06-18T08:47:02+08:00",
@@ -2665,7 +2539,7 @@ def test_live_dry_run_survives_contract_resolution_failure(tmp_path) -> None:
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=dry_run_clock(
             [
                 "2026-06-18T08:45:00+08:00",
@@ -2771,7 +2645,7 @@ def test_live_dry_run_exit_pending_records_exit_intent(tmp_path) -> None:
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=dry_run_clock(
             [
                 "2026-06-18T08:45:00+08:00",
@@ -2853,7 +2727,7 @@ def test_live_dry_run_force_exit_records_rollover_exit_intent(tmp_path) -> None:
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=dry_run_clock(
             [
                 "2026-06-18T13:35:00+08:00",
@@ -2928,7 +2802,7 @@ def test_live_runtime_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=lambda: ts("2026-06-18T08:45:00+08:00"),
         sleeper=lambda _: None,
         reporter=LiveTerminalReporter(terminal_output, color=False),
@@ -2939,7 +2813,7 @@ def test_live_runtime_auto_warmup_builds_seed_on_empty_store(tmp_path) -> None:
     assert ccf.fetch_1m_calls
     output = terminal_output.getvalue()
     assert "EVENT startup store_ready" in output
-    assert "EVENT startup init_binance" in output
+    assert "EVENT startup init_umc" in output
     assert "EVENT startup live_loop" in output
     assert "EVENT warmup_auto start" in output
     assert "EVENT warmup_auto done_3" in output
@@ -2997,7 +2871,7 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
         ccf_provider=warmup_ccf,
         ccf_fallback_provider=None,
         umc_provider=warmup_umc,
-        usdttwd_provider=warmup_usd,
+        usd_twd_provider=warmup_usd,
     ).run(reset_store=True, end=ts("2026-06-18T08:45:00+08:00"))
 
     fresh_rows = rows(
@@ -3024,7 +2898,7 @@ def test_live_runtime_resume_rebuilds_existing_seed_from_fresh_sources(tmp_path)
         config,
         ccf_provider=live_ccf,
         umc_provider=live_umc,
-        usdttwd_provider=live_usd,
+        usd_twd_provider=live_usd,
         clock=lambda: ts("2026-06-18T08:48:00+08:00"),
         sleeper=lambda _: None,
         reporter=LiveTerminalReporter(terminal_output, color=False),
@@ -3082,7 +2956,7 @@ def test_live_runtime_non_resume_refreshes_existing_seed_by_default(tmp_path) ->
         config,
         ccf_provider=ccf,
         umc_provider=FakeOhlcvProvider(fresh_umc),
-        usdttwd_provider=FakeOhlcvProvider(fresh_usd),
+        usd_twd_provider=FakeOhlcvProvider(fresh_usd),
         clock=lambda: ts("2026-06-18T08:48:00+08:00"),
         sleeper=lambda _: None,
     ).run(max_iterations=0)
@@ -3113,7 +2987,7 @@ def test_live_runtime_resume_refuses_cached_seed_when_refresh_fails(tmp_path) ->
             config,
             ccf_provider=ccf,
             umc_provider=umc,
-            usdttwd_provider=usd,
+            usd_twd_provider=usd,
             clock=lambda: ts("2026-06-18T08:48:00+08:00"),
             sleeper=lambda _: None,
         ).run(resume=True, max_iterations=0)
@@ -3132,7 +3006,7 @@ def test_live_runtime_resume_rejects_skip_warmup(tmp_path) -> None:
             config,
             ccf_provider=FakeCcfProvider(pd.DataFrame()),
             umc_provider=FakeOhlcvProvider(pd.DataFrame()),
-            usdttwd_provider=FakeOhlcvProvider(pd.DataFrame()),
+            usd_twd_provider=FakeOhlcvProvider(pd.DataFrame()),
             clock=lambda: ts("2026-06-18T08:48:00+08:00"),
             sleeper=lambda _: None,
         ).run(resume=True, max_iterations=0, skip_warmup=True)
@@ -3173,7 +3047,7 @@ def test_live_runtime_skip_warmup_requires_existing_seed(tmp_path) -> None:
             config,
             ccf_provider=ccf,
             umc_provider=umc,
-            usdttwd_provider=usd,
+            usd_twd_provider=usd,
             clock=lambda: ts("2026-06-18T08:45:00+08:00"),
             sleeper=lambda _: None,
         ).run(reset_store=True, max_iterations=0, skip_warmup=True)
@@ -3218,7 +3092,7 @@ def test_warmup_runner_rejects_live_order_flag_before_provider_calls(tmp_path) -
             ccf_provider=ccf,
             ccf_fallback_provider=None,
             umc_provider=umc,
-            usdttwd_provider=usd,
+            usd_twd_provider=usd,
         ).run(reset_store=True)
 
     assert ccf.select_calls == 0
@@ -3263,7 +3137,7 @@ def test_warmup_runner_fixed_symbol_skips_front_month_selector_and_writes_seed_o
         ccf_provider=ccf,
         ccf_fallback_provider=None,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
     ).run(reset_store=True, end=ts("2026-06-18T08:48:00+08:00"))
 
     assert result.bars_written == 3
@@ -3627,7 +3501,7 @@ def test_live_dry_run_weekend_force_exit_flattens_before_weekend(tmp_path) -> No
         config,
         ccf_provider=ccf,
         umc_provider=umc,
-        usdttwd_provider=usd,
+        usd_twd_provider=usd,
         clock=dry_run_clock(
             [
                 "2026-06-20T04:58:00+08:00",

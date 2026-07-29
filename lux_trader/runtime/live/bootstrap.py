@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
 from lux_trader.brokers import PaperBroker
 from lux_trader.config import AppConfig
 from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, CcfContractSelection
@@ -26,14 +25,16 @@ from lux_trader.execution import (
 )
 from lux_trader.execution.recorder import DryRunExecutionRecorder
 from lux_trader.execution.price_policy import apply_live_touch_market_price_policy
-from lux_trader.integrations.binance.market_data import BinanceMarketData
-from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
 from lux_trader.integrations.fubon.market_data import FubonCcfMarketData
 from lux_trader.integrations.fubon.market_data_process import FubonCcfMarketDataProcess
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
-from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.taifex.downloader import TaifexCcfTradeDownloader
+from lux_trader.integrations.venues import (
+    fetch_umc_market_time,
+    open_fx_quote_provider,
+    open_umc_quote_provider,
+)
 from lux_trader.core.fees import fill_costs
 from lux_trader.core.indicator import IndicatorEngine
 from lux_trader.execution.gate import (
@@ -90,7 +91,7 @@ class WindowsTimeSyncResult:
 class LiveProviderSet:
     ccf: QuoteProvider | FubonCcfMarketData
     umc: QuoteProvider
-    usdttwd: QuoteProvider
+    usd_twd: QuoteProvider
     close_ccf_on_exit: bool
 
 
@@ -99,7 +100,7 @@ class LiveRuntimeContext:
     started_at: datetime
     ccf_provider: QuoteProvider | FubonCcfMarketData
     umc_provider: QuoteProvider
-    usdttwd_provider: QuoteProvider
+    usd_twd_provider: QuoteProvider
     ccf_provider_to_close: Any | None
     ccf_symbol: str
     ccf_expiry: str | None
@@ -115,20 +116,20 @@ def open_live_quote_providers(
     *,
     ccf_provider: QuoteProvider | FubonCcfMarketData | None,
     umc_provider: QuoteProvider | None,
-    usdttwd_provider: QuoteProvider | None,
+    usd_twd_provider: QuoteProvider | None,
     reporter: Any,
     started_at: datetime,
 ) -> LiveProviderSet:
     reporter.event(started_at, "startup", "init_fubon")
     ccf = ccf_provider or FubonCcfMarketDataProcess(config.live.fubon_env_path)
-    reporter.event(started_at, "startup", "init_binance")
-    umc = umc_provider or BinanceMarketData()
-    reporter.event(started_at, "startup", "init_bitopro")
-    usdttwd = usdttwd_provider or BitoProMarketData()
+    reporter.event(started_at, "startup", "init_umc")
+    umc = umc_provider or open_umc_quote_provider(config)
+    reporter.event(started_at, "startup", "init_fx")
+    usd_twd = usd_twd_provider or open_fx_quote_provider(config)
     return LiveProviderSet(
         ccf=ccf,
         umc=umc,
-        usdttwd=usdttwd,
+        usd_twd=usd_twd,
         close_ccf_on_exit=ccf_provider is None,
     )
 
@@ -156,7 +157,7 @@ def build_live_strategy(
         config.fees,
         PaperBroker(),
         state=strategy_state,
-        umc_symbol=config.live.binance_symbol,
+        umc_symbol=config.live.umc_symbol,
     )
 
 
@@ -207,38 +208,6 @@ def run_windows_time_sync(timeout_seconds: float) -> WindowsTimeSyncResult:
     return WindowsTimeSyncResult(False, f"exit_{result.returncode}")
 
 
-def fetch_binance_usdm_market_time(symbol: str) -> datetime:
-    import ccxt
-
-    exchange = ccxt.binanceusdm({"enableRateLimit": True, "timeout": 15_000})
-    errors: list[str] = []
-    try:
-        try:
-            server_time = exchange.fetch_time()
-            if server_time is not None:
-                return parse_timestamp(server_time)
-        except Exception as exc:
-            errors.append(f"fetch_time:{type(exc).__name__}")
-
-        try:
-            exchange.load_markets()
-            order_book = dict(exchange.fetch_order_book(symbol, limit=1) or {})
-            timestamp = order_book.get("timestamp")
-            if timestamp is not None:
-                return parse_timestamp(timestamp)
-            errors.append("order_book:no_timestamp")
-        except Exception as exc:
-            errors.append(f"order_book:{type(exc).__name__}")
-    finally:
-        close = getattr(exchange, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:
-                pass
-    raise RuntimeError(";".join(errors) or "market_time_unavailable")
-
-
 def clock_skew_seconds(local_now: datetime, market_now: datetime) -> float:
     return abs((ensure_taipei(local_now) - ensure_taipei(market_now)).total_seconds())
 
@@ -250,7 +219,7 @@ def run_live_startup_preflight(
     *,
     platform_name: str = sys.platform,
     sync_runner: Callable[[float], WindowsTimeSyncResult] = run_windows_time_sync,
-    market_time_probe: Callable[[str], datetime] = fetch_binance_usdm_market_time,
+    market_time_probe: Callable[[str], datetime] = fetch_umc_market_time,
 ) -> None:
     local_now = ensure_taipei(clock())
     if platform_name.startswith("win") and config.live.sync_windows_time_on_startup:
@@ -265,7 +234,7 @@ def run_live_startup_preflight(
 
     local_now = ensure_taipei(clock())
     try:
-        market_now = ensure_taipei(market_time_probe(config.live.binance_symbol))
+        market_now = ensure_taipei(market_time_probe(config.live.umc_symbol))
     except Exception as exc:
         reporter.error(
             local_now,
@@ -342,7 +311,7 @@ def prepare_live_runtime(
     skip_warmup: bool,
     ccf_provider: QuoteProvider | FubonCcfMarketData | None,
     umc_provider: QuoteProvider | None,
-    usdttwd_provider: QuoteProvider | None,
+    usd_twd_provider: QuoteProvider | None,
     reporter: Any,
     started_at: datetime,
     auto_warmup_context: str,
@@ -352,13 +321,13 @@ def prepare_live_runtime(
         config,
         ccf_provider=ccf_provider,
         umc_provider=umc_provider,
-        usdttwd_provider=usdttwd_provider,
+        usd_twd_provider=usd_twd_provider,
         reporter=reporter,
         started_at=started_at,
     )
     ccf_provider = providers.ccf
     umc_provider = providers.umc
-    usdttwd_provider = providers.usdttwd
+    usd_twd_provider = providers.usd_twd
     ccf_provider_to_close = (
         ccf_provider if providers.close_ccf_on_exit else None
     )
@@ -393,7 +362,7 @@ def prepare_live_runtime(
         policy_state=strategy_state.contract_policy_state or "active",
         ccf_provider=ccf_provider,
         umc_provider=umc_provider,
-        usdttwd_provider=usdttwd_provider,
+        usd_twd_provider=usd_twd_provider,
         end=started_at,
         # A resumed strategy keeps its persisted position/open-trade/PnL state,
         # but its rolling indicator must reflect the latest completed market
@@ -412,7 +381,7 @@ def prepare_live_runtime(
         started_at=started_at,
         ccf_provider=ccf_provider,
         umc_provider=umc_provider,
-        usdttwd_provider=usdttwd_provider,
+        usd_twd_provider=usd_twd_provider,
         ccf_provider_to_close=ccf_provider_to_close,
         ccf_symbol=ccf_symbol,
         ccf_expiry=ccf_expiry,

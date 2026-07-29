@@ -33,15 +33,15 @@ def quote_set(timestamp: datetime) -> LiveQuoteSet:
         ),
         umc=LiveQuote(
             source="binance",
-            symbol="TSM/USDT:USDT",
+            symbol="UMC",
             timestamp=timestamp,
             price=20.5,
             bid=20.0,
             ask=21.0,
         ),
-        usdttwd=LiveQuote(
+        usd_twd=LiveQuote(
             source="bitopro",
-            symbol="USDT/TWD",
+            symbol="USD/TWD",
             timestamp=timestamp,
             price=30.5,
             bid=30.0,
@@ -63,7 +63,7 @@ def pair_plan(direction: Direction, timestamp: datetime):
         requests=(
             OrderRequest(
                 broker=BrokerName.IBKR_UMC,
-                symbol="TSM/USDT:USDT",
+                symbol="UMC",
                 side=umc_side,
                 quantity=10.0,
                 price=125.0,

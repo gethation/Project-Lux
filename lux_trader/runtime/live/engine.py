@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from lux_trader.integrations.binance.execution import BinanceTsmExecutionAdapter
 from lux_trader.config import AppConfig
 from lux_trader.core.contract_policy import ExpiryBufferContractPolicy, CcfContractSelection
 from lux_trader.core.calendar import live_session_status
@@ -24,12 +23,9 @@ from lux_trader.execution import (
 )
 from lux_trader.execution.recorder import DryRunExecutionRecorder
 from lux_trader.execution.price_policy import apply_live_touch_market_price_policy
-from lux_trader.integrations.binance.market_data import BinanceMarketData
-from lux_trader.integrations.bitopro.market_data import BitoProMarketData
 from lux_trader.integrations.fubon.execution import FubonFutureExecutionAdapter
 from lux_trader.integrations.fubon.market_data import FubonCcfMarketData
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
-from lux_trader.integrations.binance.readonly import BinanceReadOnlyBroker
 from lux_trader.integrations.taifex.downloader import TaifexCcfTradeDownloader
 from lux_trader.core.fees import fill_costs
 from lux_trader.core.indicator import IndicatorEngine
@@ -131,7 +127,7 @@ class LiveRuntime:
         handler: LiveModeHandler,
         ccf_provider: QuoteProvider | FubonCcfMarketData | None = None,
         umc_provider: QuoteProvider | None = None,
-        usdttwd_provider: QuoteProvider | None = None,
+        usd_twd_provider: QuoteProvider | None = None,
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], None] | None = None,
         reporter: Any | None = None,
@@ -141,7 +137,7 @@ class LiveRuntime:
         self.handler = handler
         self.ccf_provider = ccf_provider
         self.umc_provider = umc_provider
-        self.usdttwd_provider = usdttwd_provider
+        self.usd_twd_provider = usd_twd_provider
         self._uses_default_clock = clock is None
         self.clock = clock or (lambda: datetime.now().astimezone())
         self.sleeper = sleeper or time.sleep
@@ -191,14 +187,14 @@ class LiveRuntime:
                 skip_warmup=skip_warmup,
                 ccf_provider=self.ccf_provider,
                 umc_provider=self.umc_provider,
-                usdttwd_provider=self.usdttwd_provider,
+                usd_twd_provider=self.usd_twd_provider,
                 reporter=self.reporter,
                 started_at=started_at,
                 auto_warmup_context=self.handler.auto_warmup_context,
             )
             ccf_provider = runtime.ccf_provider
             umc_provider = runtime.umc_provider
-            usdttwd_provider = runtime.usdttwd_provider
+            usd_twd_provider = runtime.usd_twd_provider
             ccf_provider_to_close = runtime.ccf_provider_to_close
             ccf_symbol = runtime.ccf_symbol
             ccf_expiry = runtime.ccf_expiry
@@ -234,9 +230,9 @@ class LiveRuntime:
             )
             store.commit()
             self.reporter.event(runtime.started_at, "startup", "live_loop")
-            def _usdttwd_rate() -> float | None:
+            def _usd_twd_rate() -> float | None:
                 return getattr(
-                    usdttwd_provider.fetch_quote(self.config.live.bitopro_symbol),
+                    usd_twd_provider.fetch_quote(self.config.live.fx_symbol),
                     "price",
                     None,
                 )
@@ -253,7 +249,7 @@ class LiveRuntime:
             )
             account_display = AccountDisplayProvider(
                 self.config,
-                usdttwd_rate=_usdttwd_rate,
+                usd_twd_rate=_usd_twd_rate,
                 brokers_factory=shared_account_factory,
             )
             if not account_display.enabled():
@@ -264,7 +260,7 @@ class LiveRuntime:
                 )
             margin_monitor = MarginMonitor(
                 self.config,
-                usdttwd_rate=_usdttwd_rate,
+                usd_twd_rate=_usd_twd_rate,
                 brokers_factory=account_display.ensure_brokers,
                 clock=self.clock,
             )
@@ -364,23 +360,23 @@ class LiveRuntime:
                 )
                 umc_quote = fetch_quote_or_cached(
                     umc_provider,
-                    self.config.live.binance_symbol,
+                    self.config.live.umc_symbol,
                     "umc",
                     last_quotes,
                     self.reporter,
                     observed_at,
                     last_fetch_warning_minute,
                 )
-                usdttwd_quote = fetch_quote_or_cached(
-                    usdttwd_provider,
-                    self.config.live.bitopro_symbol,
-                    "usdttwd",
+                usd_twd_quote = fetch_quote_or_cached(
+                    usd_twd_provider,
+                    self.config.live.fx_symbol,
+                    "usd_twd",
                     last_quotes,
                     self.reporter,
                     observed_at,
                     last_fetch_warning_minute,
                 )
-                if ccf_quote is None or umc_quote is None or usdttwd_quote is None:
+                if ccf_quote is None or umc_quote is None or usd_twd_quote is None:
                     fetch_key = "quote_set"
                     warning_minute = floor_minute(observed_at)
                     if last_fetch_warning_minute.get(fetch_key) != warning_minute:
@@ -396,7 +392,7 @@ class LiveRuntime:
                 quote_set = LiveQuoteSet(
                     ccf=ccf_quote,
                     umc=umc_quote,
-                    usdttwd=usdttwd_quote,
+                    usd_twd=usd_twd_quote,
                 )
                 ccf_reconnecting = (
                     ccf_reconnecting_until is not None
@@ -453,7 +449,7 @@ class LiveRuntime:
                     live_spread_snapshot,
                     strategy.state,
                 )
-                for quote in (quote_set.ccf, quote_set.umc, quote_set.usdttwd):
+                for quote in (quote_set.ccf, quote_set.umc, quote_set.usd_twd):
                     store.record_market_tick(quote, observed_at)
 
                 build_result = None
@@ -488,7 +484,7 @@ class LiveRuntime:
                             build_result=build_result,
                             ccf_provider=ccf_provider,
                             umc_provider=umc_provider,
-                            usdttwd_provider=usdttwd_provider,
+                            usd_twd_provider=usd_twd_provider,
                             ccf_symbol=ccf_symbol,
                             ccf_expiry=ccf_expiry,
                             strategy=strategy,
@@ -562,7 +558,7 @@ class LiveRuntime:
         build_result: Any,
         ccf_provider: QuoteProvider | FubonCcfMarketData,
         umc_provider: QuoteProvider,
-        usdttwd_provider: QuoteProvider,
+        usd_twd_provider: QuoteProvider,
         ccf_symbol: str,
         ccf_expiry: str | None,
         strategy: PairStrategy,
@@ -631,7 +627,7 @@ class LiveRuntime:
                         bar=bar,
                         ccf_provider=ccf_provider,
                         umc_provider=umc_provider,
-                        usdttwd_provider=usdttwd_provider,
+                        usd_twd_provider=usd_twd_provider,
                         ccf_symbol=ccf_symbol,
                         strategy=strategy,
                         eligible_contract=eligible_contract,
@@ -748,7 +744,7 @@ class LiveRuntime:
                     bar=bar,
                     ccf_provider=ccf_provider,
                     umc_provider=umc_provider,
-                    usdttwd_provider=usdttwd_provider,
+                    usd_twd_provider=usd_twd_provider,
                     ccf_symbol=ccf_symbol,
                     ccf_expiry=ccf_expiry,
                     indicator=indicator,
@@ -775,7 +771,7 @@ class LiveRuntime:
         bar: MarketBar,
         ccf_provider: QuoteProvider | FubonCcfMarketData,
         umc_provider: QuoteProvider,
-        usdttwd_provider: QuoteProvider,
+        usd_twd_provider: QuoteProvider,
         ccf_symbol: str,
         strategy: PairStrategy,
         eligible_contract: CcfContractResolution,
@@ -822,7 +818,7 @@ class LiveRuntime:
             eligible_contract,
             ccf_provider=ccf_provider,
             umc_provider=umc_provider,
-            usdttwd_provider=usdttwd_provider,
+            usd_twd_provider=usd_twd_provider,
             end=bar.timestamp,
         )
         subscribe_ccf_books_if_supported(
@@ -846,7 +842,7 @@ class LiveRuntime:
         bar: MarketBar,
         ccf_provider: QuoteProvider | FubonCcfMarketData,
         umc_provider: QuoteProvider,
-        usdttwd_provider: QuoteProvider,
+        usd_twd_provider: QuoteProvider,
         ccf_symbol: str,
         ccf_expiry: str | None,
         indicator: IndicatorEngine,
@@ -880,7 +876,7 @@ class LiveRuntime:
             completed_contract,
             ccf_provider=ccf_provider,
             umc_provider=umc_provider,
-            usdttwd_provider=usdttwd_provider,
+            usd_twd_provider=usd_twd_provider,
             end=bar.timestamp,
         )
         subscribe_ccf_books_if_supported(
@@ -953,7 +949,7 @@ class LiveDryRunRunner:
         *,
         ccf_provider: QuoteProvider | FubonCcfMarketData | None = None,
         umc_provider: QuoteProvider | None = None,
-        usdttwd_provider: QuoteProvider | None = None,
+        usd_twd_provider: QuoteProvider | None = None,
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], None] | None = None,
         reporter: Any | None = None,
@@ -963,7 +959,7 @@ class LiveDryRunRunner:
             handler=DryRunLiveModeHandler(config),
             ccf_provider=ccf_provider,
             umc_provider=umc_provider,
-            usdttwd_provider=usdttwd_provider,
+            usd_twd_provider=usd_twd_provider,
             clock=clock,
             sleeper=sleeper,
             reporter=reporter,
@@ -999,8 +995,8 @@ class LiveExecuteRunner:
         *,
         ccf_provider: QuoteProvider | FubonCcfMarketData | None = None,
         umc_provider: QuoteProvider | None = None,
-        usdttwd_provider: QuoteProvider | None = None,
-        binance_adapter: Any | None = None,
+        usd_twd_provider: QuoteProvider | None = None,
+        umc_adapter: Any | None = None,
         fubon_adapter: Any | None = None,
         readonly_brokers: tuple[ReadOnlyBroker, ...] | None = None,
         post_trade_reconciler: PostTradeReconciler | None = None,
@@ -1012,14 +1008,14 @@ class LiveExecuteRunner:
             config,
             handler=LiveExecuteModeHandler(
                 config,
-                binance_adapter=binance_adapter,
+                umc_adapter=umc_adapter,
                 fubon_adapter=fubon_adapter,
                 readonly_brokers=readonly_brokers,
                 post_trade_reconciler=post_trade_reconciler,
             ),
             ccf_provider=ccf_provider,
             umc_provider=umc_provider,
-            usdttwd_provider=usdttwd_provider,
+            usd_twd_provider=usd_twd_provider,
             clock=clock,
             sleeper=sleeper,
             reporter=reporter,
