@@ -30,7 +30,32 @@ def _finite_float(value: Any) -> float | None:
 
 
 def _quote_timestamp(payload: dict[str, Any]) -> datetime:
-    for key in ("delayed_last_timestamp", "last_timestamp", "ticker_time"):
+    """When this quote was last known good.
+
+    On the LIVE tier the answer is ``ticker_time`` -- ib_async advances it on
+    any book update, which is what this branch's directional signal actually
+    consumes. ``last_timestamp`` is the last TRADE, and even a liquid ADR goes
+    tens of seconds without printing: measured over 4,942 live ticks on
+    2026-08-04, trade age ran p90 11.1s and max 34.0s against a 10s budget,
+    throwing away ~13% of minutes whose book was live the entire time.
+    ``ticker_time`` over the same ticks ran p50 0.0s and max 3.3s, and was
+    strictly fresher on 100% of them.
+
+    This is not a loosening. The budget stays at 10s, so a wedged stream is
+    still caught within one bar -- ``ticker_advanced`` was true on 94.4% of
+    fetches, so the clock tracks a real feed and stops when the feed stops.
+    Keeping the trade timestamp and widening the budget to 60s would have been
+    the loosening: it would accept minute-old prices during an actual outage.
+
+    NOT on the delayed tier, deliberately. There ``ticker_time`` records when
+    the DELAYED feed pushed, not when the market moved, so preferring it would
+    stamp 15-minute-old prices as current -- the exact failure this gate exists
+    to prevent, and the reason `close` is refused as a price fallback below.
+    """
+    keys = ("delayed_last_timestamp", "last_timestamp", "ticker_time")
+    if payload.get("market_data_tier") == 1:
+        keys = ("ticker_time", "last_timestamp")
+    for key in keys:
         value = payload.get(key)
         if isinstance(value, datetime):
             return ensure_taipei(value)

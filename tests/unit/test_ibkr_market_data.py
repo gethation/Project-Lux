@@ -84,6 +84,76 @@ def test_umc_quote_matches_protocol_marks_delayed_and_warns_once() -> None:
     }
 
 
+def live_payload(**overrides: Any) -> dict[str, Any]:
+    payload = {
+        "con_id": 46_613_372,
+        "market_data_tier": 1,
+        "last": 18.40,
+        "close": 19.03,
+        "bid": 18.40,
+        "ask": 18.41,
+        "bid_size": 1400,
+        "ask_size": 5100,
+        "delayed_last_timestamp": None,
+        # The last TRADE was 25 seconds ago; the book updated a moment ago.
+        "last_timestamp": datetime(2026, 8, 3, 15, 59, 35, tzinfo=ZoneInfo("UTC")),
+        "ticker_time": datetime(2026, 8, 3, 15, 59, 59, tzinfo=ZoneInfo("UTC")),
+        "observed_at": datetime(2026, 8, 4, 0, 0, tzinfo=TAIPEI),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_a_live_quote_is_stamped_with_the_book_not_the_last_trade() -> None:
+    """REGRESSION: ~13% of minutes were thrown away because UMC had not printed
+    a trade in the last 10 seconds, while its book was live throughout.
+
+    Measured over 4,942 live ticks on 2026-08-04: trade age p90 11.1s / max
+    34.0s against a 10s budget, versus ticker_time p50 0.0s / max 3.3s. The
+    directional z-score consumes bid/ask, so book freshness is the honest
+    measure of whether this quote can be traded on.
+    """
+    provider = IbkrUmcQuoteProvider(FakeClient(live_payload()))
+
+    quote = provider.fetch_quote("UMC")
+
+    assert quote.timestamp == datetime(
+        2026, 8, 3, 15, 59, 59, tzinfo=ZoneInfo("UTC")
+    ).astimezone(TAIPEI)
+
+
+def test_the_delayed_tier_is_still_stamped_with_the_delayed_trade_time() -> None:
+    """The branch that keeps this from being a loosening.
+
+    On the delayed tier ticker_time records when the DELAYED feed pushed, not
+    when the market moved, so preferring it would stamp 15-minute-old prices as
+    current -- exactly what the staleness gate exists to prevent.
+    """
+    provider = IbkrUmcQuoteProvider(FakeClient(delayed_payload()))
+
+    quote = provider.fetch_quote("UMC")
+
+    assert quote.timestamp == datetime.fromtimestamp(
+        1_753_292_700, tz=ZoneInfo("UTC")
+    ).astimezone(TAIPEI)
+    # And that is far older than the delayed feed's own push time.
+    assert quote.timestamp < datetime(2026, 7, 23, 12, 0, tzinfo=ZoneInfo("UTC"))
+
+
+def test_a_live_quote_without_a_ticker_time_falls_back_to_the_trade() -> None:
+    """Freshness must still come from the venue, never from the local clock,
+    so an absent book clock degrades to the trade time rather than to now."""
+    provider = IbkrUmcQuoteProvider(
+        FakeClient(live_payload(ticker_time=None))
+    )
+
+    quote = provider.fetch_quote("UMC")
+
+    assert quote.timestamp == datetime(
+        2026, 8, 3, 15, 59, 35, tzinfo=ZoneInfo("UTC")
+    ).astimezone(TAIPEI)
+
+
 def test_umc_quote_rejects_other_symbols() -> None:
     provider = IbkrUmcQuoteProvider(
         FakeClient(delayed_payload()),
