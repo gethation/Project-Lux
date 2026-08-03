@@ -62,19 +62,34 @@ def _apply_umc_price_policy(
     *,
     umc_contract_multiplier: float,
 ) -> ExecutionLeg:
+    # One rate for all three legs of the conversion, deliberately.
+    #
+    # USD/TWD is a scalar that converts a price; it is not a book this pair
+    # crosses. Twelve Data serves no book at all, so usd_twd.bid and .ask are
+    # ALWAYS None -- which made trigger_bid and trigger_ask None while
+    # trigger_mid worked, and the plan validator rejected every entry on
+    # `expected_price_positive` and `trigger_book_present`. The pair could not
+    # take a single trade, in dry-run or live.
+    #
+    # This is the same mistake Phase B already corrected in
+    # core/tradable_spread.py, which is where the directional z-score gets its
+    # prices; price_policy.py was missed. The directionality that matters comes
+    # from UMC's own bid/ask, which is real and entitled -- see the FX staleness
+    # note in market_data/minute_bar.py for the third face of the same idea.
+    usd_twd_rate = quote_set.usd_twd.price
     trigger_bid = _combined_umc_contract_twd_price(
         quote_set.umc.bid,
-        quote_set.usd_twd.bid,
+        usd_twd_rate,
         umc_contract_multiplier,
     )
     trigger_ask = _combined_umc_contract_twd_price(
         quote_set.umc.ask,
-        quote_set.usd_twd.ask,
+        usd_twd_rate,
         umc_contract_multiplier,
     )
     trigger_mid = _combined_umc_contract_twd_price(
         quote_set.umc.price,
-        quote_set.usd_twd.price,
+        usd_twd_rate,
         umc_contract_multiplier,
     )
     expected = _side_expected_price(
