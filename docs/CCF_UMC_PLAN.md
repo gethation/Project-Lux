@@ -469,25 +469,95 @@ PAUSE 並立即持久化（drift 可能發生在隨後因 staleness 被跳過的
 
 ## 6. Phase E — 驗收
 
-1. dry-run soak 完整 UMC session（**前置：IBKR 即時行情到 API**）
-2. 極小額實單：1 口 CCF（名目約 320,000 TWD）+ 約 406 股 UMC
-3. 富邦 session 切換 runbook：停 QFF/TSM → 起 CCF/UMC
+**2026-08-03 起解除封鎖。** 原本的三個擋路石全部消失（見 §7），Phase E 從
+「等你辦帳戶」變成「跑起來看它壞在哪」。
+
+| # | 項目 | 狀態 |
+|---|---|---|
+| E0 | 讓診斷工具說實話 | **完成**（`13591a9`）|
+| E1 | 真正是 CCF/UMC 的 live config + 暖機 | **完成**（`f840715`、`f73eb9a`）|
+| E2 | dry-run soak 完整 session | 進行中 |
+| E3 | 量 directional z vs mid z 的進場差異 | 未開始 |
+| E4 | 極小額實單：1 口 CCF + 約 400 股 UMC | 未開始 |
+| E5 | 富邦 session 切換 runbook | 未開始（QFF/TSM 已於 2026-08-03 停機）|
+
+**E4 的規模用實測價重算過**：UMC $18.41、USD/TWD 32.478 → CCF 一口
+2000 × 116.25 ≈ **232,500 TWD**，UMC 腿約 **389 股 ≈ $7,161**。對 $5,653 權益
+是 **1.30× 槓桿**，Reg T 初始 50% 過得了；**兩口過不了**（初始保證金 $7,364 >
+權益）。原文寫的「320,000 TWD / 406 股」是較高 UMC 價位下的數字。
+
+費用在這個規模仍是線性的：389 股佣金約 $1.95，高於 $1.00 最低收費，所以
+縮小規模不會被固定成本吃掉。**新增的是融資利息** —— 做多 UMC 時約 $1,500
+借款，`integrations/ibkr/fees.py` 只有借券費、沒有融資利息的概念。估約每筆
+0.6%，不影響可行性，但不在模型內。
+
+### E2 已經找出來的東西（dry-run 才驗得到，golden 一個都測不到）
+
+1. **FX 金鑰只在富邦先連線時才載入得到。** Twelve Data 是唯一在**父行程**讀
+   憑證的 venue（富邦在子行程登入、IBKR 走 Gateway），而沒人替它載 `.env`。
+   `status doctor --mode live` 一直是對的 —— 它先建 in-process 富邦 client，
+   `login_fubon_sdk` 順手把 `.env` 灌進 `os.environ`。live loop 建的是子行程
+   包裝，不會。所以這個 bug 長得像「兩個指令行為不一致」。
+2. **FX 被當成交易腿在管，導致每一分鐘都被丟掉。** 見 §7 的實測數字。
+3. **IB Gateway 在盤中自己登出。** 23:45 前後（pair session 是 21:30–04:00），
+   與 IB Gateway 預設的 11:45 PM 自動重啟時間吻合，且進程完全消失（比較像
+   auto-logoff 而非 auto-restart）。**無人值守上線前必須把它移出交易時段。**
+   dry-run 在整段期間持續 `fetch_umc failed` → `skip_iteration`，沒有崩、
+   沒有用舊價硬撐 —— fail closed 第一次在真實故障下被驗到。
 
 ---
 
-## 7. 擋路石（都不是程式碼問題）
+## 7. 擋路石
 
-| # | 項目 | 擋住 | 現況 |
-|---|---|---|---|
-| 1 | **IBKR margin 帳戶** | D6/D7 驗證；且回測中**約一半交易需要放空 UMC** | 現金帳戶，不能放空 |
-| 2 | **NYSE 即時行情到 API** | Phase E 全部 | 2026-07-27 實測：type 1 → 全 NaN + error 10089；type 3 → 有 last、**無 bid/ask** |
-| 3 | IBKR 帳戶餘額 500 USD | 項目 2 | 未確認 |
-| 4 | CCF 富邦每口手續費 | A4 的費用正確性 | 用 QFF 的 88 佔位 |
-| 5 | QFF/TSM 退役時點 | Phase E 的富邦 session | 待定 |
+| # | 項目 | 現況 |
+|---|---|---|
+| 1 | IBKR margin 帳戶 | **已解除**（2026-08-03 實測）|
+| 2 | NYSE 即時行情到 API | **已解除**（2026-08-03 實測）|
+| 3 | IBKR 帳戶餘額 500 USD | **已解除**：NetLiquidation 5,653 USD |
+| 3b | **UMC 借券可用量** | **已解除**（本表原本漏列）|
+| 4 | CCF 富邦每口手續費 | 仍用 QFF 的 88 佔位 |
+| 5 | QFF/TSM 退役時點 | **已停機**（2026-08-03）|
+| 6 | **IB Gateway 自動登出時間** | **新增**：落在 pair session 內 |
 
-**項目 2 與決策 5 相乘的後果要講清楚**：directional z-score 需要 bid/ask，
-延遲層級不供盤口 → 每根 bar `missing_book skip_signal` → **零進場**。
-在即時行情到位前，A/B/C/D 都能建、都能測，但系統不會做出任何一筆交易。
+**判 margin 帳戶不要看 `AccountType`** —— 它回 `INDIVIDUAL`，那是持有型態
+不是保證金型態。判準是 **`SMA` = 5,653、`RegTEquity` = 5,653、
+`BuyingPower` = 22,612 = 4× equity**：SMA 與 Reg T 分類帳只有 margin 帳戶才有，
+現金帳戶的 buying power 是 1×。
+
+**借券本來不在清單上，而它才是決定性的** —— margin 帳戶不等於借得到券，
+而回測中約一半交易要先賣 UMC。generic tick **236** 實測
+**1,950,065 股可借、rank 3.0（易借）**，一口 CCF 只需約 400 股。
+
+### 原文的這段推論已經不成立
+
+> 項目 2 與決策 5 相乘 → 每根 bar `missing_book skip_signal` → 零進場
+
+即時行情到位後 `reqMarketDataType(1)` 回 tier 1、**bid/ask 18.41/18.42、
+size 5500/1900、無 error 10089**，directional z-score 算得出來。
+
+**但「零進場」的結論當時仍然是對的，只是原因換了一個。** dry-run 實測
+218 筆報價的年齡分布：
+
+| 來源 | p50 | p90 | max | 落在當時 10s 預算內 |
+|---|---|---|---|---|
+| ibkr_umc | 2.2s | 7.2s | 15.0s | 95.4% |
+| fubon_ccf | 2.3s | 13.2s | 32.4s | 84.9% |
+| twelvedata (FX) | 181s | 278s | **301s** | **0.0%** |
+
+**FX 是 0.0%，而且是結構性的** —— 它從 300 秒 TTL 的快取來，最大年齡 301 秒
+剛好貼著 TTL。`fx_stale_seconds`（預設 600）**早就存在、從 TOML 讀進來、
+接到任何地方都沒有**；Phase B 給 `tradable_spread` 加的 `usd_twd_stale_seconds`
+參數同樣沒人傳。兩個都已補上。
+
+leg-timestamp-skew 閘門犯的是同一個錯的另一面：它問的是「兩條**腿**是不是
+同一瞬間的價格」，而 FX 不是腿、只是換算其中一條，卻按 vendor 的快取節奏
+到達 —— 於是健康的配對被報成偏移了整整一個快取年齡。**FX 已退出 skew 比較**，
+年齡改由自己的 staleness 預算管。這與 Phase B「FX 取 mid 不取盤口」是同一個
+判斷：匯率是參考，不是我們穿越的盤口。
+
+**待決（樣本不足，先不改）**：UMC 的時戳取的是**最後成交時間**而非盤口更新
+時間，10s 預算會丟掉約 4.6% 的分鐘（max 15.0s；30s 預算涵蓋 100%）。但這批
+樣本只有 4 分鐘，跑完整個 session 再決定。
 
 ---
 

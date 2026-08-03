@@ -35,9 +35,23 @@ ccf_fee_per_contract_twd = 88.0
 ccf_tax_rate = 0.00002
 ccf_contract_multiplier = 2000.0
 umc_contract_multiplier = 5.0
-# Dry-run charges what IBKR charges. The golden keeps 'bps'; this is the first
-# config where the real per-share model is exercised end to end.
-umc_fee_model = 'ibkr'
+# 'bps', deliberately, and NOT because the ibkr model is wrong.
+#
+# Selecting 'ibkr' here killed the first dry run on its first entry signal:
+# every one of the five fill_costs() call sites in runtime/live/modes.py omits
+# umc_side and usd_twd_rate, and the model raises rather than silently charging
+# a different number. D3 built the model and its tests but wired no live caller,
+# so 'ibkr' has never been reachable from the live path at all.
+#
+# The fix is not a one-liner: MarketBar carries no USD/TWD rate -- it exists
+# only on LiveQuoteSet and in the replay CSV -- so the model needs the rate
+# plumbed through minute_bar, warmup, replay, and the bars table, which puts
+# the golden in scope. That is separate work, not something to rush during a
+# live session.
+#
+# Nothing E2 or E3 measures depends on it: the fee model changes reported cost,
+# not whether a signal fires or how directional z diverges from mid z.
+umc_fee_model = 'bps'
 
 [safety]
 allow_live_order = false
