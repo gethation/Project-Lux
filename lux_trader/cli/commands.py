@@ -73,6 +73,16 @@ def command_doctor(args: argparse.Namespace) -> int:
         for line in lines:
             print(f"- {line}")
         return 0
+    if mode == "ibkr":
+        from .commands_live import run_ibkr_doctor_checks
+
+        passed, lines = run_ibkr_doctor_checks(config)
+        print(f"IBKR UMC market data status={'ok' if passed else 'UNUSABLE'}")
+        for line in lines:
+            print(f"- {line}")
+        # Non-zero on failure: "connected but no book" is the state that would
+        # otherwise run a full session and trade nothing.
+        return 0 if passed else 1
     checks: list[str] = []
     if config.safety.allow_live_order:
         raise SystemExit("allow_live_order must be false for replay")

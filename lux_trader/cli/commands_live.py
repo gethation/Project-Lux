@@ -590,6 +590,92 @@ def run_live_doctor_checks(config: object) -> list[str]:
     return checks
 
 
+def run_ibkr_doctor_checks(config: object) -> tuple[bool, list[str]]:
+    """Answer one question: can the UMC leg actually produce a signal today?
+
+    Returns (passed, lines). Passing needs BOTH a live tier and a real book --
+    a connected session serving `last` with no bid/ask is the failure mode this
+    command exists to catch, because the system starts, runs all session, logs
+    `missing_book` on every bar, and trades nothing. That looks like a quiet
+    market, not a broken entitlement.
+
+    Unlike `--mode live`, this has nothing to do without a socket, so an unset
+    LUX_LIVE_MARKETDATA is refused rather than silently reported as a no-op.
+    """
+    from lux_trader.integrations.ibkr.diagnostic import (
+        IbkrDiagnosticConfig,
+        run_connectivity_diagnostic,
+    )
+
+    if not helpers.live_marketdata_enabled():
+        raise SystemExit(
+            f"status doctor --mode ibkr needs {helpers.LIVE_MARKETDATA_ENV}=1: "
+            "it is a real read-only connection to IB Gateway and does nothing "
+            "without one"
+        )
+
+    result = run_connectivity_diagnostic(
+        IbkrDiagnosticConfig(
+            host=config.live.ibkr_host,
+            port=config.live.ibkr_port,
+            # Deliberately NOT config.live.ibkr_client_id: that id belongs to the
+            # live quote worker, and a doctor run must never contend with a
+            # running session for it.
+            symbol=config.live.umc_symbol,
+            market_data_type=config.live.ibkr_market_data_type,
+        )
+    )
+
+    lines = [
+        f"gateway={result.host}:{result.port} client_id={result.client_id}",
+        f"server_version={result.server_version} accounts={list(result.accounts)}",
+        f"contract={result.symbol} con_id={result.con_id} "
+        f"{result.exchange}/{result.primary_exchange} {result.currency}",
+        f"market_data_requested={result.market_data_type_requested} "
+        f"granted={result.market_data_tier} ({result.market_data_tier_label})",
+        f"book=bid {result.quote_bid} / ask {result.quote_ask} "
+        f"size {result.quote_bid_size} / {result.quote_ask_size}",
+        f"last={result.quote_last} close={result.quote_close}",
+        f"shortable_shares={result.shortable_shares} "
+        f"rank={result.shortable_rank} borrowable={result.shortable}",
+        f"historical_1m_bars={result.historical_bar_count}",
+    ]
+
+    passed = result.book_available and result.live_tier_granted
+    if not result.live_tier_granted:
+        lines.append(
+            f"FAIL market data tier is {result.market_data_tier_label}, not live"
+        )
+    if not result.book_available:
+        lines.append(
+            "FAIL no bid/ask: the directional z-score cannot be computed, so "
+            "the pair would take zero entries all session"
+        )
+    if result.entitlement_error_code is not None:
+        lines.append(
+            f"FAIL entitlement error {result.entitlement_error_code}: "
+            f"{result.entitlement_error_message}"
+        )
+    elif not result.book_available:
+        # No entitlement error and no book points somewhere else entirely.
+        lines.append(
+            "NOTE no entitlement error was reported, so a closed market or a "
+            "dead feed is more likely than a missing subscription"
+        )
+    if result.shortable is False:
+        lines.append(
+            f"WARN {result.symbol} is not borrowable right now (rank "
+            f"{result.shortable_rank}); about half of this strategy's trades "
+            "sell it first"
+        )
+    if result.historical_error_code is not None:
+        lines.append(
+            f"WARN historical data error {result.historical_error_code}: "
+            f"{result.historical_error_message}"
+        )
+    return passed, lines
+
+
 # Test seams: fakes are injected by monkeypatching these names.
 build_reconciliation_brokers = helpers.build_reconciliation_brokers
 

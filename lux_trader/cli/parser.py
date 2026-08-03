@@ -118,16 +118,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_doctor = status_subparsers.add_parser(
         "doctor",
-        help="Check configuration (replay by default; --mode live/order for "
-        "live market data / live-order gate checks)",
+        help="Check configuration (replay by default; --mode live/order/ibkr "
+        "for live market data / live-order gate / UMC entitlement checks)",
     )
     status_doctor.add_argument("--config", type=Path, required=True)
     status_doctor.add_argument(
         "--mode",
-        choices=("replay", "live", "order"),
+        choices=("replay", "live", "order", "ibkr"),
         default="replay",
         help="Which checks to run (live touches real market data only with "
-        "LUX_LIVE_MARKETDATA=1; order prints the live execution gate report)",
+        "LUX_LIVE_MARKETDATA=1; order prints the live execution gate report; "
+        "ibkr probes IB Gateway for the UMC tier and bid/ask, and exits "
+        "non-zero when the book is missing)",
     )
 
     status_live = status_subparsers.add_parser(

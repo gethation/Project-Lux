@@ -401,8 +401,15 @@ class _IbkrWorkerClient:
         ``formatDate=2`` is deliberate and must not be relaxed: any other value
         makes IBKR return timestamps in whatever timezone the Gateway login screen
         happens to be set to, which would silently redefine every stored bar.
-        ``TRADES`` is likewise required -- this account has no bid/ask permission,
-        so ``MIDPOINT`` fails with error 162.
+
+        ``TRADES`` is likewise required, but no longer for the reason once
+        recorded here. The old note said this account had no bid/ask permission
+        so ``MIDPOINT`` failed with error 162; the entitlement arrived on
+        2026-08-03 and that is now false. ``TRADES`` stays because the PoC, the
+        replay golden, and every stored bar are built on traded prices --
+        switching to ``MIDPOINT`` would redefine the warmup history underneath a
+        z-score fitted on trades, and the run would look healthy while doing it.
+        The live bid/ask belongs in the quote path, not here.
         """
         self._ensure_connected()
         contract = self._resolve_umc_detail().contract
