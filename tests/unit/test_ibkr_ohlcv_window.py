@@ -117,3 +117,34 @@ def test_venue_seam_wraps_the_fx_source_in_the_cache(tmp_path, monkeypatch) -> N
     assert type(provider).__name__ == "CachedQuoteProvider"
     assert type(provider.inner).__name__ == "TwelveDataMarketData"
     assert provider.ttl.total_seconds() == config.live.fx_cache_ttl_seconds
+
+
+def test_the_fx_seam_loads_its_own_credential(tmp_path, monkeypatch) -> None:
+    """REGRESSION: the live loop died at startup on a missing TWELVEDATA_API_KEY
+    that was sitting in .env the whole time.
+
+    Twelve Data is the only venue whose credential is read in the parent
+    process: Fubon logs in inside its subprocess worker and IBKR authenticates
+    through the Gateway. Nothing loaded the file on the FX provider's behalf.
+    `status doctor --mode live` passed regardless, because it builds an
+    in-process Fubon client first and login_fubon_sdk loads the dotenv as a side
+    effect -- so the bug looked like a difference between two commands.
+    """
+    import dataclasses
+
+    from conftest import make_app_config
+    from lux_trader.integrations.venues import open_fx_quote_provider
+
+    monkeypatch.delenv("TWELVEDATA_API_KEY", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("TWELVEDATA_API_KEY=from-dotenv\n", encoding="utf-8")
+
+    config = make_app_config(tmp_path, validate_expected_zscore=False)
+    config = dataclasses.replace(
+        config,
+        live=dataclasses.replace(config.live, fubon_env_path=env_file),
+    )
+
+    provider = open_fx_quote_provider(config)
+
+    assert provider.inner.api_key == "from-dotenv"

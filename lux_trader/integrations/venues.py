@@ -66,10 +66,23 @@ def open_fx_quote_provider(config: "AppConfig") -> Any:
 
     The cache is applied here rather than inside the provider so that how stale
     a rate may be stays one visible decision instead of a vendor detail.
+
+    The dotenv load is deliberate and belongs here rather than at the call site.
+    Twelve Data is the only venue whose credential is read in THIS process --
+    Fubon logs in inside its subprocess worker, and IBKR authenticates through
+    the Gateway -- so nothing else loads the file on the parent's behalf.
+    `status doctor --mode live` happened to work anyway because it builds an
+    in-process Fubon client first and `login_fubon_sdk` loads the file as a side
+    effect; the live loop builds the subprocess wrapper instead, which does not.
+    That made a missing API key look like an ordering quirk between two commands
+    rather than what it is.
     """
     from ..market_data.cached_quote import CachedQuoteProvider
+    from .env import load_dotenv
     from .twelvedata.market_data import TwelveDataMarketData
 
+    # Named for Fubon, but it is the one credential file this repo has.
+    load_dotenv(config.live.fubon_env_path)
     return CachedQuoteProvider(
         TwelveDataMarketData(),
         ttl_seconds=config.live.fx_cache_ttl_seconds,
