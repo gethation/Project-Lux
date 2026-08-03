@@ -20,10 +20,18 @@ class LiveMinuteBarBuilder:
         *,
         stale_seconds: float,
         max_leg_timestamp_skew_seconds: float,
+        usd_twd_stale_seconds: float | None = None,
         closed_dates: Iterable[date] = (),
         weekend_policy: str = DEFAULT_WEEKEND_POLICY,
     ) -> None:
         self.stale_seconds = stale_seconds
+        # USD/TWD is a reference rate, not a book this pair crosses, and it
+        # arrives from a vendor cache rather than an exchange feed. Holding it
+        # to the exchange budget rejects every single minute -- see the skew
+        # note below for the other half of the same mistake.
+        self.usd_twd_stale_seconds = (
+            stale_seconds if usd_twd_stale_seconds is None else usd_twd_stale_seconds
+        )
         self.max_leg_timestamp_skew_seconds = max_leg_timestamp_skew_seconds
         self.closed_dates = tuple(closed_dates)
         self.weekend_policy = validate_weekend_policy(weekend_policy)
@@ -82,13 +90,16 @@ class LiveMinuteBarBuilder:
         )
 
         close_time = self.current_minute + timedelta(minutes=1)
-        for name, quote in (("umc", umc), ("usd_twd", usd_twd)):
+        for name, quote, budget in (
+            ("umc", umc, self.stale_seconds),
+            ("usd_twd", usd_twd, self.usd_twd_stale_seconds),
+        ):
             age = abs((close_time - ensure_taipei(quote.timestamp)).total_seconds())
-            if age > self.stale_seconds:
+            if age > budget:
                 return MinuteBuildResult(
                     None,
                     "market_data_stale",
-                    {"source": name, "age_seconds": age},
+                    {"source": name, "age_seconds": age, "budget_seconds": budget},
                     quote_set,
                 )
 
@@ -99,7 +110,14 @@ class LiveMinuteBarBuilder:
             )
             ccf_is_fresh = ccf_age <= self.stale_seconds
 
-        skew_quotes = [umc, usd_twd]
+        # USD/TWD is deliberately NOT in the skew comparison. This gate asks
+        # whether the two legs are priced from the same moment, because a spread
+        # built from a CCF print and a UMC print seconds apart is contaminated.
+        # FX is not a leg -- it only converts one of them -- and it arrives on a
+        # vendor's cadence, so including it made a healthy pair look skewed and
+        # rejected the minute. Its age is already bounded by
+        # usd_twd_stale_seconds above; that is the gate that governs it.
+        skew_quotes = [umc]
         if ccf is not None and ccf_is_fresh:
             skew_quotes.append(ccf)
         timestamps = [ensure_taipei(quote.timestamp) for quote in skew_quotes]

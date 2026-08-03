@@ -1720,6 +1720,128 @@ def test_live_minute_bar_builder_allows_ccf_forward_fill_but_skips_stale_umc() -
     assert result.skipped_reason == "market_data_stale"
 
 
+def test_fx_gets_its_own_staleness_budget() -> None:
+    """REGRESSION: the first CCF/UMC dry run skipped EVERY minute with
+    `stale_usd_twd`, so the pair could never form a bar, never score a z, and
+    never trade.
+
+    One `stale_seconds` covered both UMC and USD/TWD. 10s is right for an
+    exchange feed and impossible for a rate served from a 300s vendor cache.
+    `fx_stale_seconds` already existed in config and was wired to nothing.
+    """
+    builder = LiveMinuteBarBuilder(
+        stale_seconds=10.0,
+        usd_twd_stale_seconds=600.0,
+        max_leg_timestamp_skew_seconds=10.0,
+    )
+    builder.last_ccf_close = 99.0
+    # FX is four minutes old: far past the exchange budget, well inside its own.
+    first = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T02:45:59+08:00", 100.0),
+        umc=quote("umc", "2026-06-18T02:45:59+08:00", 20.0),
+        usd_twd=quote("usd", "2026-06-18T02:42:00+08:00", 30.0),
+    )
+    second = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T02:46:01+08:00", 101.0),
+        umc=quote("umc", "2026-06-18T02:46:01+08:00", 21.0),
+        usd_twd=quote("usd", "2026-06-18T02:42:00+08:00", 30.0),
+    )
+
+    builder.update(first, ts("2026-06-18T02:45:59+08:00"))
+    result = builder.update(second, ts("2026-06-18T02:46:01+08:00"))
+
+    assert result is not None
+    assert result.skipped_reason is None
+    assert result.bar is not None
+
+
+def test_fx_is_still_rejected_once_it_passes_its_own_budget() -> None:
+    """The budget is longer, not absent. An hour-old rate is a real fault."""
+    builder = LiveMinuteBarBuilder(
+        stale_seconds=10.0,
+        usd_twd_stale_seconds=600.0,
+        max_leg_timestamp_skew_seconds=10.0,
+    )
+    builder.last_ccf_close = 99.0
+    first = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T02:45:59+08:00", 100.0),
+        umc=quote("umc", "2026-06-18T02:45:59+08:00", 20.0),
+        usd_twd=quote("usd", "2026-06-18T01:30:00+08:00", 30.0),
+    )
+    second = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T02:46:01+08:00", 101.0),
+        umc=quote("umc", "2026-06-18T02:46:01+08:00", 21.0),
+        usd_twd=quote("usd", "2026-06-18T01:30:00+08:00", 30.0),
+    )
+
+    builder.update(first, ts("2026-06-18T02:45:59+08:00"))
+    result = builder.update(second, ts("2026-06-18T02:46:01+08:00"))
+
+    assert result is not None
+    assert result.skipped_reason == "market_data_stale"
+    assert result.payload["source"] == "usd_twd"
+    assert result.payload["budget_seconds"] == 600.0
+
+
+def test_fx_age_does_not_count_as_leg_skew() -> None:
+    """The other half of the same bug. The skew gate asks whether the two LEGS
+    are priced from the same moment; FX is not a leg, it only converts one of
+    them. Including it made a healthy pair look skewed by exactly the vendor's
+    cache age."""
+    builder = LiveMinuteBarBuilder(
+        stale_seconds=10.0,
+        usd_twd_stale_seconds=600.0,
+        max_leg_timestamp_skew_seconds=10.0,
+    )
+    builder.last_ccf_close = 99.0
+    # CCF and UMC are two seconds apart; FX is four minutes behind both.
+    first = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T02:45:57+08:00", 100.0),
+        umc=quote("umc", "2026-06-18T02:45:59+08:00", 20.0),
+        usd_twd=quote("usd", "2026-06-18T02:42:00+08:00", 30.0),
+    )
+    second = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T02:46:01+08:00", 101.0),
+        umc=quote("umc", "2026-06-18T02:46:01+08:00", 21.0),
+        usd_twd=quote("usd", "2026-06-18T02:42:00+08:00", 30.0),
+    )
+
+    builder.update(first, ts("2026-06-18T02:45:59+08:00"))
+    result = builder.update(second, ts("2026-06-18T02:46:01+08:00"))
+
+    assert result is not None
+    assert result.skipped_reason is None
+
+
+def test_real_leg_skew_between_ccf_and_umc_still_rejects() -> None:
+    """Exempting FX must not disarm the gate for the two legs it exists for."""
+    builder = LiveMinuteBarBuilder(
+        stale_seconds=60.0,
+        usd_twd_stale_seconds=600.0,
+        max_leg_timestamp_skew_seconds=10.0,
+    )
+    builder.last_ccf_close = 99.0
+    # The finalized minute is the FIRST set: update() closes out the previous
+    # minute before adopting the new quotes. CCF sits 28s behind UMC here, with
+    # both inside the 60s staleness budget, so only the skew gate can catch it.
+    first = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T02:45:31+08:00", 100.0),
+        umc=quote("umc", "2026-06-18T02:45:59+08:00", 20.0),
+        usd_twd=quote("usd", "2026-06-18T02:45:59+08:00", 30.0),
+    )
+    second = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T02:46:01+08:00", 101.0),
+        umc=quote("umc", "2026-06-18T02:46:01+08:00", 21.0),
+        usd_twd=quote("usd", "2026-06-18T02:46:01+08:00", 30.0),
+    )
+
+    builder.update(first, ts("2026-06-18T02:45:59+08:00"))
+    result = builder.update(second, ts("2026-06-18T02:46:01+08:00"))
+
+    assert result is not None
+    assert result.skipped_reason == "leg_timestamp_skew"
+
+
 def test_live_minute_bar_builder_forward_fills_stale_ccf_quote() -> None:
     builder = LiveMinuteBarBuilder(stale_seconds=10.0, max_leg_timestamp_skew_seconds=10.0)
     builder.last_ccf_close = 99.0

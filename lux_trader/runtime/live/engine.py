@@ -457,6 +457,7 @@ class LiveRuntime:
                     indicator,
                     stale_seconds=self.config.live.stale_seconds,
                     ccf_book_stale_seconds=self.config.live.ccf_book_stale_seconds,
+                    usd_twd_stale_seconds=self.config.live.fx_stale_seconds,
                     last_ccf_close=builder.last_ccf_close,
                 )
                 if ccf_reconnecting and (
@@ -1091,6 +1092,7 @@ def build_tradable_snapshot_for_bar(
         indicator,
         stale_seconds=config.live.stale_seconds,
         ccf_book_stale_seconds=config.live.ccf_book_stale_seconds,
+        usd_twd_stale_seconds=config.live.fx_stale_seconds,
         last_ccf_close=bar.ccf_close_filled,
     )
     return replace(

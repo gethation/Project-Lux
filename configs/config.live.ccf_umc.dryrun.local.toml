@@ -1,0 +1,143 @@
+# CCF/UMC live dry-run. Gitignored by configs/*.local.toml.
+#
+# Phase E1. Replaces the half-converted config.live.exec.dryrun.local.toml,
+# whose [paths] still pointed at qff_tsm / binance_tsmusdtp / bitopro_usdttwd
+# and whose warmup_minutes=500 could not fill a 2500-bar z-score window.
+#
+# Orders are off at BOTH gates: safety.allow_live_order and
+# live_execution.enabled. Nothing here can place an order.
+
+[paths]
+# Live does not read input_csv, but config load requires the key. Point it at
+# the committed golden so a stray replay against this file is at least honest.
+input_csv = 'tests/fixtures/replay/ccf_umc_spread_zscore_w2500.csv'
+store_path = 'data/live_ccf_umc_dryrun.sqlite3'
+ccf_ohlcv_csv = 'tests/fixtures/replay/ccf1_1m_open.csv'
+umc_ohlcv_csv = 'tests/fixtures/replay/umc_1m_open.csv'
+usd_twd_ohlcv_csv = 'tests/fixtures/replay/usd_twd_1m_open.csv'
+
+[strategy]
+entry_z = 1.5
+exit_z = 0.0
+leg_notional_twd = 1000000.0
+initial_capital_twd = 2000000.0
+max_entry_delay_minutes = 15
+zscore_window = 2500
+# One lot. The IBKR account holds 5,653 USD; a lot is ~400 UMC shares
+# (~7.4k USD), which fits Reg T initial margin at ~1.3x. Two lots do not.
+sizing_mode = 'fixed_lots'
+ccf_lots = 1
+weekend_policy = 'none'
+
+[fees]
+umc_fee_bps = 2.5
+ccf_fee_per_contract_twd = 88.0
+ccf_tax_rate = 0.00002
+ccf_contract_multiplier = 2000.0
+umc_contract_multiplier = 5.0
+# Dry-run charges what IBKR charges. The golden keeps 'bps'; this is the first
+# config where the real per-share model is exercised end to end.
+umc_fee_model = 'ibkr'
+
+[safety]
+allow_live_order = false
+validate_expected_zscore = false
+expected_zscore_tolerance = 0.0000001
+
+[contract_policy]
+enabled = true
+min_business_days_to_expiry = 5
+force_exit_business_days_before_expiry = 1
+force_exit_grace_minutes = 5
+holidays = []
+
+[trading_calendar]
+# 2026 TAIFEX futures market non-trading weekdays.
+# Source: https://www.taifex.com.tw/file/taifex/CHINESE/4/2026Calendar.pdf
+closed_dates = [
+  '2026-01-01',
+  '2026-02-12',
+  '2026-02-13',
+  '2026-02-16',
+  '2026-02-17',
+  '2026-02-18',
+  '2026-02-19',
+  '2026-02-20',
+  '2026-02-27',
+  '2026-04-03',
+  '2026-04-06',
+  '2026-05-01',
+  '2026-06-19',
+  '2026-09-25',
+  '2026-09-28',
+  '2026-10-09',
+  '2026-10-26',
+  '2026-12-25',
+]
+
+[live_market_data]
+polling_seconds = 1.0
+minute_finalize_delay_seconds = 1.0
+# 10s, not the 1200s of the delayed-data era. Live NYSE data reaches the API as
+# of 2026-08-03 (tier 1, real bid/ask), so a stale quote is now a real fault.
+stale_seconds = 10.0
+ccf_book_stale_seconds = 55.0
+sync_windows_time_on_startup = true
+clock_skew_fail_seconds = 60.0
+windows_time_sync_timeout_seconds = 15.0
+max_leg_timestamp_skew_seconds = 10.0
+# Must cover zscore_window=2500. The pair session is ~390 minutes a day
+# (TAIFEX n NYSE RTH), so 2500 bars is about 6.4 sessions of history.
+warmup_minutes = 2500
+warmup_forward_fill_max_ratio = 0.9
+warmup_ccf_max_trailing_fill_minutes = 5
+ccf_product = 'CCF'
+ccf_symbol = 'auto'
+umc_symbol = 'UMC'
+fx_symbol = 'USD/TWD'
+# This machine keeps credentials in `.env`, not `env`. load_dotenv() returns
+# silently when the path is missing, so the wrong value here surfaces much
+# later as "Missing required environment variable: FUBON_PERSONAL_ID".
+fubon_env_path = '.env'
+ibkr_host = '127.0.0.1'
+ibkr_port = 4001
+ibkr_client_id = 17002
+ibkr_market_data_type = 1
+taifex_use_network = true
+taifex_cache_dir = 'data/taifex_cache'
+# Fallback only: the builder prefers Fubon's intraday candle API. This file is
+# the manually accumulated PoC history and was last written 2026-07-28, so it
+# cannot reach today on its own.
+taifex_ccf_1m_csv = 'D:\Users\Documents\Proof of Concept\data\processed\ccf1_1m_cumulative.csv'
+
+[broker_reconciliation]
+enabled = false
+fail_on_mismatch = false
+umc_units_tolerance = 0.000001
+ccf_contract_tolerance = 0
+
+[live_execution]
+enabled = false
+require_readonly_reconciliation = true
+max_plan_age_seconds = 120
+ccf_first = true
+
+[margin_management]
+enabled = true
+check_time = '10:00'
+red_line_interval_minutes = 240
+umc_transfer_ratio = 0.11
+umc_red_line_ratio = 0.05
+fubon_transfer_ratio = 0.20
+fubon_red_line_ratio = 0.135
+target_ratio = 0.30
+red_line_maint_multiplier = 1.3
+leg_notional_twd = 0.0
+
+[ntfy]
+enabled = false
+server_url = 'https://ntfy.sh'
+status_topic = 'status-43cc9'
+trades_topic = 'trades-91c91'
+errors_topic = 'errors-1836f'
+request_timeout_seconds = 3.0
