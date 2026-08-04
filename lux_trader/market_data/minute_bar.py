@@ -14,6 +14,17 @@ from .session import floor_minute
 from .types import LiveQuote, LiveQuoteSet, MinuteBuildResult
 
 
+def price_time(quote: LiveQuote) -> datetime:
+    """When this quote's `price` was last true.
+
+    Falls back to the quote timestamp for sources where they are the same
+    thing -- CCF and FX both publish a price and a time together. Only the IBKR
+    quote separates them, because its `price` is a trade and its timestamp is
+    the book.
+    """
+    return quote.price_timestamp or quote.timestamp
+
+
 class LiveMinuteBarBuilder:
     def __init__(
         self,
@@ -21,10 +32,16 @@ class LiveMinuteBarBuilder:
         stale_seconds: float,
         max_leg_timestamp_skew_seconds: float,
         usd_twd_stale_seconds: float | None = None,
+        umc_trade_stale_seconds: float = 60.0,
         closed_dates: Iterable[date] = (),
         weekend_policy: str = DEFAULT_WEEKEND_POLICY,
     ) -> None:
         self.stale_seconds = stale_seconds
+        # How old the last TRADE may be, separately from the book. One bar
+        # period by default: the correct close of a quiet minute IS the last
+        # trade in it, so anything tighter rejects healthy minutes, and anything
+        # much looser lets a genuinely dead print set the bar.
+        self.umc_trade_stale_seconds = float(umc_trade_stale_seconds)
         # USD/TWD is a reference rate, not a book this pair crosses, and it
         # arrives from a vendor cache rather than an exchange feed. Holding it
         # to the exchange budget rejects every single minute -- see the skew
@@ -110,25 +127,53 @@ class LiveMinuteBarBuilder:
             )
             ccf_is_fresh = ccf_age <= self.stale_seconds
 
-        # USD/TWD is deliberately NOT in the skew comparison. This gate asks
-        # whether the two legs are priced from the same moment, because a spread
-        # built from a CCF print and a UMC print seconds apart is contaminated.
-        # FX is not a leg -- it only converts one of them -- and it arrives on a
-        # vendor's cadence, so including it made a healthy pair look skewed and
-        # rejected the minute. Its age is already bounded by
-        # usd_twd_stale_seconds above; that is the gate that governs it.
-        skew_quotes = [umc]
-        if ccf is not None and ccf_is_fresh:
-            skew_quotes.append(ccf)
-        timestamps = [ensure_taipei(quote.timestamp) for quote in skew_quotes]
-        skew = (max(timestamps) - min(timestamps)).total_seconds()
-        if skew > self.max_leg_timestamp_skew_seconds:
+        # The bar's close is a TRADE price (umc.price prefers `last`), and the
+        # quote is stamped with the book clock, so the staleness check above
+        # does not bound it. Without this, a thirty-second-old print reads as
+        # zero seconds old and is laundered into the rolling mean and std.
+        umc_price_age = abs(
+            (close_time - ensure_taipei(price_time(umc))).total_seconds()
+        )
+        if umc_price_age > self.umc_trade_stale_seconds:
             return MinuteBuildResult(
                 None,
-                "leg_timestamp_skew",
-                {"skew_seconds": skew},
+                "stale_trade_price",
+                {
+                    "source": "umc",
+                    "age_seconds": umc_price_age,
+                    "budget_seconds": self.umc_trade_stale_seconds,
+                },
                 quote_set,
             )
+
+        # Skew asks whether the two LEGS are priced from the same moment. Two
+        # deliberate choices:
+        #
+        # USD/TWD is excluded. It is not a leg -- it only converts one of them
+        # -- and it arrives on a vendor cadence, so including it reported a
+        # healthy pair as skewed by exactly the cache age.
+        #
+        # It compares PRICE timestamps, not quote timestamps. Both are venue
+        # clocks (CCF's exchange print, UMC's trade print), whereas UMC's quote
+        # timestamp is a local receive time -- comparing that against an
+        # exchange clock measures clock offset, not skew.
+        #
+        # With no fresh CCF there is no second leg, so there is nothing to
+        # compare; say so rather than computing max-min over one element and
+        # emerging with a gate that structurally cannot fire.
+        if ccf is not None and ccf_is_fresh:
+            skew = abs(
+                (
+                    ensure_taipei(price_time(umc)) - ensure_taipei(price_time(ccf))
+                ).total_seconds()
+            )
+            if skew > self.max_leg_timestamp_skew_seconds:
+                return MinuteBuildResult(
+                    None,
+                    "leg_timestamp_skew",
+                    {"skew_seconds": skew},
+                    quote_set,
+                )
 
         ccf_close = ccf.price if ccf is not None and ccf_is_fresh else None
         if ccf_close is not None:

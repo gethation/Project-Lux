@@ -142,6 +142,11 @@ class LiveMarketDataConfig:
     # 300s cache + ~35s publish lag; 600 leaves ~1.8x headroom while still
     # catching a genuinely dead feed inside ten minutes.
     fx_stale_seconds: float = 600.0
+    # How old UMC's last TRADE may be. Separate from stale_seconds because the
+    # quote is stamped with the BOOK clock while `price` is the last trade, and
+    # the bar's close is built from the price. One bar period: the correct close
+    # of a minute with no prints is the last trade in it.
+    umc_trade_stale_seconds: float = 60.0
     # How long a cached rate may still be served after refetch failures before
     # the provider gives up. Without it a dead upstream becomes a frozen rate
     # that the staleness gate would eventually catch -- but only eventually.
@@ -397,6 +402,9 @@ def load_config(path: Path) -> AppConfig:
             ),
             fx_cache_ttl_seconds=float(live.get("fx_cache_ttl_seconds", 300.0)),
             fx_stale_seconds=float(live.get("fx_stale_seconds", 600.0)),
+            umc_trade_stale_seconds=float(
+                live.get("umc_trade_stale_seconds", 60.0)
+            ),
             fx_max_serve_seconds=float(live.get("fx_max_serve_seconds", 900.0)),
         ),
         broker_reconciliation=BrokerReconciliationConfig(

@@ -30,31 +30,40 @@ def _finite_float(value: Any) -> float | None:
 
 
 def _quote_timestamp(payload: dict[str, Any]) -> datetime:
-    """When this quote was last known good.
+    """When the BOOK was last updated -- what the directional signal consumes.
 
-    On the LIVE tier the answer is ``ticker_time`` -- ib_async advances it on
-    any book update, which is what this branch's directional signal actually
-    consumes. ``last_timestamp`` is the last TRADE, and even a liquid ADR goes
-    tens of seconds without printing: measured over 4,942 live ticks on
-    2026-08-04, trade age ran p90 11.1s and max 34.0s against a 10s budget,
-    throwing away ~13% of minutes whose book was live the entire time.
-    ``ticker_time`` over the same ticks ran p50 0.0s and max 3.3s, and was
-    strictly fresher on 100% of them.
+    On the live tier that is ``ticker_time``, which ib_async advances on any
+    tick. Never on a delayed tier: there it records when the delayed feed
+    pushed, not when the market moved, so preferring it would stamp
+    fifteen-minute-old prices as current.
 
-    This is not a loosening. The budget stays at 10s, so a wedged stream is
-    still caught within one bar -- ``ticker_advanced`` was true on 94.4% of
-    fetches, so the clock tracks a real feed and stops when the feed stops.
-    Keeping the trade timestamp and widening the budget to 60s would have been
-    the loosening: it would accept minute-old prices during an actual outage.
-
-    NOT on the delayed tier, deliberately. There ``ticker_time`` records when
-    the DELAYED feed pushed, not when the market moved, so preferring it would
-    stamp 15-minute-old prices as current -- the exact failure this gate exists
-    to prevent, and the reason `close` is refused as a price fallback below.
+    See ``_trade_timestamp`` for the other clock, and docs/CCF_UMC_PLAN.md for
+    the tick study these choices rest on.
     """
     keys = ("delayed_last_timestamp", "last_timestamp", "ticker_time")
-    if payload.get("market_data_tier") == 1:
+    if payload.get("market_data_tier") == LIVE_MARKET_DATA_TYPE:
         keys = ("ticker_time", "last_timestamp")
+    return _first_timestamp(payload, keys)
+
+
+def _trade_timestamp(payload: dict[str, Any]) -> datetime | None:
+    """When the last TRADE printed, or None if the venue did not say.
+
+    Never falls back to observed_at. A fabricated trade time would defeat the
+    reason this is tracked apart from the book clock: `price` prefers `last`, so
+    the bar's close is a trade price and needs its own age bound.
+    """
+    return _first_timestamp(
+        payload, ("delayed_last_timestamp", "last_timestamp"), fallback=False
+    )
+
+
+def _first_timestamp(
+    payload: dict[str, Any],
+    keys: tuple[str, ...],
+    *,
+    fallback: bool = True,
+) -> Any:
     for key in keys:
         value = payload.get(key)
         if isinstance(value, datetime):
@@ -67,7 +76,7 @@ def _quote_timestamp(payload: dict[str, Any]) -> datetime:
             except ValueError:
                 continue
             return ensure_taipei(parsed)
-    return ensure_taipei(payload["observed_at"])
+    return ensure_taipei(payload["observed_at"]) if fallback else None
 
 
 class IbkrUmcQuoteProvider:
@@ -156,6 +165,11 @@ class IbkrUmcQuoteProvider:
             source="ibkr_umc",
             symbol="UMC",
             timestamp=_quote_timestamp(payload),
+            # The trade clock, kept separate from the book clock above. `price`
+            # prefers `last`, so this is when `price` was actually true. Falls
+            # back to the quote timestamp when there is no trade stamp -- which
+            # is the delayed-tier case, where they already agree.
+            price_timestamp=_trade_timestamp(payload) or _quote_timestamp(payload),
             price=price,
             bid=bid,
             ask=ask,

@@ -1842,6 +1842,113 @@ def test_real_leg_skew_between_ccf_and_umc_still_rejects() -> None:
     assert result.skipped_reason == "leg_timestamp_skew"
 
 
+def test_a_stale_trade_price_is_refused_even_with_a_live_book() -> None:
+    """REGRESSION: the bar's close is a TRADE price while the quote is stamped
+    with the BOOK clock, so the staleness gate stopped bounding the number the
+    bar is actually built from. A thirty-second-old print read as zero seconds
+    old and entered the rolling mean and std."""
+    builder = LiveMinuteBarBuilder(
+        stale_seconds=10.0,
+        usd_twd_stale_seconds=600.0,
+        umc_trade_stale_seconds=60.0,
+        max_leg_timestamp_skew_seconds=30.0,
+    )
+    builder.last_ccf_close = 99.0
+    # Book is current; the last trade is five minutes old.
+    stale_trade = replace(
+        quote("umc", "2026-06-18T02:45:59+08:00", 20.0),
+        price_timestamp=ts("2026-06-18T02:41:00+08:00"),
+    )
+    first = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T02:45:59+08:00", 100.0),
+        umc=stale_trade,
+        usd_twd=quote("usd", "2026-06-18T02:45:59+08:00", 30.0),
+    )
+    second = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T02:46:01+08:00", 101.0),
+        umc=quote("umc", "2026-06-18T02:46:01+08:00", 21.0),
+        usd_twd=quote("usd", "2026-06-18T02:46:01+08:00", 30.0),
+    )
+
+    builder.update(first, ts("2026-06-18T02:45:59+08:00"))
+    result = builder.update(second, ts("2026-06-18T02:46:01+08:00"))
+
+    assert result is not None
+    assert result.skipped_reason == "stale_trade_price"
+    assert result.payload["source"] == "umc"
+
+
+def test_a_quiet_minute_still_builds_from_its_last_trade() -> None:
+    """The other side of the same budget: the correct close of a minute with no
+    prints IS the last trade in it, so a 40s-old trade must not be refused."""
+    builder = LiveMinuteBarBuilder(
+        stale_seconds=10.0,
+        usd_twd_stale_seconds=600.0,
+        umc_trade_stale_seconds=60.0,
+        max_leg_timestamp_skew_seconds=30.0,
+    )
+    builder.last_ccf_close = 99.0
+    quiet = replace(
+        quote("umc", "2026-06-18T02:45:59+08:00", 20.0),
+        price_timestamp=ts("2026-06-18T02:45:20+08:00"),
+    )
+    first = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T02:45:40+08:00", 100.0),
+        umc=quiet,
+        usd_twd=quote("usd", "2026-06-18T02:45:59+08:00", 30.0),
+    )
+    second = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T02:46:01+08:00", 101.0),
+        umc=quote("umc", "2026-06-18T02:46:01+08:00", 21.0),
+        usd_twd=quote("usd", "2026-06-18T02:46:01+08:00", 30.0),
+    )
+
+    builder.update(first, ts("2026-06-18T02:45:59+08:00"))
+    result = builder.update(second, ts("2026-06-18T02:46:01+08:00"))
+
+    assert result is not None
+    assert result.skipped_reason is None
+    assert result.bar is not None
+
+
+def test_skew_compares_venue_clocks_not_the_local_receive_time() -> None:
+    """UMC's quote timestamp is a local receive clock; CCF's is an exchange
+    print. Comparing those measures clock offset, not leg skew. The gate now
+    compares PRICE timestamps, which are both venue-sourced."""
+    builder = LiveMinuteBarBuilder(
+        stale_seconds=60.0,
+        usd_twd_stale_seconds=600.0,
+        umc_trade_stale_seconds=120.0,
+        max_leg_timestamp_skew_seconds=10.0,
+    )
+    builder.last_ccf_close = 99.0
+    # Receive clocks agree; the underlying prints are 40s apart.
+    skewed = replace(
+        quote("umc", "2026-06-18T02:45:59+08:00", 20.0),
+        price_timestamp=ts("2026-06-18T02:45:59+08:00"),
+    )
+    first = LiveQuoteSet(
+        ccf=replace(
+            quote("ccf", "2026-06-18T02:45:59+08:00", 100.0),
+            price_timestamp=ts("2026-06-18T02:45:19+08:00"),
+        ),
+        umc=skewed,
+        usd_twd=quote("usd", "2026-06-18T02:45:59+08:00", 30.0),
+    )
+    second = LiveQuoteSet(
+        ccf=quote("ccf", "2026-06-18T02:46:01+08:00", 101.0),
+        umc=quote("umc", "2026-06-18T02:46:01+08:00", 21.0),
+        usd_twd=quote("usd", "2026-06-18T02:46:01+08:00", 30.0),
+    )
+
+    builder.update(first, ts("2026-06-18T02:45:59+08:00"))
+    result = builder.update(second, ts("2026-06-18T02:46:01+08:00"))
+
+    assert result is not None
+    assert result.skipped_reason == "leg_timestamp_skew"
+    assert result.payload["skew_seconds"] == pytest.approx(40.0)
+
+
 def test_live_minute_bar_builder_forward_fills_stale_ccf_quote() -> None:
     builder = LiveMinuteBarBuilder(stale_seconds=10.0, max_leg_timestamp_skew_seconds=10.0)
     builder.last_ccf_close = 99.0

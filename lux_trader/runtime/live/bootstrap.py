@@ -168,6 +168,7 @@ def build_live_minute_builder(
     builder = LiveMinuteBarBuilder(
         stale_seconds=config.live.stale_seconds,
         usd_twd_stale_seconds=config.live.fx_stale_seconds,
+        umc_trade_stale_seconds=config.live.umc_trade_stale_seconds,
         max_leg_timestamp_skew_seconds=(
             config.live.max_leg_timestamp_skew_seconds
         ),

@@ -94,6 +94,16 @@ windows_time_sync_timeout_seconds = 15.0
 max_leg_timestamp_skew_seconds = 10.0
 # Must cover zscore_window=2500. The pair session is ~390 minutes a day
 # (TAIFEX n NYSE RTH), so 2500 bars is about 6.4 sessions of history.
+# UMC's last TRADE may be up to one bar period old. The quote is stamped with
+# the BOOK clock (what the directional signal crosses) while `price` is the last
+# trade (what the bar's close is built from) -- two questions, two budgets.
+umc_trade_stale_seconds = 60.0
+# fx_stale_seconds stays at the 600.0 default. Measured over the 2026-08-04
+# soak: USD/TWD p90 drift is 0.0453% at 300-600s of staleness, which against
+# the run's median spread_std of 1.245 is 0.036 z -- about a fifth of the
+# measured execution haircut. Tightening it would reject data no fresher than
+# the vendor's 300s cache can supply. Re-measure if FX turns volatile; that
+# session moved only 0.155% end to end.
 warmup_minutes = 2500
 warmup_forward_fill_max_ratio = 0.9
 warmup_ccf_max_trailing_fill_minutes = 5
