@@ -32,6 +32,11 @@ def optional_float(value: object) -> float | None:
 CSV_CCF_CLOSE = "qff_close"
 CSV_CCF_CLOSE_FILLED = "qff_close_filled"
 CSV_UMC_TWD_FAIR = "tsm_twd_fair"
+# Optional, and not in `required` below: older PoC exports predate it. Replay
+# defaults to the bps fee model, which never reads the rate, so a CSV without
+# this column still reproduces the golden exactly. It is carried so a replay
+# configured with the 'ibkr' model can price the US leg the way live does.
+CSV_USD_TWD_CLOSE = "usdttwd_close"
 
 
 class CsvReplayMarketData:
@@ -105,6 +110,7 @@ class CsvReplayMarketData:
             ccf_entry_open_was_filled = ccf_open.isna()
             umc_twd_fair_open = umc_open * usd_open / 5.0
 
+        has_usd_twd_column = CSV_USD_TWD_CLOSE in frame.columns
         bars: list[MarketBar] = []
         for row_index, row in frame.iterrows():
             ccf_close = optional_float(row[CSV_CCF_CLOSE])
@@ -120,6 +126,11 @@ class CsvReplayMarketData:
                     ccf_close=ccf_close,
                     ccf_close_filled=ccf_close_filled,
                     umc_twd_fair=umc_twd_fair,
+                    usd_twd=(
+                        optional_float(row[CSV_USD_TWD_CLOSE])
+                        if has_usd_twd_column
+                        else None
+                    ),
                     spread=spread,
                     ccf_entry_price=(
                         float(ccf_entry_open.iloc[row_index])

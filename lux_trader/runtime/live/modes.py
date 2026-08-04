@@ -62,6 +62,7 @@ from lux_trader.core.models import (
     Direction,
     IndicatorSnapshot,
     MarketBar,
+    OrderSide,
     StrategyAction,
     StrategyState,
 )
@@ -88,6 +89,20 @@ from lux_trader.ntfy import notify_execution, notify_operational_error
 # Force-exit reasons that are routed through the coordinator exit path (as opposed
 # to a normal z-score exit). Kept in one place so the exit fill label stays honest.
 FORCE_EXIT_REASONS = ("rollover_force_exit", "weekend_force_exit")
+
+
+def umc_trade_side(traded_units: float) -> OrderSide:
+    """The side of the UMC order actually being sent.
+
+    Read the argument at each call site carefully. On an ENTRY the traded units
+    are the position being opened, but on an EXIT `fill_costs` is handed the
+    POSITION while the order sent is its negation -- so passing the position's
+    sign there would charge a buy's fees on a sell. IBKR's SEC and FINRA fees
+    land on the seller alone, so getting this backwards under-charges exactly
+    half of all trades and over-charges the other half, and the totals still
+    look plausible.
+    """
+    return OrderSide.BUY if traded_units > 0 else OrderSide.SELL
 
 
 def force_exit_report_detail(reason: str) -> str:
@@ -1086,6 +1101,8 @@ def execute_dry_run_entry(
         ccf_contracts=sizing.ccf_contracts,
         ccf_price=bar.ccf_close_filled,
         fees=strategy.fees,
+        umc_side=umc_trade_side(sizing.umc_units),
+        usd_twd_rate=bar.usd_twd,
     )
     requests = strategy.build_entry_order_requests(
         bar=bar,
@@ -1166,6 +1183,8 @@ def execute_dry_run_exit(
         ccf_contracts=state.ccf_contracts,
         ccf_price=bar.ccf_close_filled,
         fees=strategy.fees,
+        umc_side=umc_trade_side(-state.umc_units),
+        usd_twd_rate=bar.usd_twd,
     )
     requests = strategy.build_exit_order_requests(bar=bar, costs=costs)
     plan = pair_execution_plan_from_order_requests(
@@ -1283,6 +1302,8 @@ def execute_live_entry(
         ccf_contracts=sizing.ccf_contracts,
         ccf_price=bar.ccf_close_filled,
         fees=strategy.fees,
+        umc_side=umc_trade_side(sizing.umc_units),
+        usd_twd_rate=bar.usd_twd,
     )
     requests = strategy.build_entry_order_requests(
         bar=bar,
@@ -1334,6 +1355,8 @@ def execute_live_entry(
             ccf_contracts=executed_sizing.ccf_contracts,
             ccf_price=bar.ccf_close_filled,
             fees=strategy.fees,
+            umc_side=umc_trade_side(executed_sizing.umc_units),
+            usd_twd_rate=bar.usd_twd,
         )
         result = strategy.apply_entry_execution(
             bar=bar,
@@ -1390,6 +1413,8 @@ def execute_live_exit(
         ccf_contracts=state.ccf_contracts,
         ccf_price=bar.ccf_close_filled,
         fees=strategy.fees,
+        umc_side=umc_trade_side(-state.umc_units),
+        usd_twd_rate=bar.usd_twd,
     )
     requests = strategy.build_exit_order_requests(bar=bar, costs=costs)
     plan = pair_execution_plan_from_order_requests(

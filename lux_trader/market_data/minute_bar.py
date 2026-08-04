@@ -140,7 +140,8 @@ class LiveMinuteBarBuilder:
                 quote_set=quote_set,
             )
 
-        umc_twd_fair = umc.price * usd_twd.price / 5.0
+        usd_twd_rate = usd_twd.price
+        umc_twd_fair = umc.price * usd_twd_rate / 5.0
         spread = (
             (umc_twd_fair - self.last_ccf_close)
             / (umc_twd_fair + self.last_ccf_close)
@@ -154,6 +155,7 @@ class LiveMinuteBarBuilder:
                     ccf_close=ccf_close,
                     ccf_close_filled=self.last_ccf_close,
                     umc_twd_fair=umc_twd_fair,
+                    usd_twd=usd_twd_rate,
                     spread=spread,
                 ),
                 self.closed_dates,

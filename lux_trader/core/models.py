@@ -60,6 +60,18 @@ class MarketBar:
     spread: float
     ccf_entry_price: float | None = None
     umc_entry_twd_fair: float | None = None
+    # The USD/TWD rate this bar's umc_twd_fair was converted at.
+    #
+    # umc_twd_fair alone cannot recover it, and the 'ibkr' fee model needs it:
+    # IBKR bills in USD, so a TWD price has to be divided back out. Without it
+    # on the bar, that model was unreachable from every live call site --
+    # `fill_costs` raised on the first entry signal rather than charge a number
+    # the configured model did not produce.
+    #
+    # Optional because a bar can legitimately predate the field (an older store,
+    # a CSV without the column). The fee model refuses in that case rather than
+    # guessing, which is the same trade this codebase makes everywhere else.
+    usd_twd: float | None = None
     ccf_was_filled: bool = False
     ccf_entry_open_was_filled: bool = False
     expected_zscore: float | None = None

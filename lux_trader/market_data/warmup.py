@@ -192,6 +192,7 @@ class WarmupBuilder:
                     ccf_close=ccf_close,
                     ccf_close_filled=float(ccf_filled.loc[timestamp]),
                     umc_twd_fair=float(umc_twd_fair.loc[timestamp]),
+                    usd_twd=float(usd.loc[timestamp]),
                     spread=float(spread.loc[timestamp]),
                     ccf_was_filled=ccf_close is None,
                     ccf_symbol=ccf_symbol,

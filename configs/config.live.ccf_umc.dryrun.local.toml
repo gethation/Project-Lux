@@ -35,23 +35,15 @@ ccf_fee_per_contract_twd = 88.0
 ccf_tax_rate = 0.00002
 ccf_contract_multiplier = 2000.0
 umc_contract_multiplier = 5.0
-# 'bps', deliberately, and NOT because the ibkr model is wrong.
+# What IBKR actually charges: per share, with a per-order minimum and a 1% cap,
+# plus SEC and FINRA fees on SELLS ONLY. The replay golden keeps 'bps' because
+# that is what the PoC charges and what the reference number is built from.
 #
-# Selecting 'ibkr' here killed the first dry run on its first entry signal:
-# every one of the five fill_costs() call sites in runtime/live/modes.py omits
-# umc_side and usd_twd_rate, and the model raises rather than silently charging
-# a different number. D3 built the model and its tests but wired no live caller,
-# so 'ibkr' has never been reachable from the live path at all.
-#
-# The fix is not a one-liner: MarketBar carries no USD/TWD rate -- it exists
-# only on LiveQuoteSet and in the replay CSV -- so the model needs the rate
-# plumbed through minute_bar, warmup, replay, and the bars table, which puts
-# the golden in scope. That is separate work, not something to rush during a
-# live session.
-#
-# Nothing E2 or E3 measures depends on it: the fee model changes reported cost,
-# not whether a signal fires or how directional z diverges from mid z.
-umc_fee_model = 'bps'
+# This was 'bps' between 2026-08-04 00:20 and the fee-model wiring, because
+# selecting 'ibkr' killed the first dry run on its first entry signal: no live
+# call site passed umc_side or usd_twd_rate, and the model refuses rather than
+# quietly charging a number the configured model did not produce.
+umc_fee_model = 'ibkr'
 
 [safety]
 allow_live_order = false
