@@ -45,8 +45,42 @@ class FakeTrade:
         self._pumps += 1
 
 
+class FakeFill:
+    def __init__(self, order_id: int, shares: float, symbol: str = "UMC"):
+        self.execution = SimpleNamespace(orderId=order_id, shares=shares)
+        self.contract = SimpleNamespace(symbol=symbol)
+
+
 class FakeIb:
-    def __init__(self, trade, *, positions_before=0.0, positions_after=None):
+    def __init__(
+        self,
+        trade,
+        *,
+        positions_before=0.0,
+        positions_after=None,
+        fills_after_pumps: int | None = None,
+        fill_shares: float = 0.0,
+        fill_order_id: int = 77,
+    ):
+        # `fills_after_pumps` models what a real Gateway did on 2026-08-04: the
+        # order status went terminal, and the execution appeared a second later.
+        self.fills_after_pumps = fills_after_pumps
+        self.fill_shares = fill_shares
+        self.fill_order_id = fill_order_id
+        self.execution_requests = 0
+        self._pumps = 0
+        self._init_rest(trade, positions_before, positions_after)
+
+    def fills(self):
+        if self.fills_after_pumps is None or self._pumps < self.fills_after_pumps:
+            return []
+        return [FakeFill(self.fill_order_id, self.fill_shares)]
+
+    def reqExecutions(self, _filter=None):
+        self.execution_requests += 1
+        return []
+
+    def _init_rest(self, trade, positions_before, positions_after):
         self.errorEvent = FakeEvent()
         self.connectedEvent = FakeEvent()
         self.disconnectedEvent = FakeEvent()
@@ -77,6 +111,7 @@ class FakeIb:
 
     def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
+        self._pumps += 1
         self.trade.pump()
 
     def openTrades(self):
@@ -166,6 +201,88 @@ def test_terminal_and_unmoved_is_failed_not_unknown() -> None:
     result = place(ib)
 
     assert result["classification"] == "failed"
+
+
+def test_a_cancelled_status_that_later_executes_is_filled_not_failed() -> None:
+    """REGRESSION, observed on a real Gateway 2026-08-04.
+
+    IBKR emits warning 10349 ("order TIF set to DAY per preset"); ib_async
+    treats it as fatal and marks the Trade Cancelled with filled=0. IBKR then
+    executes the order about a second later.
+
+    The old code read one position snapshot the instant the terminal status
+    arrived -- before the fill landed -- saw no movement, and returned `failed`,
+    which the caller acts on as "nothing was left open". Both live smoke orders
+    did this. The buy reported safe while holding a share; the sell reported
+    CRITICAL while already flat.
+
+    `failed` now has to be earned by waiting for the account to catch up.
+    """
+    trade = FakeTrade(status="Cancelled", filled=0.0, remaining=406.0, done_after=0)
+    ib = FakeIb(
+        trade,
+        positions_before=0.0,
+        # The position view lags too, so it cannot rescue this on its own.
+        positions_after=0.0,
+        fills_after_pumps=2,
+        fill_shares=406.0,
+    )
+
+    result = place(ib)
+
+    assert result["classification"] == "filled"
+    assert result["execution_shares"] == 406.0
+    assert result["executions_confirm"] is True
+    assert ib.sleeps, "it must wait for the account before concluding"
+
+
+def test_a_late_partial_execution_is_unknown_not_failed() -> None:
+    """The same lag, but only part of the order traded. Not safe, not clean."""
+    trade = FakeTrade(status="Cancelled", filled=0.0, remaining=406.0, done_after=0)
+    ib = FakeIb(
+        trade,
+        positions_before=0.0,
+        positions_after=0.0,
+        fills_after_pumps=2,
+        fill_shares=120.0,
+    )
+
+    result = place(ib)
+
+    assert result["classification"] == "unknown"
+    assert result["execution_shares"] == 120.0
+
+
+def test_a_genuine_rejection_still_settles_to_failed() -> None:
+    """The waiting must not turn every rejection into an unknown -- a real
+    rejection is safe, and pausing on it would stop the pair for nothing."""
+    trade = FakeTrade(status="Cancelled", filled=0.0, remaining=406.0, done_after=0)
+    ib = FakeIb(trade, positions_before=0.0, positions_after=0.0)
+
+    result = place(ib, settle_seconds=1.0)
+
+    assert result["classification"] == "failed"
+    assert result["execution_shares"] == 0.0
+    # It asked the account rather than trusting the status alone.
+    assert ib.execution_requests > 0
+
+
+def test_executions_for_another_order_do_not_confirm_this_one() -> None:
+    """A concurrent fill on a different order id is not this order's evidence."""
+    trade = FakeTrade(status="Cancelled", filled=0.0, remaining=406.0, done_after=0)
+    ib = FakeIb(
+        trade,
+        positions_before=0.0,
+        positions_after=0.0,
+        fills_after_pumps=1,
+        fill_shares=406.0,
+        fill_order_id=999,
+    )
+
+    result = place(ib, settle_seconds=1.0)
+
+    assert result["classification"] == "failed"
+    assert result["execution_shares"] == 0.0
 
 
 def test_a_timeout_with_nothing_terminal_is_unknown() -> None:

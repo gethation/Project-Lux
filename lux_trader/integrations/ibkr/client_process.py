@@ -515,19 +515,24 @@ class _IbkrWorkerClient:
         quantity: float,
         wait_seconds: float,
         poll_seconds: float = 0.25,
+        settle_seconds: float = 5.0,
     ) -> dict[str, Any]:
         """Place one market order and report what is KNOWN about its outcome.
 
         Returns a classification, never a guess:
 
-          filled     the order reached a terminal filled state
-          failed     terminal, zero filled, and the position did not move --
-                     safe, because nothing was left open
-          unknown    anything else, including a timeout or a partial. The caller
-                     must treat this as possible exposure and pause.
+          filled     executions or the position say this order traded
+          failed     terminal, zero executions, position unmoved AFTER waiting
+                     for the account to catch up -- safe, nothing left open
+          unknown    anything else: a timeout, a partial, or a position that
+                     moved by the wrong amount. The caller pauses.
 
         The failed/unknown split is the whole point. "Rejected" and "no idea"
-        are both non-fills, but only one of them is safe to retry.
+        are both non-fills, but only one of them is safe to act on.
+
+        `settle_seconds` is why this is trustworthy. The order status is a
+        report; an execution is a fact, and the two disagree in practice --
+        measured on a real Gateway, not hypothesised.
         """
         if quantity <= 0:
             raise ValueError("quantity must be positive")
@@ -540,6 +545,14 @@ class _IbkrWorkerClient:
         contract = self._resolve_umc_detail().contract
         position_before = self.fetch_umc_position()
         order = MarketOrder(action, int(quantity))
+        # Name the TIF rather than letting IBKR apply the account's order
+        # preset. When it applies one it emits error 10349 ("order TIF set to
+        # DAY per preset") -- a WARNING, which ib_async treats as fatal and
+        # reports as a cancellation while IBKR goes on to fill the order. Naming
+        # it removes the trigger. It is NOT the fix: the settle wait below is,
+        # because the next warning code nobody enumerated will do the same
+        # thing.
+        order.tif = "DAY"
 
         submitted_at = self.clock()
         trade = self.ib.placeOrder(contract, order)
@@ -566,34 +579,65 @@ class _IbkrWorkerClient:
                     )
                     break
 
-        # Tier 3 -- position delta. Last resort, and only trusted when it
-        # agrees exactly with the order: a delta that half-matches says the
-        # position moved for some other reason too, which is not a confirmation.
-        position_after = self.fetch_umc_position()
+        order_id = int(trade.order.orderId)
         expected_delta = int(quantity) if action.upper() == "BUY" else -int(quantity)
+
+        # Tier 3 -- the account's own record, and the only tier that survived
+        # contact with a real Gateway.
+        #
+        # On 2026-08-04 both live smoke orders came back status='Cancelled',
+        # filled=0 (ib_async's reading of warning 10349) and IBKR executed both
+        # of them ~1s later. A single position snapshot taken the instant the
+        # terminal status arrives is therefore not evidence of anything: the
+        # position view lags the fill, so it agreed with the lie.
+        #
+        # `failed` claims nothing was left open, and the caller acts on that. So
+        # it now has to be EARNED: no executions and no position movement, still
+        # true after waiting for the account to catch up. Anything short of that
+        # is `unknown`, which pauses.
+        settle_deadline = (
+            float(settle_seconds)
+            if status in TERMINAL_UNFILLED_STATUSES and filled == 0.0
+            else 0.0
+        )
+        execution_shares = self._umc_execution_shares(order_id)
+        position_after = self.fetch_umc_position()
+        while (
+            settle_deadline > 0
+            and execution_shares == 0.0
+            and position_after == position_before
+        ):
+            slice_seconds = min(float(poll_seconds), settle_deadline)
+            self.ib.sleep(slice_seconds)
+            settle_deadline -= slice_seconds
+            execution_shares = self._umc_execution_shares(order_id)
+            position_after = self.fetch_umc_position()
+
         observed_delta = position_after - position_before
         delta_confirms = abs(observed_delta - expected_delta) <= 1e-9
+        executions_confirm = abs(execution_shares - float(quantity)) <= 1e-9
 
         if status == "Filled" or (filled >= int(quantity) and remaining <= 0):
             classification = "filled"
             filled = max(filled, float(quantity))
-        elif delta_confirms:
-            # The broker never said so, but the account moved by exactly this
-            # order. Treat as filled and say which tier decided it.
+        elif executions_confirm or delta_confirms:
+            # The order status never said so, but the account did. An execution
+            # is a fact; an order status is a report about one.
             classification = "filled"
-            filled = float(quantity)
-        elif (
-            status in TERMINAL_UNFILLED_STATUSES
-            and filled == 0.0
-            and observed_delta == 0.0
-        ):
+            filled = max(filled, execution_shares, float(quantity))
+        elif execution_shares > 0.0 or observed_delta != 0.0:
+            # Something traded, but not this order's full size. Partial, or the
+            # position moved for another reason as well. Either way, exposure.
+            classification = "unknown"
+            filled = max(filled, execution_shares)
+        elif status in TERMINAL_UNFILLED_STATUSES and filled == 0.0:
             classification = "failed"
         else:
             classification = "unknown"
 
         return {
             "classification": classification,
-            "order_id": int(trade.order.orderId),
+            "order_id": order_id,
             "status": status,
             "filled": filled,
             "remaining": remaining,
@@ -603,9 +647,40 @@ class _IbkrWorkerClient:
             "observed_delta": observed_delta,
             "expected_delta": expected_delta,
             "delta_confirms": delta_confirms,
+            "execution_shares": execution_shares,
+            "executions_confirm": executions_confirm,
             "submitted_at": submitted_at,
             "resolved_at": self.clock(),
         }
+
+    def _umc_execution_shares(self, order_id: int) -> float:
+        """Shares this order actually executed, per the account's own record.
+
+        Executions are what the broker BILLS on; the order status is a report
+        about them that can be wrong or late. Refreshed rather than read from
+        cache, because the whole point is to see a fill the event stream missed.
+        """
+        try:
+            from ib_async import ExecutionFilter
+
+            self.ib.reqExecutions(ExecutionFilter())
+        except Exception:
+            # A refresh failure must not be read as "no executions" -- fall
+            # through to whatever the cache already holds.
+            pass
+        total = 0.0
+        for fill in self.ib.fills():
+            execution = getattr(fill, "execution", None)
+            if execution is None:
+                continue
+            if int(getattr(execution, "orderId", -1)) != order_id:
+                continue
+            contract = getattr(fill, "contract", None)
+            symbol = str(getattr(contract, "symbol", "") or "").strip().upper()
+            if symbol and symbol != "UMC":
+                continue
+            total += float(getattr(execution, "shares", 0.0) or 0.0)
+        return total
 
     def close(self) -> None:
         self._cancel_umc_subscription()
