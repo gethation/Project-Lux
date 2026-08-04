@@ -177,6 +177,101 @@ def test_smoke_needs_allow_live_order(tmp_path, monkeypatch) -> None:
         cli_module.command_exec_smoke(parse(tmp_path, config=config))
 
 
+def test_the_confirm_symbol_gate_is_actually_enforced(tmp_path, monkeypatch) -> None:
+    """REGRESSION: --confirm-symbol was required by the parser and read by
+    nothing on this path, so the operator's deliberate second confirmation was
+    accepted and discarded on the one command that opens a real position."""
+    gates_open(monkeypatch)
+    adapter = FakeIbkrAdapter()
+    install(monkeypatch, adapter)
+    args = build_parser().parse_args(
+        [
+            "admin", "exec-smoke", "--venue", "ibkr",
+            "--config", str(write_config(tmp_path)),
+            "--confirm-symbol", "TOTALLY-WRONG",
+        ]
+    )
+
+    with pytest.raises(SystemExit, match="confirm-symbol"):
+        cli_module.command_exec_smoke(args)
+
+    assert adapter.executed == []
+
+
+def test_fubon_exec_smoke_refuses_a_side_it_would_ignore(tmp_path, monkeypatch) -> None:
+    """`--side sell` used to be an argparse error here. Once the flag moved to
+    the shared subparser it parsed, and the Fubon path hard-codes BUY -- so the
+    operator got a real LONG where they asked for a short."""
+    monkeypatch.setenv("PROJECT_LUX_ALLOW_LIVE_ORDER", "1")
+    monkeypatch.setenv("FUBON_ALLOW_LIVE_ORDER", "1")
+    monkeypatch.setenv("LUX_FUBON_EXECUTION_SMOKE", "1")
+    args = build_parser().parse_args(
+        [
+            "admin", "exec-smoke", "--venue", "fubon",
+            "--config", str(write_config(tmp_path)),
+            "--symbol", "CCFH6", "--lot", "1",
+            "--side", "sell",
+            "--confirm-symbol", "CCFH6",
+        ]
+    )
+
+    with pytest.raises(SystemExit, match="--side is not supported"):
+        cli_module.command_exec_smoke(args)
+
+
+def test_a_fill_sum_with_float_error_rounds_rather_than_truncating(
+    tmp_path, monkeypatch
+) -> None:
+    """Fills are whole shares, but summing several as floats can land just
+    under. int() on 2.9999999996 closes 2 and strands a share, which then trips
+    the CRITICAL check and prints a `--shares 0` remediation command.
+
+    (Not tested with 2.5: round() is banker's rounding, so 2.5 -> 2. A genuine
+    half-share fill cannot happen on a whole-share equity, and pinning that
+    behaviour would assert an accident.)
+    """
+    gates_open(monkeypatch)
+
+    class FractionalAdapter(FakeIbkrAdapter):
+        def execute(self, plan):
+            self.executed.append(plan)
+            first = len(self.executed) == 1
+            return ExecutionOutcome(
+                plan_id=plan.plan_id,
+                timestamp=plan.timestamp,
+                status=ExecutionOutcomeStatus.FILLED,
+                message="fake",
+                fills=(
+                    SimpleNamespace(
+                        quantity=2.9999999996 if first else plan.legs[0].quantity
+                    ),
+                ),
+            )
+
+    adapter = FractionalAdapter(positions=(0.0, 3.0, 0.0))
+    install(monkeypatch, adapter)
+
+    assert cli_module.command_exec_smoke(parse(tmp_path, shares=3)) == 0
+    assert adapter.executed[1].legs[0].quantity == 3.0
+
+
+def test_the_flatten_hint_rounds_the_share_count(capsys) -> None:
+    """A residual of 2.9999999996 must print 3; int() would print 2 and leave a
+    share naked in a command the operator copy-pastes during an incident."""
+    cli_module.print_ibkr_manual_close_hint("UMC", 2.9999999996)
+    assert "--shares 3" in capsys.readouterr().out
+
+    cli_module.print_ibkr_manual_close_hint("UMC", -2.9999999996)
+    assert "--side buy --shares 3" in capsys.readouterr().out
+
+
+def test_the_flatten_hint_says_so_when_the_position_is_unreadable(capsys) -> None:
+    cli_module.print_ibkr_manual_close_hint("UMC", None)
+    out = capsys.readouterr().out
+    assert "Cannot print a flatten command" in out
+    assert "--shares <n>" in out
+
+
 # --- preflight ---------------------------------------------------------------
 
 

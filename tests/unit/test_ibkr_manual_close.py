@@ -72,15 +72,26 @@ class FakeIbkrAdapter:
         self.closed = False
         self._preflight_calls = 0
 
+    # The real adapter exposes preflight(), fetch_position_quantity() and
+    # fetch_open_orders(); the double must too, or it silently defines a
+    # narrower contract than the code under test relies on.
+    def _current_position(self) -> float:
+        if self.executed and self.position_after is not None:
+            return self.position_after
+        return self.position
+
     def preflight(self):
         self._preflight_calls += 1
-        if self._preflight_calls > 1 and self.position_after is not None:
-            return SimpleNamespace(
-                position_quantity=self.position_after, open_orders=()
-            )
         return SimpleNamespace(
-            position_quantity=self.position, open_orders=self.open_orders
+            position_quantity=self._current_position(),
+            open_orders=() if self.executed else self.open_orders,
         )
+
+    def fetch_position_quantity(self) -> float:
+        return self._current_position()
+
+    def fetch_open_orders(self):
+        return () if self.executed else self.open_orders
 
     def execute(self, plan):
         self.executed.append(plan)
@@ -104,6 +115,9 @@ def install(monkeypatch, adapter: FakeIbkrAdapter) -> None:
     monkeypatch.setattr(
         cli_module, "IbkrUmcExecutionAdapter", lambda *a, **k: adapter
     )
+    # The command now polls for the post-fill position; the real sleep would
+    # add 2s per test for a lag the double does not simulate.
+    monkeypatch.setattr(cli_module.time, "sleep", lambda *_: None)
 
 
 def gates_open(monkeypatch) -> None:
@@ -205,6 +219,135 @@ def test_refuses_when_open_orders_exist(tmp_path, monkeypatch) -> None:
         cli_module.command_manual_close(parse(tmp_path, side="sell", shares=389))
 
     assert adapter.executed == []
+
+
+def test_a_symbol_that_is_not_the_configured_umc_is_refused(
+    tmp_path, monkeypatch
+) -> None:
+    """THE WORST BUG THIS FILE GUARDS.
+
+    IbkrClientProcess takes no symbol -- it hardcodes Stock("UMC","SMART","USD")
+    and filters positions on "UMC". So an unchecked --symbol is not ignored, it
+    is a lie: `--symbol TSM --confirm-symbol TSM` used to pass (the two only
+    matched each other), evaluate the close-only guard against the UMC position,
+    and send a real UMC market order recorded in the journal as TSM.
+    """
+    gates_open(monkeypatch)
+    adapter = FakeIbkrAdapter(position=389.0)
+    install(monkeypatch, adapter)
+
+    with pytest.raises(SystemExit, match="not the configured UMC symbol"):
+        cli_module.command_manual_close(
+            parse(tmp_path, symbol="TSM", confirm_symbol="TSM", shares=100)
+        )
+
+    assert adapter.executed == []
+
+
+def test_the_post_close_read_is_polled_not_taken_once(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """REGRESSION: a clean close reported CRITICAL.
+
+    IBKR's portfolio view lags its own fill report, so the single read taken
+    immediately after the order returned the PRE-close position, the expected
+    check failed, and the tool exited 1 on a successful close. An operator
+    acting on that false alarm reruns and opens a naked position -- the one
+    outcome this tool exists to prevent.
+    """
+    gates_open(monkeypatch)
+
+    class LaggingAdapter(FakeIbkrAdapter):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._reads = 0
+
+        def fetch_position_quantity(self) -> float:
+            self._reads += 1
+            # Stale for the first two reads, then the truth.
+            return 500.0 if self._reads <= 2 else 0.0
+
+    adapter = LaggingAdapter(position=500.0)
+    install(monkeypatch, adapter)
+
+    rc = cli_module.command_manual_close(
+        parse(tmp_path, side="sell", shares=500)
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "CRITICAL" not in out
+    assert adapter._reads > 1
+
+
+def test_the_expectation_uses_the_filled_quantity_not_the_requested(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A partial fill must not be judged against the size that was asked for."""
+    gates_open(monkeypatch)
+
+    class PartialAdapter(FakeIbkrAdapter):
+        def execute(self, plan):
+            self.executed.append(plan)
+            return ExecutionOutcome(
+                plan_id=plan.plan_id,
+                timestamp=plan.timestamp,
+                status=ExecutionOutcomeStatus.FILLED,
+                message="partial",
+                fills=(SimpleNamespace(quantity=200.0),),
+            )
+
+    # 500 requested, 200 filled, so 300 should remain -- not an error.
+    adapter = PartialAdapter(position=500.0, position_after=300.0)
+    install(monkeypatch, adapter)
+
+    rc = cli_module.command_manual_close(parse(tmp_path, side="sell", shares=500))
+
+    assert rc == 0
+    assert "CRITICAL" not in capsys.readouterr().out
+
+
+def test_an_unreadable_position_after_the_order_is_critical_not_a_traceback(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The read most likely to fail is the one taken right after a close that
+    was needed because the venue is unhealthy."""
+    gates_open(monkeypatch)
+
+    class BlindAfterOrder(FakeIbkrAdapter):
+        def fetch_position_quantity(self) -> float:
+            if self.executed:
+                raise RuntimeError("worker died")
+            return self.position
+
+    adapter = BlindAfterOrder(position=389.0)
+    install(monkeypatch, adapter)
+
+    rc = cli_module.command_manual_close(parse(tmp_path, side="sell", shares=389))
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "POSITION UNREADABLE" in out
+    assert "CRITICAL manual intervention required" in out
+
+
+def test_fubon_manual_close_refuses_the_ibkr_only_flags(tmp_path, monkeypatch) -> None:
+    """Widening --venue turned previously-rejected flags into accepted no-ops."""
+    monkeypatch.setenv("PROJECT_LUX_ALLOW_LIVE_ORDER", "1")
+    monkeypatch.setenv("FUBON_ALLOW_LIVE_ORDER", "1")
+    monkeypatch.setenv("LUX_FUBON_MANUAL_CLOSE", "1")
+    args = build_parser().parse_args(
+        [
+            "admin", "manual-close", "--venue", "fubon",
+            "--config", str(write_config(tmp_path)),
+            "--symbol", "CCFH6", "--side", "sell", "--lot", "1",
+            "--shares", "400",
+            "--confirm-symbol", "CCFH6",
+        ]
+    )
+
+    with pytest.raises(SystemExit, match="--shares"):
+        cli_module.command_manual_close(args)
 
 
 # --- gates -------------------------------------------------------------------

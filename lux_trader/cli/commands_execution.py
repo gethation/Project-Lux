@@ -4,10 +4,15 @@ Everything here either sends REAL orders behind explicit config+env gates or
 reads real accounts read-only. Tests monkeypatch the adapter names on this
 module (e.g. ``commands_execution.FubonFutureExecutionAdapter``).
 
-``manual-close`` accepts ``fubon`` and ``ibkr``. The IBKR half was missing until
-2026-08-04, which meant a stranded UMC leg had no emergency-close path from this
-CLI at all -- a gap in the safety net, not merely a testing inconvenience.
-``exec-smoke`` is still Fubon-only.
+``manual-close`` and ``exec-smoke`` both accept ``fubon`` and ``ibkr``. The IBKR
+half of manual-close was missing until 2026-08-04, which meant a stranded UMC leg
+had no emergency-close path from this CLI at all -- a gap in the safety net, not
+merely a testing inconvenience.
+
+The IBKR execution surface is imported LAZILY (see ``_load_ibkr_execution``).
+A module-scope import reaches this module through ``dispatch.py`` on every CLI
+invocation, including ``replay`` and ``summary``, which must keep working with no
+brokerage packages installed.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ import json
 import os
 import time
 from datetime import datetime
+from typing import Any
 
 from lux_trader.cli import helpers
 from lux_trader.config import load_config
@@ -36,11 +42,6 @@ from lux_trader.integrations.fubon.execution import (
     FubonFutureExecutionAdapter,
     fubon_manual_close_env_gates_open,
     fubon_smoke_env_gates_open,
-)
-from lux_trader.integrations.ibkr.execution import (
-    IBKR_LIVE_ORDER_ENV_GATES,
-    IbkrUmcExecutionAdapter,
-    ibkr_live_order_gates_open,
 )
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.integrations.fubon.execution_process import FubonFutureExecutionProcess
@@ -192,12 +193,85 @@ def build_live_execution_brokers(
 
 IBKR_EXECUTION_SMOKE_ENV = "LUX_IBKR_EXECUTION_SMOKE"
 
+# Assigned lazily by _load_ibkr_execution(). Importing this at module scope
+# would drag ib_async into EVERY cli invocation through dispatch.py -- including
+# `replay` and `summary`, which venues.py:19-22 requires to keep working on a
+# machine with no brokerage packages installed. ib_async is not in any
+# requirements file, so a module-scope import breaks a clean checkout outright.
+# The name stays module-level so tests can monkeypatch it.
+IbkrUmcExecutionAdapter: Any = None
+
+
+def _load_ibkr_execution() -> None:
+    """Import the IBKR execution surface on first use, not at import time."""
+    global IbkrUmcExecutionAdapter
+    if IbkrUmcExecutionAdapter is None:
+        from lux_trader.integrations.ibkr.execution import (
+            IbkrUmcExecutionAdapter as _Adapter,
+        )
+
+        IbkrUmcExecutionAdapter = _Adapter
+
+
+def ibkr_env_gate_names() -> tuple[str, ...]:
+    from lux_trader.integrations.ibkr.execution import IBKR_LIVE_ORDER_ENV_GATES
+
+    return IBKR_LIVE_ORDER_ENV_GATES
+
+
+def ibkr_env_gates_open() -> dict[str, bool]:
+    from lux_trader.integrations.ibkr.execution import ibkr_live_order_gates_open
+
+    return ibkr_live_order_gates_open()
+
+
+def refuse_foreign_venue_args(
+    args: argparse.Namespace,
+    *,
+    venue: str,
+    foreign: tuple[tuple[str, str], ...],
+) -> None:
+    """Reject args that belong to a different venue rather than ignoring them.
+
+    argparse cannot do this: the options live on one shared subparser, so
+    widening `--venue` silently turned previously-rejected flags into accepted
+    no-ops. `exec-smoke --venue fubon --side sell` used to die with
+    "unrecognized arguments"; without this it parses and opens a real LONG,
+    because the Fubon path hard-codes BUY and never reads `--side`.
+    """
+    supplied = [
+        flag
+        for attr, flag in foreign
+        if getattr(args, attr, None) not in (None, False)
+    ]
+    if supplied:
+        raise SystemExit(
+            f"{', '.join(supplied)} {'is' if len(supplied) == 1 else 'are'} "
+            f"not supported for --venue {venue} and would be ignored"
+        )
+
 
 def command_exec_smoke(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     assert_live_lease_available(config.store_path)
     if args.venue == "ibkr":
+        refuse_foreign_venue_args(
+            args, venue="ibkr", foreign=(("lot", "--lot"),)
+        )
         return ibkr_exec_smoke(args)
+    # --shares carries a default of 1, so it cannot be distinguished from an
+    # explicit 1; --side likewise defaults to "buy". Only flag the values a
+    # Fubon operator could not have meant.
+    refuse_foreign_venue_args(
+        args,
+        venue="fubon",
+        foreign=(("allow_position_mismatch", "--allow-position-mismatch"),),
+    )
+    if str(getattr(args, "side", "buy")).lower() != "buy":
+        raise SystemExit(
+            "--side is not supported for --venue fubon (the smoke round trip "
+            "always opens with a buy) and would be ignored"
+        )
     if args.symbol is None:
         raise SystemExit("--symbol is required for --venue fubon")
     if args.lot is None:
@@ -227,6 +301,7 @@ def ibkr_exec_smoke(args: argparse.Namespace) -> int:
     shares = int(args.shares)
     open_side = OrderSide.BUY if str(args.side).lower() == "buy" else OrderSide.SELL
     close_side = OrderSide.SELL if open_side == OrderSide.BUY else OrderSide.BUY
+    _load_ibkr_execution()
     adapter = IbkrUmcExecutionAdapter(
         symbol,
         host=config.live.ibkr_host,
@@ -260,16 +335,17 @@ def ibkr_exec_smoke(args: argparse.Namespace) -> int:
             )
         )
         print_ibkr_smoke_outcome("open", open_outcome)
-        opened = int(sum(fill.quantity for fill in open_outcome.fills))
+        # round, not int: truncating a 2.5-share fill to 2 closes short and
+        # strands the remainder, which then trips the CRITICAL check below.
+        opened = int(round(sum(fill.quantity for fill in open_outcome.fills)))
         if opened <= 0:
-            diagnostic = adapter.preflight()
-            print(
-                f"IBKR execution smoke open_unknown_diagnostic: "
-                f"position={diagnostic.position_quantity:g}, "
-                f"open_orders={len(diagnostic.open_orders)}"
-            )
+            # Guarded: this runs precisely when the venue is unhealthy, so the
+            # read is the thing most likely to raise -- and losing it would
+            # swallow the CRITICAL banner and the flatten command with a real
+            # position possibly open.
+            position = read_position_or_report(adapter, "open_unknown_diagnostic")
             print("CRITICAL manual intervention required")
-            print_ibkr_manual_close_hint(symbol, diagnostic.position_quantity)
+            print_ibkr_manual_close_hint(symbol, position)
             return 1
 
         after_open = fetch_position_with_retry(adapter, expected="nonzero")
@@ -293,8 +369,20 @@ def ibkr_exec_smoke(args: argparse.Namespace) -> int:
         )
         print_ibkr_smoke_outcome("close", close_outcome)
 
-        final_position = fetch_position_with_retry(adapter, expected="zero")
-        final_open_orders = adapter.fetch_open_orders()
+        # Guarded for the same reason as the unknown-open path: a close order
+        # has already been sent, so a read failure here must not replace the
+        # CRITICAL banner with a traceback.
+        try:
+            final_position = fetch_position_with_retry(adapter, expected="zero")
+            final_open_orders = adapter.fetch_open_orders()
+        except Exception as exc:  # noqa: BLE001 - report, never mask
+            print(
+                f"IBKR execution smoke after_close: POSITION UNREADABLE "
+                f"({type(exc).__name__}: {exc}) after a close order was sent."
+            )
+            print("CRITICAL manual intervention required")
+            print_ibkr_manual_close_hint(symbol, None)
+            return 1
         print(
             f"IBKR execution smoke after_close: position={final_position:g}, "
             f"open_orders={len(final_open_orders)}"
@@ -329,20 +417,81 @@ def print_ibkr_smoke_outcome(label: str, outcome: object) -> None:
     )
 
 
-def print_ibkr_manual_close_hint(symbol: str, position: float) -> None:
-    """The remedy, spelled out, because this is read during an incident."""
-    if abs(position) <= 1e-12:
+def read_position_or_report(adapter: object, label: str) -> float | None:
+    """Read the position, or say so and return None rather than raising.
+
+    Every caller is on a path where an order may already be live, so an
+    exception here would replace the CRITICAL banner and the flatten command
+    with a traceback -- at the one moment the operator needs both. Returns None
+    for "unreadable", which is NOT the same as flat.
+    """
+    try:
+        preflight = adapter.preflight()
+    except Exception as exc:  # noqa: BLE001 - report, never mask
         print(
-            "Position reads flat, but verify against IBKR directly before "
-            "trusting it -- an unreadable position is not a flat one."
+            f"IBKR {label}: POSITION UNREADABLE ({type(exc).__name__}: {exc}). "
+            "Treat this as a possible open position, not a flat one."
+        )
+        return None
+    print(
+        f"IBKR {label}: position={preflight.position_quantity:g}, "
+        f"open_orders={len(preflight.open_orders)}"
+    )
+    return float(preflight.position_quantity)
+
+
+def print_ibkr_manual_close_hint(symbol: str, position: float | None) -> None:
+    """The remedy, spelled out, because this is read during an incident."""
+    if position is None:
+        print(
+            "Cannot print a flatten command without a readable position. "
+            "Check IBKR directly, then run: admin manual-close --venue ibkr "
+            f"--symbol {symbol} --side <buy|sell> --shares <n> "
+            f"--confirm-symbol {symbol}"
+        )
+        return
+    # round, not int: a residual of 2.9999999996 must print 3, and int() would
+    # print 2 and strand a share. A residual under half a share rounds to 0,
+    # which --shares rejects, so say that instead of emitting a dead command.
+    shares = int(round(abs(position)))
+    if shares <= 0:
+        print(
+            f"Position {position:g} rounds to zero whole shares; nothing to "
+            "flatten, but verify against IBKR directly."
         )
         return
     side = "sell" if position > 0 else "buy"
     print(
         "To flatten: admin manual-close --venue ibkr "
-        f"--symbol {symbol} --side {side} --shares {abs(int(position))} "
+        f"--symbol {symbol} --side {side} --shares {shares} "
         f"--confirm-symbol {symbol}"
     )
+
+
+def require_ibkr_symbol(config: object, args: argparse.Namespace) -> str:
+    """The instrument this command will actually trade, or refuse.
+
+    IbkrClientProcess takes no symbol: `_resolve_umc_detail` hardcodes
+    Stock("UMC", "SMART", "USD") and `fetch_umc_position` filters on "UMC". So
+    an unchecked `--symbol` is not merely ignored -- it is a lie the journal
+    then records. Confirming `--symbol` against `--confirm-symbol` alone
+    catches nothing, because a wrong instrument typed twice still matches
+    itself; both must agree with the configured UMC symbol.
+    """
+    configured = str(config.live.umc_symbol).strip().upper()
+    supplied = str(getattr(args, "symbol", None) or configured).strip().upper()
+    confirm = str(args.confirm_symbol).strip().upper()
+    if supplied != configured:
+        raise SystemExit(
+            f"--symbol {supplied} is not the configured UMC symbol "
+            f"({configured}). This command can only trade {configured}: the "
+            "IBKR worker resolves that contract regardless of what is passed."
+        )
+    if confirm != configured:
+        raise SystemExit(
+            f"--confirm-symbol must match {configured}; got {confirm}"
+        )
+    return configured
 
 
 def require_ibkr_exec_smoke_ready(
@@ -351,6 +500,7 @@ def require_ibkr_exec_smoke_ready(
 ) -> None:
     if not config.safety.allow_live_order:
         raise SystemExit("safety.allow_live_order=true is required")
+    require_ibkr_symbol(config, args)
     if int(args.shares) <= 0:
         raise SystemExit("--shares must be positive")
     # A third gate on top of the adapter's two. Enabling live orders for the
@@ -362,8 +512,8 @@ def require_ibkr_exec_smoke_ready(
         raise SystemExit(
             f"IBKR execution smoke gates closed: {IBKR_EXECUTION_SMOKE_ENV}=1"
         )
-    gates = ibkr_live_order_gates_open()
-    closed = [name for name in IBKR_LIVE_ORDER_ENV_GATES if not gates[name]]
+    gates = ibkr_env_gates_open()
+    closed = [name for name in ibkr_env_gate_names() if not gates[name]]
     if closed:
         raise SystemExit(
             "IBKR execution smoke gates closed: "
@@ -537,7 +687,18 @@ def command_manual_close(args: argparse.Namespace) -> int:
     # not take the lease, so a soak never blocks an emergency close.
     assert_live_lease_available(config.store_path)
     if args.venue == "ibkr":
+        refuse_foreign_venue_args(
+            args, venue="ibkr", foreign=(("lot", "--lot"),)
+        )
         return ibkr_manual_close(args)
+    refuse_foreign_venue_args(
+        args,
+        venue="fubon",
+        foreign=(
+            ("shares", "--shares"),
+            ("allow_position_mismatch", "--allow-position-mismatch"),
+        ),
+    )
     if args.lot is None:
         raise SystemExit("--lot is required for --venue fubon")
     return fubon_manual_close(args)
@@ -565,6 +726,7 @@ def ibkr_manual_close(args: argparse.Namespace) -> int:
     symbol = str(args.symbol).strip().upper()
     shares = int(args.shares)
     side = OrderSide.BUY if str(args.side).lower() == "buy" else OrderSide.SELL
+    _load_ibkr_execution()
     adapter = IbkrUmcExecutionAdapter(
         symbol,
         host=config.live.ibkr_host,
@@ -624,24 +786,48 @@ def ibkr_manual_close(args: argparse.Namespace) -> int:
             f"message={outcome.message}"
         )
 
-        after = adapter.preflight()
-        print(
-            f"IBKR manual close after: position={after.position_quantity:g}, "
-            f"open_orders={len(after.open_orders)}"
+        # Size the expectation from what FILLED, not what was requested, and
+        # poll for it. IBKR's portfolio view lags its own fill report, so a
+        # single read here returns the PRE-close position and reports a clean
+        # close as CRITICAL -- an operator who reruns on that false alarm turns
+        # a flat book into a naked position, which is the one outcome this tool
+        # exists to prevent.
+        filled_shares = int(round(filled))
+        expected = pre_position + (
+            filled_shares if side == OrderSide.BUY else -filled_shares
         )
-        expected = pre_position + (shares if side == OrderSide.BUY else -shares)
-        if not outcome.filled or after.open_orders:
-            print("CRITICAL manual intervention required")
-            return 1
-        if abs(after.position_quantity - expected) > 1e-6:
-            print(
-                f"CRITICAL position {after.position_quantity:g} does not match "
-                f"the expected {expected:g} after a reported fill"
+        try:
+            after_position = fetch_position_with_retry(
+                adapter,
+                expected="zero" if abs(expected) <= 1e-9 else "nonzero",
             )
+            after_open_orders = adapter.fetch_open_orders()
+        except Exception as exc:  # noqa: BLE001 - report, never mask
+            print(
+                f"IBKR manual close after: POSITION UNREADABLE "
+                f"({type(exc).__name__}: {exc}) after an order was sent."
+            )
+            print("CRITICAL manual intervention required")
+            print_ibkr_manual_close_hint(symbol, None)
             return 1
         print(
-            f"IBKR manual close complete: position={after.position_quantity:g}, "
-            f"open_orders={len(after.open_orders)}"
+            f"IBKR manual close after: position={after_position:g}, "
+            f"open_orders={len(after_open_orders)}"
+        )
+        if not outcome.filled or after_open_orders:
+            print("CRITICAL manual intervention required")
+            print_ibkr_manual_close_hint(symbol, after_position)
+            return 1
+        if abs(after_position - expected) > 1e-6:
+            print(
+                f"CRITICAL position {after_position:g} does not match "
+                f"the expected {expected:g} after a fill of {filled_shares}"
+            )
+            print_ibkr_manual_close_hint(symbol, after_position)
+            return 1
+        print(
+            f"IBKR manual close complete: position={after_position:g}, "
+            f"open_orders={len(after_open_orders)}"
         )
         return 0
     finally:
@@ -654,17 +840,15 @@ def require_ibkr_manual_close_ready(
 ) -> None:
     if not config.safety.allow_live_order:
         raise SystemExit("safety.allow_live_order=true is required")
-    symbol = str(args.symbol or "").strip()
-    if not symbol:
+    if not str(args.symbol or "").strip():
         raise SystemExit("--symbol is required")
-    if str(args.confirm_symbol).strip() != symbol:
-        raise SystemExit("--confirm-symbol must match --symbol")
+    require_ibkr_symbol(config, args)
     if args.shares is None:
         raise SystemExit("--shares is required for --venue ibkr")
     if int(args.shares) <= 0:
         raise SystemExit("--shares must be positive")
-    gates = ibkr_live_order_gates_open()
-    closed = [name for name in IBKR_LIVE_ORDER_ENV_GATES if not gates[name]]
+    gates = ibkr_env_gates_open()
+    closed = [name for name in ibkr_env_gate_names() if not gates[name]]
     if closed:
         raise SystemExit(
             "IBKR manual close gates closed: "
