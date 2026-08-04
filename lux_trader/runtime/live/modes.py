@@ -472,6 +472,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
             self.umc_adapter = open_umc_execution_adapter(
                 self.config.live.umc_symbol,
                 self.config.live.fubon_env_path,
+                self.config,
             )
         if self.fubon_adapter is None:
             self.fubon_adapter = FubonFutureExecutionProcess(
@@ -484,6 +485,7 @@ class LiveExecuteModeHandler(LiveModeHandler):
                 open_umc_readonly_broker(
                     self.config.live.umc_symbol,
                     self.config.live.fubon_env_path,
+                    self.config,
                 ),
             )
         if self.post_trade_reconciler is None:

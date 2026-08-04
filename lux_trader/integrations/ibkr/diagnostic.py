@@ -42,16 +42,21 @@ SHORTABLE_AVAILABLE_RANK = 2.5
 # probe must not collapse them into one failure.
 MARKET_DATA_ENTITLEMENT_ERROR_CODES = frozenset({354, 10089, 10090, 10167, 10197})
 
-# IBKR sends its data-farm status notices ("HMDS data farm connection is OK",
-# 2104/2106/2107/2158) through the SAME error channel as real failures. They
-# arrive on every healthy connection, so surfacing them as warnings teaches the
-# reader to skim past the line that will one day matter.
-INFORMATIONAL_ERROR_CODE_RANGE = (2100, 2200)
+# IBKR sends its data-farm status notices through the SAME error channel as real
+# failures. These specific codes arrive on every healthy connection, so
+# surfacing them as warnings teaches the reader to skim past the line that will
+# one day matter.
+#
+# An ALLOW-LIST, not the 2100-2200 range. That range also holds 2103 ("market
+# data farm connection is BROKEN"), 2105 ("HMDS data farm connection is
+# BROKEN") and 2110 ("connectivity between TWS and server is broken") -- the
+# very codes that explain a missing book or an empty historical fetch. Filtering
+# the whole band made this probe discard the answer it exists to report.
+INFORMATIONAL_ERROR_CODES = frozenset({2104, 2106, 2107, 2108, 2158})
 
 
 def _is_informational(code: int) -> bool:
-    low, high = INFORMATIONAL_ERROR_CODE_RANGE
-    return low <= code <= high
+    return code in INFORMATIONAL_ERROR_CODES
 
 
 class IbkrConnectivityError(RuntimeError):

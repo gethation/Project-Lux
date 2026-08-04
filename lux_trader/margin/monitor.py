@@ -47,6 +47,7 @@ def build_default_margin_brokers(
         open_umc_readonly_broker(
             config.live.umc_symbol,
             config.live.fubon_env_path,
+            config,
         ),
     )
 

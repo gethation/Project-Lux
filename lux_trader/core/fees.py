@@ -35,8 +35,13 @@ def _umc_fee_twd(
     # umc_contract_twd_price is the TWD price of one ADR share; dividing by the
     # rate recovers the USD price IBKR actually bills against.
     price_usd = umc_contract_twd_price(umc_price, fees) / float(usd_twd_rate)
+    # Truncate toward zero, matching whole_share_quantity in
+    # integrations/ibkr/execution.py. Rounding to nearest here would price 401
+    # shares against an order that sent 400 -- and because umc_trade_cost
+    # applies a per-order minimum and a 1%-of-value cap, the error is not even a
+    # fixed one-share delta. Charge what was sent.
     cost = umc_trade_cost(
-        shares=int(round(abs(umc_units))),
+        shares=int(abs(umc_units)),
         price_usd=price_usd,
         side=umc_side,
     )

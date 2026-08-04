@@ -450,6 +450,12 @@ class PairStrategy:
             ccf_contracts=sizing.ccf_contracts,
             ccf_price=entry_ccf_price(bar),
             fees=self.fees,
+            # Ignored by the default 'bps' model, so the golden is unmoved. The
+            # 'ibkr' model needs both, and without them a replay configured
+            # with it raised on the first fill -- which made the usdttwd_close
+            # column replay.py carries write-only.
+            umc_side=OrderSide.BUY if sizing.umc_units > 0 else OrderSide.SELL,
+            usd_twd_rate=bar.usd_twd,
         )
         orders, fills = self._place_entry_orders(
             bar,
@@ -560,6 +566,11 @@ class PairStrategy:
             ccf_contracts=self.state.ccf_contracts,
             ccf_price=exit_ccf_price(bar, exit_reason),
             fees=self.fees,
+            # NEGATED: this is handed the POSITION, but the order sent closes
+            # it. Passing the position's sign would charge a buy's fees on a
+            # sell, and IBKR's SEC/FINRA fees fall on the seller alone.
+            umc_side=OrderSide.BUY if -self.state.umc_units > 0 else OrderSide.SELL,
+            usd_twd_rate=bar.usd_twd,
         )
         orders, fills = self._place_exit_orders(bar, costs)
         result = self.apply_exit_execution(

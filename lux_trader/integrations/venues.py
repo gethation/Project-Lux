@@ -90,19 +90,36 @@ def open_fx_quote_provider(config: "AppConfig") -> Any:
     )
 
 
-def open_umc_readonly_broker(symbol: str, env_path: Path | None = None) -> Any:
+def open_umc_readonly_broker(
+    symbol: str,
+    env_path: Path | None = None,
+    config: "AppConfig | None" = None,
+) -> Any:
     """Read-only UMC positions, orders and account values from IBKR.
 
     Takes its own client id so it can coexist with the quote subscription: one
     Gateway session per client id, and sharing one would have the account query
     fight the streaming ticker.
+
+    `config` threads the Gateway endpoint. Without it this silently dialled
+    127.0.0.1:4001 while the quote provider used the configured host and port,
+    so a non-default endpoint worked all session and failed at the first order.
     """
     from .ibkr.readonly import IbkrReadOnlyBroker
 
-    return IbkrReadOnlyBroker()
+    if config is None:
+        return IbkrReadOnlyBroker()
+    return IbkrReadOnlyBroker(
+        host=config.live.ibkr_host,
+        port=config.live.ibkr_port,
+    )
 
 
-def open_umc_execution_adapter(symbol: str, env_path: Path | None = None) -> Any:
+def open_umc_execution_adapter(
+    symbol: str,
+    env_path: Path | None = None,
+    config: "AppConfig | None" = None,
+) -> Any:
     """UMC order placement via IBKR.
 
     The only trade-capable IBKR session in the repo, and the only caller that
@@ -115,7 +132,17 @@ def open_umc_execution_adapter(symbol: str, env_path: Path | None = None) -> Any
     """
     from .ibkr.execution import IbkrUmcExecutionAdapter
 
-    return IbkrUmcExecutionAdapter(symbol)
+    # Endpoint from config, for the same reason as the readonly broker: the
+    # quote provider honours ibkr_host/ibkr_port, so an adapter that ignores
+    # them makes a misconfigured endpoint invisible until the first order --
+    # which, with ccf_first=true, is after the CCF leg has already filled.
+    if config is None:
+        return IbkrUmcExecutionAdapter(symbol)
+    return IbkrUmcExecutionAdapter(
+        symbol,
+        host=config.live.ibkr_host,
+        port=config.live.ibkr_port,
+    )
 
 
 # The startup clock-skew gate does NOT live here. It checks absolute time, not

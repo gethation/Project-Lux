@@ -641,7 +641,16 @@ def run_ibkr_doctor_checks(config: object) -> tuple[bool, list[str]]:
         f"historical_1m_bars={result.historical_bar_count}",
     ]
 
-    passed = result.book_available and result.live_tier_granted
+    passed = (
+        result.book_available
+        and result.live_tier_granted
+        and result.historical_bar_count > 0
+    )
+    if result.historical_bar_count <= 0:
+        lines.append(
+            "FAIL zero historical 1m bars: the 2500-bar warmup the z-score is "
+            "fitted on cannot be built from this Gateway"
+        )
     if not result.live_tier_granted:
         lines.append(
             f"FAIL market data tier is {result.market_data_tier_label}, not live"
