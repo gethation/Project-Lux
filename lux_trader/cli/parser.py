@@ -251,11 +251,21 @@ def build_parser() -> argparse.ArgumentParser:
         "(SENDS A REAL ORDER behind env gates)",
     )
     manual_close.add_argument("--config", type=Path, required=True)
-    manual_close.add_argument("--venue", choices=("fubon",), required=True)
+    manual_close.add_argument("--venue", choices=("fubon", "ibkr"), required=True)
     manual_close.add_argument("--symbol", required=True)
     manual_close.add_argument("--side", choices=("buy", "sell"), required=True)
     manual_close.add_argument(
         "--lot", type=int, help="Fubon lot count (required for --venue fubon)"
+    )
+    manual_close.add_argument(
+        "--shares", type=int, help="UMC share count (required for --venue ibkr)"
+    )
+    manual_close.add_argument(
+        "--allow-position-mismatch",
+        action="store_true",
+        help="IBKR only: proceed even though the requested close does not match "
+        "the broker's reported position. Refused by default, because a close "
+        "larger than the position opens the opposite one",
     )
     manual_close.add_argument("--confirm-symbol", required=True)
     manual_close.add_argument(

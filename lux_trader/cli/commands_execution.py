@@ -4,11 +4,10 @@ Everything here either sends REAL orders behind explicit config+env gates or
 reads real accounts read-only. Tests monkeypatch the adapter names on this
 module (e.g. ``commands_execution.FubonFutureExecutionAdapter``).
 
-``--venue`` accepts only ``fubon``. The UMC half of exec-smoke and manual-close
-went with Binance in Phase A2 and returns with the IBKR execution adapter in
-Phase D -- see docs/CCF_UMC_PLAN.md. Until then there is no way to
-emergency-close a UMC leg from this CLI, which is one more reason Phase D gates
-the first real two-leg order.
+``manual-close`` accepts ``fubon`` and ``ibkr``. The IBKR half was missing until
+2026-08-04, which meant a stranded UMC leg had no emergency-close path from this
+CLI at all -- a gap in the safety net, not merely a testing inconvenience.
+``exec-smoke`` is still Fubon-only.
 """
 
 from __future__ import annotations
@@ -36,6 +35,11 @@ from lux_trader.integrations.fubon.execution import (
     FubonFutureExecutionAdapter,
     fubon_manual_close_env_gates_open,
     fubon_smoke_env_gates_open,
+)
+from lux_trader.integrations.ibkr.execution import (
+    IBKR_LIVE_ORDER_ENV_GATES,
+    IbkrUmcExecutionAdapter,
+    ibkr_live_order_gates_open,
 )
 from lux_trader.integrations.fubon.readonly import FubonReadOnlyBroker
 from lux_trader.integrations.fubon.execution_process import FubonFutureExecutionProcess
@@ -312,17 +316,192 @@ def fubon_exec_smoke(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# manual-close --venue {fubon}
+# manual-close --venue {fubon, ibkr}
 # ---------------------------------------------------------------------------
 
 
 def command_manual_close(args: argparse.Namespace) -> int:
-    if args.venue == "fubon":
-        config = load_config(args.config)
-        assert_live_lease_available(config.store_path)
+    config = load_config(args.config)
+    # The lease exists for Fubon's one-account-one-SDK-session limit, which IBKR
+    # does not share -- the execution adapter takes its own client id. It is
+    # applied to both anyway for a second reason: racing a running live-execute
+    # loop's own position management is a hazard at either venue. A dry-run does
+    # not take the lease, so a soak never blocks an emergency close.
+    assert_live_lease_available(config.store_path)
+    if args.venue == "ibkr":
+        return ibkr_manual_close(args)
     if args.lot is None:
         raise SystemExit("--lot is required for --venue fubon")
     return fubon_manual_close(args)
+
+
+def side_closes_position(position: float, side: OrderSide) -> bool:
+    """Whether this side reduces the position rather than growing or flipping it."""
+    if abs(position) <= 1e-12:
+        return False
+    return (position > 0) == (side == OrderSide.SELL)
+
+
+def ibkr_manual_close(args: argparse.Namespace) -> int:
+    """Emergency-close a stranded UMC leg.
+
+    This is the only tool that sends a UMC order outside the pair runtime, and
+    it exists for the state where the CCF leg filled and the UMC leg did not --
+    a naked leg. So it is deliberately close-only: the failure it must never
+    cause is turning a stranded long into a naked short, which would look like
+    a successful close in the log and double the exposure in the account.
+    """
+    config = load_config(args.config)
+    require_ibkr_manual_close_ready(config, args)
+
+    symbol = str(args.symbol).strip().upper()
+    shares = int(args.shares)
+    side = OrderSide.BUY if str(args.side).lower() == "buy" else OrderSide.SELL
+    adapter = IbkrUmcExecutionAdapter(
+        symbol,
+        host=config.live.ibkr_host,
+        port=config.live.ibkr_port,
+    )
+    try:
+        # An unreadable position raises out of here rather than being treated as
+        # flat -- Phase D invariant 1. Refusing costs a missed close; guessing
+        # costs a doubled position.
+        preflight = adapter.preflight()
+        pre_position = preflight.position_quantity
+        pre_open_orders = preflight.open_orders
+        print(
+            f"IBKR manual close precheck: position={pre_position:g}, "
+            f"open_orders={len(pre_open_orders)}"
+        )
+        if pre_open_orders:
+            raise SystemExit(
+                "Refusing IBKR manual close with existing open orders: "
+                f"{len(pre_open_orders)}. Cancel them first, or they will fill "
+                "against this one."
+            )
+
+        mismatch = None
+        if not side_closes_position(pre_position, side):
+            mismatch = (
+                f"--side {side.value} does not close a position of "
+                f"{pre_position:g}"
+            )
+        elif shares > abs(pre_position) + 1e-12:
+            mismatch = (
+                f"--shares {shares} exceeds the position of {pre_position:g}; "
+                "the remainder would open the opposite side"
+            )
+        if mismatch is not None:
+            if not args.allow_position_mismatch:
+                raise SystemExit(
+                    f"Refusing IBKR manual close: {mismatch}. This tool is "
+                    "close-only. Pass --allow-position-mismatch if the broker's "
+                    "reported position is the thing you believe is wrong."
+                )
+            print(f"WARN overriding close-only check: {mismatch}")
+
+        timestamp = datetime.now().astimezone().replace(microsecond=0)
+        outcome = adapter.execute(
+            build_ibkr_manual_close_plan(
+                symbol=symbol,
+                shares=shares,
+                side=side,
+                timestamp=timestamp,
+            )
+        )
+        filled = sum(fill.quantity for fill in getattr(outcome, "fills", ()))
+        print(
+            f"IBKR manual close: status={outcome.status.value}, "
+            f"fills={len(outcome.fills)}, filled_shares={filled:g}, "
+            f"message={outcome.message}"
+        )
+
+        after = adapter.preflight()
+        print(
+            f"IBKR manual close after: position={after.position_quantity:g}, "
+            f"open_orders={len(after.open_orders)}"
+        )
+        expected = pre_position + (shares if side == OrderSide.BUY else -shares)
+        if not outcome.filled or after.open_orders:
+            print("CRITICAL manual intervention required")
+            return 1
+        if abs(after.position_quantity - expected) > 1e-6:
+            print(
+                f"CRITICAL position {after.position_quantity:g} does not match "
+                f"the expected {expected:g} after a reported fill"
+            )
+            return 1
+        print(
+            f"IBKR manual close complete: position={after.position_quantity:g}, "
+            f"open_orders={len(after.open_orders)}"
+        )
+        return 0
+    finally:
+        adapter.close()
+
+
+def require_ibkr_manual_close_ready(
+    config: object,
+    args: argparse.Namespace,
+) -> None:
+    if not config.safety.allow_live_order:
+        raise SystemExit("safety.allow_live_order=true is required")
+    symbol = str(args.symbol or "").strip()
+    if not symbol:
+        raise SystemExit("--symbol is required")
+    if str(args.confirm_symbol).strip() != symbol:
+        raise SystemExit("--confirm-symbol must match --symbol")
+    if args.shares is None:
+        raise SystemExit("--shares is required for --venue ibkr")
+    if int(args.shares) <= 0:
+        raise SystemExit("--shares must be positive")
+    gates = ibkr_live_order_gates_open()
+    closed = [name for name in IBKR_LIVE_ORDER_ENV_GATES if not gates[name]]
+    if closed:
+        raise SystemExit(
+            "IBKR manual close gates closed: "
+            + ", ".join(f"{name}=1" for name in closed)
+        )
+
+
+def build_ibkr_manual_close_plan(
+    *,
+    symbol: str,
+    shares: int,
+    side: OrderSide,
+    timestamp: datetime,
+) -> PairExecutionPlan:
+    # Single-leg by design: the whole point is that the other leg is already
+    # where it should be, or gone. `direction` is set to whichever pair
+    # direction this side would be closing, so the recorded plan reads
+    # coherently rather than carrying a placeholder.
+    direction = (
+        Direction.SHORT_UMC_LONG_CCF
+        if side == OrderSide.BUY
+        else Direction.LONG_UMC_SHORT_CCF
+    )
+    return PairExecutionPlan(
+        plan_id=f"IBKR-MANUAL-CLOSE-{timestamp.strftime('%Y%m%d%H%M%S')}",
+        plan_type=ExecutionPlanType.EXIT,
+        direction=direction,
+        timestamp=timestamp,
+        row_index=-1,
+        legs=(
+            ExecutionLeg(
+                broker=BrokerName.IBKR_UMC,
+                symbol=symbol,
+                side=side,
+                quantity=float(shares),
+                # Unused: the adapter always sends a market order. A real price
+                # here would be a fiction the log would later be read as fact.
+                price=1.0,
+                timestamp=timestamp,
+                row_index=-1,
+            ),
+        ),
+        reason="ibkr_manual_close",
+        decision_spread_type="manual_close",
+    )
 
 
 def fubon_manual_close(args: argparse.Namespace) -> int:
