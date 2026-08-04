@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from datetime import datetime
 
@@ -189,15 +190,222 @@ def build_live_execution_brokers(
 # ---------------------------------------------------------------------------
 
 
+IBKR_EXECUTION_SMOKE_ENV = "LUX_IBKR_EXECUTION_SMOKE"
+
+
 def command_exec_smoke(args: argparse.Namespace) -> int:
-    if args.venue == "fubon":
-        config = load_config(args.config)
-        assert_live_lease_available(config.store_path)
+    config = load_config(args.config)
+    assert_live_lease_available(config.store_path)
+    if args.venue == "ibkr":
+        return ibkr_exec_smoke(args)
     if args.symbol is None:
         raise SystemExit("--symbol is required for --venue fubon")
     if args.lot is None:
         raise SystemExit("--lot is required for --venue fubon")
     return fubon_exec_smoke(args)
+
+
+def ibkr_exec_smoke(args: argparse.Namespace) -> int:
+    """Open and immediately close a tiny real UMC position.
+
+    This proves the ORDER PATH: placement, the three-tier fill confirmation,
+    whole-share rounding, and that the position actually moves. It proves
+    nothing about the pair. Two gaps are worth naming rather than discovering:
+
+      It builds its own plan, so it never touches strategy -> price_policy ->
+      validator. That is the path that rejected every entry on 2026-08-04
+      while a full test suite stayed green.
+
+      It is one leg at one venue, so it cannot produce the state the pair
+      actually fears -- CCF filled, UMC unknown. A clean round trip here is the
+      happy path only.
+    """
+    config = load_config(args.config)
+    require_ibkr_exec_smoke_ready(config, args)
+
+    symbol = str(config.live.umc_symbol).strip().upper()
+    shares = int(args.shares)
+    open_side = OrderSide.BUY if str(args.side).lower() == "buy" else OrderSide.SELL
+    close_side = OrderSide.SELL if open_side == OrderSide.BUY else OrderSide.BUY
+    adapter = IbkrUmcExecutionAdapter(
+        symbol,
+        host=config.live.ibkr_host,
+        port=config.live.ibkr_port,
+    )
+    try:
+        preflight = adapter.preflight()
+        if preflight.open_orders:
+            raise SystemExit(
+                "Refusing IBKR execution smoke with existing open orders: "
+                f"{len(preflight.open_orders)}"
+            )
+        if abs(preflight.position_quantity) > 1e-12:
+            raise SystemExit(
+                "Refusing IBKR execution smoke with nonzero position: "
+                f"{preflight.position_quantity:g}. A round trip from a nonzero "
+                "start cannot tell its own fills from what was already there."
+            )
+        print(
+            f"IBKR execution smoke preflight passed: symbol={symbol}, "
+            f"shares={shares}, open={open_side.value}, close={close_side.value}"
+        )
+
+        open_outcome = adapter.execute(
+            build_ibkr_smoke_plan(
+                symbol=symbol,
+                shares=shares,
+                side=open_side,
+                plan_type=ExecutionPlanType.ENTRY,
+                timestamp=datetime.now().astimezone().replace(microsecond=0),
+            )
+        )
+        print_ibkr_smoke_outcome("open", open_outcome)
+        opened = int(sum(fill.quantity for fill in open_outcome.fills))
+        if opened <= 0:
+            diagnostic = adapter.preflight()
+            print(
+                f"IBKR execution smoke open_unknown_diagnostic: "
+                f"position={diagnostic.position_quantity:g}, "
+                f"open_orders={len(diagnostic.open_orders)}"
+            )
+            print("CRITICAL manual intervention required")
+            print_ibkr_manual_close_hint(symbol, diagnostic.position_quantity)
+            return 1
+
+        after_open = fetch_position_with_retry(adapter, expected="nonzero")
+        print(f"IBKR execution smoke after_open: position={after_open:g}")
+        if abs(after_open) <= 1e-12:
+            print(
+                "WARN IBKR position query returned zero after a reported fill; "
+                "continuing with the close because the fill was reported"
+            )
+
+        # Close the quantity that actually FILLED, not the quantity requested.
+        # A partial open closed at the requested size would flip the position.
+        close_outcome = adapter.execute(
+            build_ibkr_smoke_plan(
+                symbol=symbol,
+                shares=opened,
+                side=close_side,
+                plan_type=ExecutionPlanType.EXIT,
+                timestamp=datetime.now().astimezone().replace(microsecond=0),
+            )
+        )
+        print_ibkr_smoke_outcome("close", close_outcome)
+
+        final_position = fetch_position_with_retry(adapter, expected="zero")
+        final_open_orders = adapter.fetch_open_orders()
+        print(
+            f"IBKR execution smoke after_close: position={final_position:g}, "
+            f"open_orders={len(final_open_orders)}"
+        )
+        if (
+            not open_outcome.filled
+            or not close_outcome.filled
+            or final_open_orders
+            or abs(final_position) > 1e-12
+        ):
+            print("CRITICAL manual intervention required")
+            print_ibkr_manual_close_hint(symbol, final_position)
+            return 1
+
+        print(
+            f"IBKR execution smoke complete: position={final_position:g}, "
+            f"open_orders={len(final_open_orders)}. Read the real commission "
+            "off IBKR's own statement -- integrations/ibkr/fees.py has never "
+            "been checked against a bill."
+        )
+        return 0
+    finally:
+        adapter.close()
+
+
+def print_ibkr_smoke_outcome(label: str, outcome: object) -> None:
+    filled = sum(fill.quantity for fill in getattr(outcome, "fills", ()))
+    print(
+        f"IBKR execution smoke {label}: status={outcome.status.value}, "
+        f"fills={len(outcome.fills)}, filled_shares={filled:g}, "
+        f"message={outcome.message}"
+    )
+
+
+def print_ibkr_manual_close_hint(symbol: str, position: float) -> None:
+    """The remedy, spelled out, because this is read during an incident."""
+    if abs(position) <= 1e-12:
+        print(
+            "Position reads flat, but verify against IBKR directly before "
+            "trusting it -- an unreadable position is not a flat one."
+        )
+        return
+    side = "sell" if position > 0 else "buy"
+    print(
+        "To flatten: admin manual-close --venue ibkr "
+        f"--symbol {symbol} --side {side} --shares {abs(int(position))} "
+        f"--confirm-symbol {symbol}"
+    )
+
+
+def require_ibkr_exec_smoke_ready(
+    config: object,
+    args: argparse.Namespace,
+) -> None:
+    if not config.safety.allow_live_order:
+        raise SystemExit("safety.allow_live_order=true is required")
+    if int(args.shares) <= 0:
+        raise SystemExit("--shares must be positive")
+    # A third gate on top of the adapter's two. Enabling live orders for the
+    # trading loop must not also enable a tool whose whole purpose is to open a
+    # position for no trading reason. manual-close deliberately does NOT carry
+    # an extra gate -- it is the emergency exit, and an exit should not be
+    # harder to reach than an entrance.
+    if os.getenv(IBKR_EXECUTION_SMOKE_ENV, "").strip() != "1":
+        raise SystemExit(
+            f"IBKR execution smoke gates closed: {IBKR_EXECUTION_SMOKE_ENV}=1"
+        )
+    gates = ibkr_live_order_gates_open()
+    closed = [name for name in IBKR_LIVE_ORDER_ENV_GATES if not gates[name]]
+    if closed:
+        raise SystemExit(
+            "IBKR execution smoke gates closed: "
+            + ", ".join(f"{name}=1" for name in closed)
+        )
+
+
+def build_ibkr_smoke_plan(
+    *,
+    symbol: str,
+    shares: int,
+    side: OrderSide,
+    plan_type: ExecutionPlanType,
+    timestamp: datetime,
+) -> PairExecutionPlan:
+    direction = (
+        Direction.LONG_UMC_SHORT_CCF
+        if (side == OrderSide.BUY) == (plan_type == ExecutionPlanType.ENTRY)
+        else Direction.SHORT_UMC_LONG_CCF
+    )
+    return PairExecutionPlan(
+        plan_id=(
+            f"IBKR-SMOKE-{timestamp.strftime('%Y%m%d%H%M%S')}-{plan_type.value}"
+        ),
+        plan_type=plan_type,
+        direction=direction,
+        timestamp=timestamp,
+        row_index=-1,
+        legs=(
+            ExecutionLeg(
+                broker=BrokerName.IBKR_UMC,
+                symbol=symbol,
+                side=side,
+                quantity=float(shares),
+                price=1.0,
+                timestamp=timestamp,
+                row_index=-1,
+            ),
+        ),
+        reason="ibkr_execution_smoke",
+        decision_spread_type="manual_smoke",
+    )
 
 
 def fubon_exec_smoke(args: argparse.Namespace) -> int:
@@ -754,6 +962,27 @@ def require_fubon_manual_close_ready(
 # ---------------------------------------------------------------------------
 # plan builders / printers / retry
 # ---------------------------------------------------------------------------
+
+
+def fetch_position_with_retry(
+    adapter: object,
+    *,
+    expected: str,
+    attempts: int = 5,
+    interval_seconds: float = 0.5,
+) -> float:
+    """Poll until the position reaches the expected shape, or give up.
+
+    Venue-agnostic: both adapters expose fetch_position_quantity(). A broker's
+    position view lags its own fill report by a moment, so a single read
+    immediately after a fill reports the OLD position and reads as a failure.
+    """
+    return fetch_fubon_position_with_retry(
+        adapter,
+        expected=expected,
+        attempts=attempts,
+        interval_seconds=interval_seconds,
+    )
 
 
 def fetch_fubon_position_with_retry(

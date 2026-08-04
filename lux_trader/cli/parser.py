@@ -230,13 +230,27 @@ def build_parser() -> argparse.ArgumentParser:
         "(SENDS REAL ORDERS behind env gates)",
     )
     exec_smoke.add_argument("--config", type=Path, required=True)
-    # Only fubon until the IBKR execution adapter lands in Phase D.
-    exec_smoke.add_argument("--venue", choices=("fubon",), required=True)
+    exec_smoke.add_argument("--venue", choices=("fubon", "ibkr"), required=True)
     exec_smoke.add_argument(
         "--symbol", help="Fubon futures symbol (required for --venue fubon)"
     )
     exec_smoke.add_argument(
         "--lot", type=int, help="Fubon lot count (required for --venue fubon)"
+    )
+    exec_smoke.add_argument(
+        "--shares",
+        type=int,
+        default=1,
+        help="UMC share count for --venue ibkr (default 1 -- this opens a real "
+        "position, so the default is the smallest one that proves the chain)",
+    )
+    exec_smoke.add_argument(
+        "--side",
+        choices=("buy", "sell"),
+        default="buy",
+        help="--venue ibkr: which side OPENS the round trip. 'sell' tests the "
+        "short path, which borrow makes materially different and which no test "
+        "has ever exercised",
     )
     exec_smoke.add_argument("--confirm-symbol", required=True)
     exec_smoke.add_argument(
