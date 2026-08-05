@@ -2,11 +2,16 @@
 
 以下指令皆在 PowerShell 中執行，從 repo 根目錄。
 
-> **本分支目前跑不起 live。** UMC 的行情與下單通道在 Phase A2 隨 Binance 一起移除，
-> IBKR 與 Twelve Data 的替代品分別在 Phase B 與 Phase D 才進來
-> （見 `docs/CCF_UMC_PLAN.md`）。在那之前，任何需要美股腿的指令都會以
-> `UsLegVenueNotWired` 明確失敗 —— 這是刻意的，不是故障。
-> 這份文件先照新的 CLI 形狀寫好，Phase B/D 完成後即可照用。
+> **UMC 腿已接通。** Phase B（IBKR）與 Phase D（Twelve Data）完成後，兩者即為
+> 預設路徑；`venues.py` 的 `UsLegVenueNotWired` 已無任何觸發點（`_refuse`
+> 定義後從未被呼叫），不會再看到它。2026-08-05 於本機實測三個 venue 皆正常：
+> UMC 為 tier 1 即時 bid/ask 且可空，CCF book 新鮮，USD/TWD 有值 —— 但
+> **FX 的 `bid`/`ask` 恆為 `None` 是正確的**，匯率是純量換算，不是拿來穿價的簿子。
+>
+> **可以跑不等於可以上線。** `live --mode execute` 之前必須走完
+> `docs/MIGRATION.md` §7 的驗收梯，特別是第 6 階（整場 dry-run）與第 8 階
+> （exec-smoke 一股實單）。兩腿同時下單至今從未在任何機器上發生過，
+> `config.live.ccf_umc.execute.local.toml` 會是第一個做到的東西。
 
 ## CLI 對照表（14 → 7）
 

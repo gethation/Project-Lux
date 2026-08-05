@@ -209,7 +209,15 @@ fubon_transfer_ratio = 0.20
 fubon_red_line_ratio = 0.135
 target_ratio = 0.30
 red_line_maint_multiplier = 1.3
-# 0 derives the denominator from ccf_lots and the latest CCF price.
+# 0 derives the denominator from ccf_lots and the latest CCF close -- but that
+# close is read from the STORE, not from a live quote. A store with no bars
+# derives nothing and falls back to strategy.leg_notional_twd above, which is
+# ~4x one lot. That is exactly what --reset-store hands the FIRST live-execute
+# run, so the first margin warning of the night is the inflated one.
+# Measured 2026-08-05 against one unchanged Fubon balance of 49,662 TWD:
+#   empty store  -> 1,000,000 denominator -> 5.0%  -> "transfer 250,338 TWD"
+#   2500 bars    ->   262,761 denominator -> 18.9% -> "transfer  29,238 TWD"
+# Neither blocks trading -- margin only warns (margin/service.py:157).
 leg_notional_twd = 0.0
 
 [ntfy]

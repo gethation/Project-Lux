@@ -207,7 +207,11 @@ class MarginManagementConfig:
     fubon_red_line_ratio: float = 0.135
     target_ratio: float = 0.30
     red_line_maint_multiplier: float = 1.3
-    # 0 falls back to strategy.leg_notional_twd.
+    # 0 means "derive from ccf_lots x the latest CCF close" -- but that close
+    # comes out of the STORE, not a live quote, so resolve_margin_leg_notional_twd
+    # returns None on a store with no bars and this silently falls back to
+    # strategy.leg_notional_twd. A fresh store therefore reports ratios against
+    # the fallback rather than against one lot.
     leg_notional_twd: float = 0.0
 
 

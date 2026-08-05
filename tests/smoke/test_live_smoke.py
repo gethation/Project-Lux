@@ -89,9 +89,10 @@ def test_live_marketdata_providers_fetch_quotes_and_ccf_candles() -> None:
     finally:
         ccf.close()
 
-    # Raises UsLegVenueNotWired until Phase B builds the IBKR and Twelve Data
-    # providers. This smoke is env-gated and skipped by default; when someone
-    # does run it, failing here is the correct answer.
+    # Phase B (IBKR) and Phase D (Twelve Data) built these, so both now return
+    # real quotes -- UsLegVenueNotWired has no live raise site left. This smoke
+    # is env-gated and skipped by default; when someone does run it, reaching
+    # the assertions below is the correct answer.
     umc_quote = open_umc_quote_provider(config).fetch_quote(
         config.live.umc_symbol
     )
