@@ -34,8 +34,8 @@ Deterministic replay is pinned to the committed fixture under
 workspace).
 
 ```powershell
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader replay  --config configs/replay.fixture.toml --reset-store
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader summary --config configs/replay.fixture.toml
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader replay  --config configs/replay.fixture.ccf_umc.toml --reset-store
+& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader summary --config configs/replay.fixture.ccf_umc.toml
 & 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest -q
 ```
 

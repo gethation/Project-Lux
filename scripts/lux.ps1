@@ -3,8 +3,8 @@
 #
 # Usage:
 #   .\scripts\lux.ps1 live --mode dry-run --config configs/live.example.toml --reset-store
-#   .\scripts\lux.ps1 live --mode execute --config configs/config.live.exec.local.toml --reset-store
-#   .\scripts\lux.ps1 replay --config configs/replay.fixture.toml --reset-store
+#   .\scripts\lux.ps1 live --mode execute --config configs/config.live.ccf_umc.execute.local.toml --reset-store
+#   .\scripts\lux.ps1 replay --config configs/replay.fixture.ccf_umc.toml --reset-store
 
 $ErrorActionPreference = 'Stop'
 $condaCommand = Get-Command conda -ErrorAction SilentlyContinue

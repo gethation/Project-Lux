@@ -23,7 +23,11 @@ from lux_trader.core.strategy import StrategyRuntimeState
 from lux_trader.terminal_ui import LiveTerminalReporter
 
 
-SMOKE_CONFIG = Path("configs/config.live.smoke.local.toml")
+# The CCF/UMC dry-run config -- the one a soak actually runs. The previous
+# target was a QFF/TSM-era file that sat at the repo ROOT, not under
+# configs/, so this path never existed and both smoke tests skipped
+# silently for reasons unrelated to their markers.
+SMOKE_CONFIG = Path("configs/config.live.ccf_umc.dryrun.local.toml")
 
 pytestmark = [
     pytest.mark.live_marketdata,

@@ -1,5 +1,15 @@
 # M6 Fubon Symbol Format Issue
 
+> **⚠️ SUPERSEDED — do not follow this document.**
+>
+> It is the M6 runbook for a pair that no longer exists: Fubon `TMFG6` against
+> Binance `TSM/USDT:USDT`. The Binance leg was deleted in Phase A2, every config
+> it names has been removed, and the command names predate the CLI
+> consolidation. Kept for history only.
+>
+> Current equivalents: `docs/HANDOFF.md`, `docs/CCF_UMC_PLAN.md` §6,
+> `docs/MIGRATION.md`.
+
 ## Summary
 
 M6 real-order smoke originally used `FITMN07` as the Fubon TMF symbol. During live M6 execution, Fubon rejected the first leg before any fill:

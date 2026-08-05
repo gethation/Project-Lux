@@ -32,19 +32,19 @@
 使用真實即時行情及模擬成交，不會送出真實訂單：
 
 ```powershell
-.\scripts\lux.ps1 live --mode dry-run --config configs\config.live.exec.dryrun.local.toml --reset-store
+.\scripts\lux.ps1 live --mode dry-run --config configs\config.live.ccf_umc.dryrun.local.toml --reset-store
 ```
 
 從既有狀態繼續執行：
 
 ```powershell
-.\scripts\lux.ps1 live --mode dry-run --config configs\config.live.exec.dryrun.local.toml --resume
+.\scripts\lux.ps1 live --mode dry-run --config configs\config.live.ccf_umc.dryrun.local.toml --resume
 ```
 
 若只需有限次數的啟動驗證：
 
 ```powershell
-.\scripts\lux.ps1 live --mode dry-run --config config.live.smoke.local.toml --reset-store --max-iterations 3 --quiet-ui
+.\scripts\lux.ps1 live --mode dry-run --config configs\config.live.ccf_umc.dryrun.local.toml --reset-store --max-iterations 3 --quiet-ui
 ```
 
 ## Live execute
@@ -58,19 +58,19 @@ IBKR 與本機策略部位。只有最新 reconciliation 為 `matched` 且其他
 若想在啟動前只做唯讀核對：
 
 ```powershell
-$env:LUX_READONLY_BROKER = '1'; try { .\scripts\lux.ps1 status reconcile --config configs\config.live.exec.local.toml --readonly } finally { Remove-Item Env:\LUX_READONLY_BROKER -ErrorAction SilentlyContinue }
+$env:LUX_READONLY_BROKER = '1'; try { .\scripts\lux.ps1 status reconcile --config configs\config.live.ccf_umc.execute.local.toml --readonly } finally { Remove-Item Env:\LUX_READONLY_BROKER -ErrorAction SilentlyContinue }
 ```
 
 啟動全新的真實交易：
 
 ```powershell
-.\scripts\lux.ps1 live --mode execute --config configs\config.live.exec.local.toml --reset-store
+.\scripts\lux.ps1 live --mode execute --config configs\config.live.ccf_umc.execute.local.toml --reset-store
 ```
 
 從既有狀態繼續執行：
 
 ```powershell
-.\scripts\lux.ps1 live --mode execute --config configs\config.live.exec.local.toml --resume
+.\scripts\lux.ps1 live --mode execute --config configs\config.live.ccf_umc.execute.local.toml --resume
 ```
 
 `scripts\lux.ps1` 會在 `live --mode execute` 期間設定所需的 live-order 環境 gate，

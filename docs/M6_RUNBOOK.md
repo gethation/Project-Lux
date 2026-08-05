@@ -1,5 +1,15 @@
 # M6 — 最小化雙腿真實下單驗收 Runbook
 
+> **⚠️ SUPERSEDED — do not follow this document.**
+>
+> It is the M6 runbook for a pair that no longer exists: Fubon `TMFG6` against
+> Binance `TSM/USDT:USDT`. The Binance leg was deleted in Phase A2, every config
+> it names has been removed, and the command names predate the CLI
+> consolidation. Kept for history only.
+>
+> Current equivalents: `docs/HANDOFF.md`, `docs/CCF_UMC_PLAN.md` §6,
+> `docs/MIGRATION.md`.
+
 這是唯一會送出**真實資金訂單**的步驟。必須**有人看管**執行，使用最小 smoke 部位
 （Fubon TMF `TMFG6` 1 口 + Binance `TSM/USDT:USDT` 0.1 unit），並只在 TMF 正常可進場
 時段執行（日盤 08:45-13:45，或一般夜盤 15:00-05:00；避開週五夜盤、close-only、接近休市
