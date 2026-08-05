@@ -316,12 +316,19 @@ def load_config(path: Path) -> AppConfig:
             sizing_mode=sizing_mode,
         ),
         fees=FeeConfig(
-            # UMC via IBKR. 2.5 bps is a placeholder: IBKR bills per share plus
-            # SEC/FINRA fees plus a minimum, which bps cannot express. Measured
-            # conservative rather than optimistic -- 2.49 USD modelled per side
-            # against 2.03 actual at the median 406-share size, and the gap
-            # covers the sell-side regulatory fees the model omits. The real fee
-            # model lands with the execution adapter in Phase D.
+            # Only read when umc_fee_model = 'bps', which the replay golden
+            # needs because that is what the PoC charges. The real model is
+            # 'ibkr' (integrations/ibkr/fees.py) and is reachable from both the
+            # live and replay paths as of 2026-08-04.
+            #
+            # Whether bps is conservative depends on where the trades happen,
+            # and the earlier claim here that it simply is was measured at one
+            # price. Commission is charged PER SHARE and does not move with
+            # price while the bps charge scales, so they cross near 23.2 USD a
+            # share: below that bps UNDER-charges. Over the golden's actual 18
+            # trades the aggregate lands the other way -- 9,027 TWD under bps
+            # against 8,288 under the real model, so bps is conservative by 8.2%
+            # on THAT trade set. Both facts are true; neither generalises.
             umc_fee_bps=float(fees.get("umc_fee_bps", 2.5)),
             # TODO: 88.0 is QFF's per-contract fee reused. CCF's actual Fubon
             # fee is unconfirmed -- see docs/CCF_UMC_PLAN.md open items.

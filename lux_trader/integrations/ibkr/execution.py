@@ -1,16 +1,23 @@
 """The UMC execution adapter: the first thing in this repo that can place a US order.
 
-SKELETON, and honest about it. Everything here is exercised by tests against a
-fake worker; none of it has met a real Gateway, and the paths that matter most
-cannot be verified at all until the IBKR account is upgraded to margin:
+Exercised against a real Gateway on 2026-08-04: one long round trip and one
+short, 1 share each, both confirmed against the account independently. The short
+is the one that mattered -- `position=-1` means Reg T permission, an actual
+borrow delivery, and a buy-to-cover all hold in practice rather than in an
+account field, on the path roughly half the backtest's trades need.
 
-  * short selling -- roughly half the backtest's trades sell UMC first
-  * borrow availability before a short
-  * recall, and the proportional CCF reduction that answers it (Phase D6)
+What that run did NOT establish, because a green result invites the opposite
+reading:
 
-Until then this is a long-only adapter in practice, and a long-only version of
-this strategy is one nobody has backtested. Do not read a green test suite as
-readiness.
+  * both legs at once -- this adapter places ONE leg, so it cannot produce the
+    state the pair actually fears: CCF filled, UMC unknown
+  * `unknown` -> PAUSE, which has only ever run against fakes
+  * recall, and the proportional CCF reduction that answers it (Phase D6),
+    which cannot be manufactured on demand
+
+It also taught the confirmation path its most important lesson: see
+`place_and_confirm_umc_order` in client_process.py for why a terminal order
+status is not evidence, and why `failed` has to be earned.
 
 Three things it does refuse to guess about:
 

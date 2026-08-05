@@ -7,12 +7,16 @@ so the parts that are still missing say which phase fills them in.
 Wired (Phase B): UMC quotes and history from IBKR, USD/TWD from Twelve Data
 behind a TTL cache, read-only IBKR account access.
 
-Everything is wired as of Phase D1/D2, though the execution adapter is a
-skeleton whose short-selling paths cannot be validated until the IBKR account is
-upgraded to margin. Anything that is ever unwired here raises rather than
-returning a degraded stand-in -- a pair that quietly prices its US leg off
-nothing, or reports a position it never queried, is far more dangerous than one
-that refuses to start.
+Everything is wired, and as of 2026-08-04 the execution adapter has placed real
+orders in both directions -- including a short that actually borrowed. Anything
+that is ever unwired here raises rather than returning a degraded stand-in: a
+pair that quietly prices its US leg off nothing, or reports a position it never
+queried, is far more dangerous than one that refuses to start.
+
+The account/order seams take `config` so the Gateway endpoint comes from one
+place. Without it they dialled 127.0.0.1:4001 while the quote provider honoured
+ibkr_host/ibkr_port, so a misconfigured endpoint ran healthy all session and
+failed at the first order -- after the CCF leg had already filled.
 
 The CCF leg is unaffected: Fubon is wired and stays wired.
 
@@ -126,9 +130,8 @@ def open_umc_execution_adapter(
     asks IbkrClientProcess for readonly=False. It still refuses to send anything
     unless both live-order env gates are open, checked per order.
 
-    A skeleton: exercised against a fake worker, never against a real Gateway,
-    and its short-selling paths cannot be validated at all until the account is
-    upgraded to margin.
+    Proven against a real Gateway on 2026-08-04, long and short, 1 share each.
+    Still unproven: both legs at once, and `unknown` -> PAUSE.
     """
     from .ibkr.execution import IbkrUmcExecutionAdapter
 

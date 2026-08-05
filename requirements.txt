@@ -1,5 +1,24 @@
 numpy>=2.4
 pandas>=3.0
-ccxt>=4.5
 requests>=2.34
 rich>=13.0
+
+# Pinned, not floated. ib_async 2.1.0 reports an order CANCELLED when IBKR emits
+# warning 10349 (order TIF set by preset) and then fills it a second later --
+# observed live on 2026-08-04, twice. The confirmation path no longer trusts an
+# order status for exactly that reason, but a version bump can change event
+# semantics again, so this moves deliberately. A fix is on their next branch;
+# re-run the IBKR tests and a 1-share exec-smoke before taking it.
+ib_async==2.1.0
+
+# NOT here, on purpose:
+#
+#   fubon_neo   the Fubon SDK is not on PyPI; install the wheel Fubon ships.
+#
+# Both brokerage packages are imported function-locally throughout this
+# package so `replay` and `summary` keep working on a machine that has neither
+# -- see lux_trader/integrations/venues.py. A module-scope import broke exactly
+# that on 2026-08-04 and had no symptom on a developer machine.
+#
+# ccxt was removed 2026-08-05: the Binance leg went in Phase A2 and nothing has
+# imported it since.
