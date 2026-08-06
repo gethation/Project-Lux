@@ -555,7 +555,7 @@ def account_margin_text(account_display: Any) -> str:
     fubon_ratio = getattr(account_display, "fubon_ratio", None)
     prefix = "~" if getattr(account_display, "stale", False) else ""
     text = (
-        f"margin({prefix}bina={format_pct(umc_ratio)},"
+        f"margin({prefix}ibkr={format_pct(umc_ratio)},"
         f"fubon={format_pct(fubon_ratio)})"
     )
     error_reason = getattr(account_display, "error_reason", None)

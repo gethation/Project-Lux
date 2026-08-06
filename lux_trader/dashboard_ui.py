@@ -413,7 +413,7 @@ class DashboardReporter:
         umc_ratio = format_pct(getattr(account_display, "umc_ratio", None))
         fubon_ratio = format_pct(getattr(account_display, "fubon_ratio", None))
         table.add_row("uPnL (TWD)", f"{upnl}{stale_suffix}")
-        table.add_row("Margin bina/fubon", f"{umc_ratio} / {fubon_ratio}")
+        table.add_row("Margin ibkr/fubon", f"{umc_ratio} / {fubon_ratio}")
         return Panel(table, title="Strategy", border_style="green")
 
     def _margin_panel(self) -> Panel:

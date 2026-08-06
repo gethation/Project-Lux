@@ -285,7 +285,7 @@ def test_live_terminal_reporter_clears_live_before_permanent_lines() -> None:
     assert (
         "09:12 BAR  mid=1.86 z=1.78 "
         "shortSpread(spread=1.62,z=1.51) "
-        "longSpread(spread=2.06,z=1.93) FLAT none pnl=NA margin(bina=NA,fubon=NA)\n"
+        "longSpread(spread=2.06,z=1.93) FLAT none pnl=NA margin(ibkr=NA,fubon=NA)\n"
     ) in output
     assert "09:13:23 WARN stale_umc skipped_minute\n" in output
     assert "09:14:00 EVENT entry_signal zscore_crossed\n" in output
@@ -321,7 +321,7 @@ def test_live_terminal_reporter_bar_renders_account_pnl_and_margin() -> None:
     )
 
     output = stream.getvalue()
-    assert "pnl=12,345 margin(bina=142%,fubon=138%)\n" in output
+    assert "pnl=12,345 margin(ibkr=142%,fubon=138%)\n" in output
 
 
 def test_live_terminal_reporter_bar_marks_stale_account_display() -> None:
@@ -349,7 +349,7 @@ def test_live_terminal_reporter_bar_marks_stale_account_display() -> None:
 
     output = stream.getvalue()
     # Combined uPnL unavailable -> NA; stale marked with a ~ prefix on the ratios.
-    assert "pnl=NA margin(~bina=142%,fubon=138%)\n" in output
+    assert "pnl=NA margin(~ibkr=142%,fubon=138%)\n" in output
 
 
 def test_live_terminal_reporter_prints_filled_exit_trade_pnl() -> None:

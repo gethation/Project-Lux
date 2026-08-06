@@ -46,6 +46,10 @@ def snapshot_payload() -> dict[str, Any]:
                 "status": "PreSubmitted",
             }
         ],
+        # Shaped like the real thing, including the parts that bite: open PnL
+        # arrives ONLY under the '$LEDGER-' group, and that group repeats every
+        # figure under a synthetic BASE currency. A double carrying a plain
+        # 'UnrealizedPnL' row would keep this file green while live shows NA.
         "account_values": [
             {"account": "U1234567", "tag": "NetLiquidation",
              "value": "10150.00", "currency": "USD"},
@@ -53,6 +57,10 @@ def snapshot_payload() -> dict[str, Any]:
              "value": "9800.50", "currency": "USD"},
             {"account": "U1234567", "tag": "MaintMarginReq",
              "value": "349.50", "currency": "USD"},
+            {"account": "U1234567", "tag": "$LEDGER-UnrealizedPnL",
+             "value": "123.75", "currency": "USD"},
+            {"account": "U1234567", "tag": "$LEDGER-UnrealizedPnL",
+             "value": "999.99", "currency": "BASE"},
         ],
         "fetched_at": datetime(2026, 7, 24, 9, 30),
     }
@@ -111,6 +119,46 @@ def test_snapshot_survives_an_empty_account(readonly_env) -> None:
     assert snapshot.positions == ()
     assert snapshot.open_orders == ()
     assert snapshot.margins[0].equity is None
+
+
+def test_open_pnl_is_read_from_the_ledger_tag_ibkr_actually_sends(readonly_env) -> None:
+    # Live 2026-08-07: accountSummary returned 49 tags and none of them was a
+    # plain 'UnrealizedPnL'. Looking up only that name yielded None, and the
+    # account panel showed pnl=NA for a whole session while holding a position.
+    snapshot = IbkrReadOnlyBroker(FakeClient(snapshot_payload())).fetch_snapshot()
+    assert snapshot.margins[0].raw["UnrealizedPnL"] == pytest.approx(123.75)
+
+
+def test_open_pnl_prefers_a_real_currency_over_the_synthetic_base_row(
+    readonly_env,
+) -> None:
+    # BASE repeats every ledger figure. Taking it would mix currencies on a
+    # multi-currency account, so the USD row has to win even though BASE is
+    # present -- and here it is deliberately a different number.
+    payload = snapshot_payload()
+    snapshot = IbkrReadOnlyBroker(FakeClient(payload)).fetch_snapshot()
+    assert snapshot.margins[0].raw["UnrealizedPnL"] != pytest.approx(999.99)
+
+
+def test_open_pnl_falls_back_to_base_when_that_is_all_there_is(readonly_env) -> None:
+    payload = snapshot_payload()
+    payload["account_values"] = [
+        row for row in payload["account_values"]
+        if not (row["tag"] == "$LEDGER-UnrealizedPnL" and row["currency"] == "USD")
+    ]
+    snapshot = IbkrReadOnlyBroker(FakeClient(payload)).fetch_snapshot()
+    assert snapshot.margins[0].raw["UnrealizedPnL"] == pytest.approx(999.99)
+
+
+def test_open_pnl_is_none_when_no_ledger_row_arrives(readonly_env) -> None:
+    payload = snapshot_payload()
+    payload["account_values"] = [
+        row for row in payload["account_values"]
+        if "UnrealizedPnL" not in row["tag"]
+    ]
+    snapshot = IbkrReadOnlyBroker(FakeClient(payload)).fetch_snapshot()
+    # Absent means absent: the panel shows blank rather than a made-up number.
+    assert snapshot.margins[0].raw["UnrealizedPnL"] is None
 
 
 def test_unknown_order_action_becomes_none_rather_than_guessing(readonly_env) -> None:

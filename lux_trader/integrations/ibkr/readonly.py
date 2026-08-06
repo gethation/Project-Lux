@@ -18,7 +18,15 @@ from .client_process import IbkrClientProcess
 EQUITY_TAG = "NetLiquidation"
 AVAILABLE_TAG = "AvailableFunds"
 MAINTENANCE_TAG = "MaintMarginReq"
-UNREALIZED_PNL_TAG = "UnrealizedPnL"
+# Key the panel reads out of the margin raw payload. Kept plain even though the
+# wire tag is not, so margin/display.py has one name to look up.
+UNREALIZED_PNL_KEY = "UnrealizedPnL"
+# ...but IBKR does not send a plain 'UnrealizedPnL' row. Observed live on
+# 2026-08-07 against U20919183: accountSummary returned 49 tags and open PnL
+# appeared ONLY as '$LEDGER-UnrealizedPnL', twice -- once for USD and once for
+# the synthetic BASE currency. Looking up the plain name found nothing, so the
+# account panel showed pnl=NA all night while the strategy's own PnL was fine.
+UNREALIZED_PNL_TAGS = (UNREALIZED_PNL_KEY, "$LEDGER-UnrealizedPnL")
 
 
 def _order_side(action: Any) -> OrderSide | None:
@@ -30,13 +38,30 @@ def _order_side(action: Any) -> OrderSide | None:
     return None
 
 
-def _tag_value(values: list[dict[str, Any]], tag: str) -> tuple[float | None, str]:
-    for row in values:
-        if row.get("tag") == tag:
+def _tag_value(values: list[dict[str, Any]], *tags: str) -> tuple[float | None, str]:
+    """First match across `tags`, in order, preferring a real currency to BASE.
+
+    The '$LEDGER-' group repeats every figure under the synthetic 'BASE'
+    currency. Taking BASE would silently mix currencies on a multi-currency
+    account, so a real-currency row always wins and BASE is only a last resort.
+    """
+    base_match: tuple[float | None, str] | None = None
+    for tag in tags:
+        for row in values:
+            if row.get("tag") != tag:
+                continue
+            currency = str(row.get("currency") or "USD")
             try:
-                return float(row["value"]), str(row.get("currency") or "USD")
+                parsed: float | None = float(row["value"])
             except (TypeError, ValueError):
-                return None, str(row.get("currency") or "USD")
+                parsed = None
+            if currency.upper() == "BASE":
+                if base_match is None:
+                    base_match = (parsed, currency)
+                continue
+            return parsed, currency
+    if base_match is not None:
+        return base_match
     return None, "USD"
 
 
@@ -100,7 +125,7 @@ class IbkrReadOnlyBroker:
         equity, currency = _tag_value(values, EQUITY_TAG)
         available, _ = _tag_value(values, AVAILABLE_TAG)
         maintenance, _ = _tag_value(values, MAINTENANCE_TAG)
-        unrealized, _ = _tag_value(values, UNREALIZED_PNL_TAG)
+        unrealized, _ = _tag_value(values, *UNREALIZED_PNL_TAGS)
         margins = (
             BrokerMarginSnapshot(
                 broker=self.broker,
@@ -112,7 +137,7 @@ class IbkrReadOnlyBroker:
                 # one key instead of scanning tags.
                 raw={
                     "account_values": values,
-                    UNREALIZED_PNL_TAG: unrealized,
+                    UNREALIZED_PNL_KEY: unrealized,
                     MAINTENANCE_TAG: maintenance,
                 },
             ),
