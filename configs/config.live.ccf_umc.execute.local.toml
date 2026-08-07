@@ -1,9 +1,14 @@
 # CCF/UMC LIVE EXECUTE — this file sends REAL two-leg orders.
 #
-# It is the strategy at its real threshold (entry_z 1.5), one lot, both venues.
-# Everything in it is copied from the soak config that has actually run, with
-# only the gates and the store changed. Do not tune it and run it the same
-# night: the soak numbers stop applying the moment you do.
+# One lot, both venues, at entry_z 2.0 / exit_z 0.0 over a 780-bar window.
+#
+# Those are NOT the soak's thresholds. They were changed on 2026-08-06 from
+# 1.5 / 0.0 / 2500, so every number the soak measured -- the +0.19 haircut, the
+# 1.24 executable-z peak, the 1.245 spread_std -- was measured under a
+# different z and does not carry over. What this set actually does is
+# unmeasured: two live sessions produced exactly one entry, which is no sample
+# at all. Measuring it needs the seven-week fixture, re-run rather than
+# filtered (see docs/HANDOFF.md).
 #
 # ---------------------------------------------------------------------------
 # WHAT THIS CANNOT DO ON ITS OWN
@@ -49,11 +54,9 @@ usd_twd_ohlcv_csv = 'tests/fixtures/replay/usd_twd_1m_open.csv'
 [strategy]
 # The real thresholds. The 0.3 used in the coverage soak was for exercising the
 # order path, and every number that run produced is meaningless here.
-entry_z = 1.5
+entry_z = 2.0
 exit_z = 0.0
-zscore_window = 2500
-leg_notional_twd = 1000000.0
-initial_capital_twd = 2000000.0
+zscore_window = 780
 max_entry_delay_minutes = 15
 weekend_policy = 'none'
 
@@ -72,9 +75,14 @@ umc_fee_bps = 2.5
 # overrides the minimum, and SEC/FINRA on SELLS only. Reachable from the live
 # path since 2026-08-04 and exercised on both sides.
 umc_fee_model = 'ibkr'
-# TODO before this matters: 88.0 is QFF's per-contract fee, reused as a
-# placeholder. CCF's real Fubon fee is unconfirmed.
+# CONFIRMED against the broker on 2026-08-07, no longer a QFF placeholder: the
+# Fubon account snapshot reported today_trading_fee = 88.0 after the single
+# CCFH6 lot bought at 23:54 the night before. The number carried over from QFF
+# turned out to be the right one.
 ccf_fee_per_contract_twd = 88.0
+# Also confirmed the same way: Fubon charged today_trading_tax = 5.0 where the
+# raw rate gives 242,000 x 0.00002 = 4.84. core/fees.py rounds the per-contract
+# tax to whole TWD, which is what makes the recorded 93.0 match the broker.
 ccf_tax_rate = 0.00002
 # 2000 shares/contract. QFF was 100. A wrong value here is a 20x position error
 # with self-consistent arithmetic downstream and no symptom.
