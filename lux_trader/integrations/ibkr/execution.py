@@ -202,7 +202,18 @@ class IbkrUmcExecutionAdapter:
         residual: float,
     ) -> ExecutionOutcome:
         classification = str(result.get("classification", "unknown"))
-        order_id = str(result.get("order_id", ""))
+        # IBKR order ids restart at 1 on every client connection, so a bare
+        # number is unique only inside one session. The store keys orders
+        # globally. On 2026-08-07 an exit was handed id 2 -- the id an entry had
+        # used two restarts earlier -- and store.record_order raised
+        # order_id_collision AFTER both legs had filled, killing the loop with
+        # the pair closed at both brokers but never written down. Namespace it
+        # by plan, the way the Fubon leg already does. The raw id stays in
+        # payload, and client_process still uses trade.order.orderId to talk to
+        # IBKR -- only the persisted key changes.
+        raw_order_id = str(result.get("order_id", ""))
+        id_suffix = "-".join(part for part in (plan.plan_id, raw_order_id) if part)
+        order_id = f"IBKR-{id_suffix}"
         filled_shares = float(result.get("filled", 0.0))
         payload = {
             "adapter": "ibkr_umc_execution",
@@ -224,7 +235,7 @@ class IbkrUmcExecutionAdapter:
 
         if classification == "filled":
             fill = Fill(
-                fill_id=f"IBKR-{order_id}",
+                fill_id=f"IBKR-FILL-{id_suffix}",
                 order_id=order_id,
                 broker=self.broker,
                 symbol=leg.symbol,

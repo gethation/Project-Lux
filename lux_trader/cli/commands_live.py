@@ -17,6 +17,7 @@ from lux_trader.config import load_config
 from lux_trader.core.calendar import live_session_status
 from lux_trader.core.models import StrategyState
 from lux_trader.core.time import ensure_taipei
+from lux_trader.crash_log import record_crash
 from lux_trader.dashboard_ui import DashboardReporter
 from lux_trader.ntfy import NtfyLiveReporter
 from lux_trader.reconciliation import (
@@ -89,8 +90,11 @@ def command_live_dry_run(args: argparse.Namespace) -> int:
             skip_warmup=args.skip_warmup,
         )
     except Exception as exc:
+        crash_path = record_crash(exc, context="live-dry-run")
         reporter.error(
-            datetime.now().astimezone(), f"{type(exc).__name__}: {exc}"
+            datetime.now().astimezone(),
+            f"{type(exc).__name__}: {exc}"
+            + (f" [traceback: {crash_path}]" if crash_path else ""),
         )
         raise
     finally:

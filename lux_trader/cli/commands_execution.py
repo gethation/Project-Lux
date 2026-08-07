@@ -24,6 +24,8 @@ import time
 from datetime import datetime
 from typing import Any
 
+from lux_trader.crash_log import record_crash
+
 from lux_trader.cli import helpers
 from lux_trader.config import load_config
 from lux_trader.core.models import BrokerName, Direction, OrderSide
@@ -151,11 +153,20 @@ def command_live_execute(args: argparse.Namespace) -> int:
             skip_warmup=args.skip_warmup,
         )
     except Exception as exc:
+        # Write the stack BEFORE reporting: the SystemExit below prints only the
+        # message, so without this the traceback exists nowhere once the
+        # terminal scrolls. See lux_trader/crash_log.py.
+        crash_path = record_crash(exc, context="live-execute")
         reporter.error(
-            datetime.now().astimezone(), f"{type(exc).__name__}: {exc}"
+            datetime.now().astimezone(),
+            f"{type(exc).__name__}: {exc}"
+            + (f" [traceback: {crash_path}]" if crash_path else ""),
         )
         if isinstance(exc, RuntimeError):
-            raise SystemExit(str(exc))
+            raise SystemExit(
+                f"{exc}"
+                + (f"\nFull traceback written to {crash_path}" if crash_path else "")
+            )
         raise
     finally:
         helpers.close_brokers(shared_brokers or ())

@@ -109,6 +109,46 @@ def filled_result(**overrides):
 # --- env gates ---------------------------------------------------------------
 
 
+def test_persisted_order_id_is_namespaced_by_plan_not_the_bare_ibkr_number(
+    monkeypatch,
+) -> None:
+    # IBKR restarts orderId at 1 on every client connection. On 2026-08-07 an
+    # exit was handed id 2 -- the id an entry had used two restarts earlier --
+    # and store.record_order raised order_id_collision AFTER both legs filled,
+    # killing the loop with the pair closed but never written down.
+    for name in IBKR_LIVE_ORDER_ENV_GATES:
+        monkeypatch.setenv(name, "1")
+    outcome = adapter(FakeClient(filled_result(order_id=2))).execute(plan())
+
+    order_id = outcome.orders[0].order_id
+    assert order_id != "2"
+    assert "PLAN-D1" in order_id
+    assert order_id.endswith("-2")           # raw id kept for traceability
+    assert outcome.fills[0].order_id == order_id
+    assert "PLAN-D1" in outcome.fills[0].fill_id
+    # The number IBKR itself uses is still reachable for reconciliation.
+    assert outcome.payload["order_id"] == 2
+
+
+def test_two_plans_reusing_one_ibkr_id_get_distinct_keys(monkeypatch) -> None:
+    for name in IBKR_LIVE_ORDER_ENV_GATES:
+        monkeypatch.setenv(name, "1")
+    entry = adapter(FakeClient(filled_result(order_id=2))).execute(plan())
+    second = PairExecutionPlan(
+        plan_id="PLAN-D2",
+        plan_type=ExecutionPlanType.EXIT,
+        direction=Direction.SHORT_UMC_LONG_CCF,
+        timestamp=TS,
+        row_index=666,
+        legs=(umc_leg(),),
+        reason="test",
+    )
+    exit_ = adapter(FakeClient(filled_result(order_id=2))).execute(second)
+
+    assert entry.orders[0].order_id != exit_.orders[0].order_id
+    assert entry.fills[0].fill_id != exit_.fills[0].fill_id
+
+
 def test_no_order_is_sent_with_the_gates_closed(monkeypatch) -> None:
     for name in IBKR_LIVE_ORDER_ENV_GATES:
         monkeypatch.delenv(name, raising=False)
