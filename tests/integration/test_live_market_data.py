@@ -1662,11 +1662,39 @@ def test_warmup_builder_fails_when_initial_ccf_cannot_be_filled(tmp_path) -> Non
         ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T02:48:00+08:00"))
 
 
-def test_warmup_builder_fails_when_umc_or_usd_is_missing(tmp_path) -> None:
+def test_warmup_builder_fails_when_umc_or_usd_is_missing_mid_window(tmp_path) -> None:
+    """An interior hole is data that is gone, and it must stay fatal.
+
+    Every mean and std in the window is computed over these minutes, so
+    papering over one would corrupt the z-score the strategy trades on.
+    """
     config = small_live_config(tmp_path)
-    ccf = FakeCcfProvider(rows([("2026-06-18T02:45:00+08:00", 100.0)]))
-    umc = FakeOhlcvProvider(rows([("2026-06-18T02:45:00+08:00", 20.0)]))
-    usd = FakeOhlcvProvider(rows([("2026-06-18T02:45:00+08:00", 30.0)]))
+    ccf = FakeCcfProvider(
+        rows(
+            [
+                ("2026-06-18T02:45:00+08:00", 100.0),
+                ("2026-06-18T02:46:00+08:00", 101.0),
+                ("2026-06-18T02:47:00+08:00", 102.0),
+            ]
+        )
+    )
+    umc = FakeOhlcvProvider(
+        rows(
+            [
+                ("2026-06-18T02:45:00+08:00", 20.0),
+                ("2026-06-18T02:47:00+08:00", 21.0),
+            ]
+        )
+    )
+    usd = FakeOhlcvProvider(
+        rows(
+            [
+                ("2026-06-18T02:45:00+08:00", 30.0),
+                ("2026-06-18T02:46:00+08:00", 30.0),
+                ("2026-06-18T02:47:00+08:00", 30.0),
+            ]
+        )
+    )
 
     with pytest.raises(RuntimeError, match="missing minutes"):
         WarmupBuilder(
@@ -1676,6 +1704,73 @@ def test_warmup_builder_fails_when_umc_or_usd_is_missing(tmp_path) -> None:
             umc_provider=umc,
             usd_twd_provider=usd,
         ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T02:48:00+08:00"))
+
+
+def test_warmup_builder_trims_trailing_minutes_the_vendor_has_not_published(
+    tmp_path,
+) -> None:
+    """Twelve Data writes its 1m series minutes late; late is not lost.
+
+    The window reaches to now-1min, so a restart routinely asks for bars the
+    vendor has not published yet. On 2026-08-07 that killed a live-execute
+    restart at 22:36:27 over a 22:35 bar which was present by 22:39:56. Drop
+    the tail rather than the whole warmup.
+    """
+    config = small_live_config(tmp_path)
+    ccf = FakeCcfProvider(
+        rows(
+            [
+                ("2026-06-18T02:45:00+08:00", 100.0),
+                ("2026-06-18T02:46:00+08:00", 101.0),
+                ("2026-06-18T02:47:00+08:00", 102.0),
+            ]
+        )
+    )
+    published = [
+        ("2026-06-18T02:45:00+08:00", 20.0),
+        ("2026-06-18T02:46:00+08:00", 21.0),
+    ]
+    umc = FakeOhlcvProvider(rows(published))
+    usd = FakeOhlcvProvider(
+        rows([(stamp, 30.0) for stamp, _ in published])
+    )
+
+    bars = WarmupBuilder(
+        live_config=config.live,
+        ccf_intraday_provider=ccf,
+        ccf_fallback_provider=None,
+        umc_provider=umc,
+        usd_twd_provider=usd,
+    ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T02:48:00+08:00"))
+
+    assert [bar.timestamp for bar in bars] == [
+        ts("2026-06-18T02:45:00+08:00"),
+        ts("2026-06-18T02:46:00+08:00"),
+    ]
+    # The surviving bars are complete -- trimming must not leave a NaN behind.
+    assert all(bar.umc_twd_fair == bar.umc_twd_fair for bar in bars)
+    assert all(bar.spread == bar.spread for bar in bars)
+
+
+def test_warmup_builder_refuses_a_trailing_gap_too_big_to_be_vendor_lag(
+    tmp_path,
+) -> None:
+    """Past ~1.5x the vendor's worst measured lag it is an outage, not lag."""
+    base = small_live_config(tmp_path)
+    config = replace(base, live=replace(base.live, warmup_minutes=15))
+    minutes = [f"2026-06-18T02:{45 + offset:02d}:00+08:00" for offset in range(15)]
+    ccf = FakeCcfProvider(rows([(stamp, 100.0) for stamp in minutes]))
+    umc = FakeOhlcvProvider(rows([(stamp, 20.0) for stamp in minutes[:3]]))
+    usd = FakeOhlcvProvider(rows([(stamp, 30.0) for stamp in minutes[:3]]))
+
+    with pytest.raises(RuntimeError, match="more than vendor lag explains"):
+        WarmupBuilder(
+            live_config=config.live,
+            ccf_intraday_provider=ccf,
+            ccf_fallback_provider=None,
+            umc_provider=umc,
+            usd_twd_provider=usd,
+        ).build(ccf_symbol="CCF202607", end=ts("2026-06-18T03:00:00+08:00"))
 
 
 def test_live_minute_bar_builder_finalizes_on_minute_crossing() -> None:

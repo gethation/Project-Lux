@@ -24,6 +24,16 @@ from .types import (
 )
 
 
+# How many trailing minutes may be dropped because a vendor has not published
+# them yet. Twelve Data writes its 1m USD/TWD series late -- the live config
+# records p50 193s, max 391s -- while the warmup window reaches to now-1min, so
+# a restart routinely asks for bars that exist but are not out yet. Ten is
+# ~1.5x the measured worst case; past that it is an outage, not lag, and the
+# build fails closed. The caller still enforces the zscore_window minimum, so
+# trimming can never quietly produce a short seed.
+MAX_TRAILING_VENDOR_LAG_BARS = 10
+
+
 class CsvCcfWarmupProvider:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -172,9 +182,38 @@ class WarmupBuilder:
         ).reindex(index)
         missing = umc[umc.isna()].index.union(usd[usd.isna()].index)
         if len(missing):
-            raise RuntimeError(
-                f"UMC/USDT-TWD warmup has missing minutes from {missing[0]}"
-            )
+            # Where the gap sits decides whether it is survivable.
+            #
+            # A run at the END is vendor lag: the window reaches to now-1min
+            # and Twelve Data has not published those minutes yet. They are
+            # late, not lost -- on 2026-08-07 a restart raised on 22:35 and the
+            # same minute was there three minutes later. Trim and carry on;
+            # dropping a few of the newest bars costs nothing against a 2500-bar
+            # window, and CCF already tolerates trailing filled minutes.
+            #
+            # A gap in the MIDDLE is data that is genuinely gone. Every mean and
+            # std in the window is computed over these minutes, so covering it
+            # up would corrupt the z-score the strategy trades on. That still
+            # fails closed, loudly.
+            trailing = 0
+            for timestamp in reversed(index):
+                if timestamp not in missing:
+                    break
+                trailing += 1
+            if len(missing) > trailing:
+                raise RuntimeError(
+                    f"UMC/USDT-TWD warmup has missing minutes from {missing[0]}"
+                )
+            if trailing > MAX_TRAILING_VENDOR_LAG_BARS:
+                raise RuntimeError(
+                    f"UMC/USDT-TWD warmup is missing {trailing} trailing "
+                    f"minutes from {missing[0]}, more than vendor lag explains"
+                )
+            index = index[:-trailing]
+            ccf = ccf.loc[index]
+            ccf_filled = ccf_filled.loc[index]
+            umc = umc.loc[index]
+            usd = usd.loc[index]
 
         umc_twd_fair = umc * usd / 5.0
         spread = (
