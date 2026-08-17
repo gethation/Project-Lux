@@ -198,3 +198,100 @@ def test_process_facade_reuses_subprocess_transport() -> None:
         assert isinstance(health["worker_pid"], int)
     finally:
         process.close()
+
+
+class FakePositionsIb(FakeIb):
+    """ib_async's shape for the 2026-08-17 fault.
+
+    `positions()` is a cache read that cannot fail. `reqPositions()` is the
+    request that fills it, and the only thing that can report the failure.
+    """
+
+    def __init__(self, *, positions_timeout: bool = False) -> None:
+        super().__init__()
+        self.positions_timeout = positions_timeout
+        self.req_positions_calls = 0
+        self._cache: list[object] = []
+
+    def reqPositions(self) -> list[object]:
+        self.req_positions_calls += 1
+        if self.positions_timeout:
+            raise TimeoutError("positions request timed out")
+        self._cache = [
+            SimpleNamespace(
+                account="U1234567",
+                contract=SimpleNamespace(
+                    symbol="UMC", secType="STK", currency="USD", conId=46_613_372
+                ),
+                position=396.0,
+                avgCost=18.5,
+            )
+        ]
+        return list(self._cache)
+
+    def positions(self) -> list[object]:
+        return list(self._cache)
+
+    def openTrades(self) -> list[object]:
+        return []
+
+    def accountSummary(self) -> list[object]:
+        return []
+
+
+def test_a_timed_out_positions_request_is_refused_not_reported_as_flat() -> None:
+    """REGRESSION 2026-08-17: ib_async logs "positions request timed out" during
+    connect and connects anyway, leaving an empty cache. 396 UMC shares read as
+    a position of 0, and reconciliation blamed the position rather than the
+    connection."""
+    from lux_trader.integrations.ibkr.client_process import IbkrPositionsUnavailable
+
+    fake = FakePositionsIb(positions_timeout=True)
+    worker = _IbkrWorkerClient(
+        IbkrConnectionConfig(), ib_factory=lambda: fake, clock=fixed_clock
+    )
+    worker.connect()
+
+    for call in (worker.fetch_umc_position, worker.fetch_account_snapshot):
+        try:
+            call()
+        except IbkrPositionsUnavailable as exc:
+            assert "cannot be trusted" in str(exc)
+        else:  # pragma: no cover - the point of the test
+            raise AssertionError(f"{call.__name__} reported an unverified cache")
+
+    assert worker.session_health(reconnect=False)["positions_verified"] is False
+
+
+def test_a_verified_session_reads_positions_and_does_not_re_request() -> None:
+    """The guard must cost one request per session, not one per read --
+    fetch_umc_position runs inside order confirmation."""
+    fake = FakePositionsIb()
+    worker = _IbkrWorkerClient(
+        IbkrConnectionConfig(), ib_factory=lambda: fake, clock=fixed_clock
+    )
+    worker.connect()
+
+    assert worker.fetch_umc_position() == 396.0
+    assert worker.fetch_umc_position() == 396.0
+    assert worker.fetch_account_snapshot()["positions"][0]["quantity"] == 396.0
+    assert fake.req_positions_calls == 1
+    assert worker.session_health(reconnect=False)["positions_verified"] is True
+
+
+def test_a_disconnect_invalidates_the_previous_session_cache() -> None:
+    """A cache filled before a drop says nothing about the session after it."""
+    fake = FakePositionsIb()
+    worker = _IbkrWorkerClient(
+        IbkrConnectionConfig(), ib_factory=lambda: fake, clock=fixed_clock
+    )
+    worker.connect()
+    assert worker.fetch_umc_position() == 396.0
+
+    fake.connected = False
+    fake.disconnectedEvent.emit()
+    assert worker.session_health(reconnect=False)["positions_verified"] is False
+
+    fake.connected = True
+    assert worker.fetch_umc_position() == 396.0
+    assert fake.req_positions_calls == 2

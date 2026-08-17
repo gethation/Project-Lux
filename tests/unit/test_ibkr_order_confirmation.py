@@ -97,6 +97,12 @@ class FakeIb:
     def reqContractDetails(self, _contract):
         return [SimpleNamespace(contract=SimpleNamespace(symbol="UMC", conId=1))]
 
+    def reqPositions(self):
+        # The real IB has both: reqPositions performs the request, positions
+        # reads the cache it fills. The client now proves the request completed
+        # before trusting the cache, so a double of IB needs both too.
+        return self.positions()
+
     def positions(self):
         quantity = self._positions[0] if not self.placed else self._after
         return [

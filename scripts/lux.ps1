@@ -82,7 +82,12 @@ try {
         }
         catch {
             # A viewer that will not start is never a reason to not start trading.
+            #
+            # The launcher path is named because the bare message here is
+            # "system cannot find the file specified" with no file in it, and
+            # that cost a diagnosis on 2026-08-17 that never reached a cause.
             Write-Host "web viewer failed to start; continuing without it: $($_.Exception.Message)"
+            Write-Host "  launcher=$conda exists=$(Test-Path -LiteralPath $conda) cwd=$(Get-Location)"
         }
     }
 

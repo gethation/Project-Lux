@@ -61,6 +61,22 @@ class IbkrGatewayUnavailable(RuntimeError):
     """IB Gateway is at its daily login screen or otherwise not listening."""
 
 
+class IbkrPositionsUnavailable(RuntimeError):
+    """The position cache was never filled, so `positions()` proves nothing.
+
+    ib_async requests positions once while connecting and, on timeout, logs
+    "positions request timed out" and connects anyway (ib.py, connectAsync:
+    the results are gathered with return_exceptions=True and only logged).
+    `IB.positions()` then reads an empty cache forever, which is
+    indistinguishable from a genuinely flat account.
+
+    2026-08-17 that read 396 UMC shares as a position of 0, and reconciliation
+    reported `expected=396.0 actual=0` -- pointing the operator at the position
+    when the fault was the connection. Raising instead makes it a
+    broker_fetch_failed, which says what actually happened.
+    """
+
+
 @dataclass(frozen=True)
 class IbkrConnectionConfig:
     host: str = "127.0.0.1"
@@ -126,6 +142,10 @@ class _IbkrWorkerClient:
         # cancel is actively harmful.
         self._umc_ticker: Any | None = None
         self._umc_ticker_time: Any | None = None
+        # Whether THIS session has completed a positions request. Reset on every
+        # disconnect: a cache filled by the previous session says nothing about
+        # this one. See IbkrPositionsUnavailable.
+        self._positions_verified = False
         self._register_events()
 
     def _register_events(self) -> None:
@@ -156,6 +176,7 @@ class _IbkrWorkerClient:
         # serve that session's last values forever after a reconnect.
         self._umc_ticker = None
         self._umc_ticker_time = None
+        self._positions_verified = False
         self._stamp(
             "gateway_unavailable",
             message="IB Gateway socket disconnected; login may be required",
@@ -230,6 +251,30 @@ class _IbkrWorkerClient:
         if not health["connected"]:
             raise IbkrGatewayUnavailable(str(health["message"]))
 
+    def _ensure_positions_authoritative(self) -> None:
+        """Prove the position cache was filled by THIS session, once per session.
+
+        `IB.positions()` is a cache read that cannot fail, so it reports an
+        empty cache as an empty account. One explicit request per session fixes
+        that: `reqPositions` goes through `IB._run`, which applies
+        `RequestTimeout` and raises asyncio.TimeoutError rather than logging and
+        continuing the way connect does.
+
+        Deliberately NOT called on every read. `fetch_umc_position` runs inside
+        order confirmation, where an extra blocking round trip per call would
+        slow the leg that is already the most latency-sensitive one.
+        """
+        if self._positions_verified:
+            return
+        try:
+            self.ib.reqPositions()
+        except Exception as exc:
+            raise IbkrPositionsUnavailable(
+                "IBKR positions request did not complete, so an empty position "
+                f"list cannot be trusted: {type(exc).__name__}: {exc}"
+            ) from exc
+        self._positions_verified = True
+
     def session_health(self, *, reconnect: bool = True) -> dict[str, Any]:
         if reconnect and not self.ib.isConnected():
             return self.connect()
@@ -253,6 +298,7 @@ class _IbkrWorkerClient:
             "last_error_code": self._last_error_code,
             "message": self._last_error_message,
             "data_lost": self._data_lost,
+            "positions_verified": self._positions_verified,
             "last_event_at": (
                 self._last_event_at.isoformat()
                 if self._last_event_at is not None
@@ -438,6 +484,7 @@ class _IbkrWorkerClient:
     def fetch_account_snapshot(self) -> dict[str, Any]:
         """Read-only positions, open orders, and account values."""
         self._ensure_connected()
+        self._ensure_positions_authoritative()
         accounts = [str(account) for account in self.ib.managedAccounts()]
         positions = [
             {
@@ -487,6 +534,7 @@ class _IbkrWorkerClient:
     def fetch_umc_position(self) -> float:
         """Signed UMC share count, summed over any split rows."""
         self._ensure_connected()
+        self._ensure_positions_authoritative()
         total = 0.0
         for position in self.ib.positions():
             if str(position.contract.symbol).strip().upper() == "UMC":
