@@ -1,253 +1,179 @@
 # Project Lux
 
-CCF/UMC pairs-trading system — a simplified rebuild of the legacy Project Lux.
-The core trading mechanism (strategy, indicators, sizing, fees, execution intent,
-reconciliation, broker integrations, SQLite audit schema) is vendored **unchanged**
-from the legacy reference implementation; only the operational shell (CLI, live
-runtime, terminal UI, config) is rebuilt to reduce complexity.
+A pairs-trading system for a single spread: **UMC** (NYSE ADR, via Interactive
+Brokers) against **CCF** (UMC single-stock futures on TAIFEX, via Fubon). Both
+legs are the same underlying on two venues in two currencies, so the equity leg
+is converted with a USD/TWD reference rate from Twelve Data.
 
-Source of truth for the mechanism:
-`Project Lux legacy/mechanism and requirement/01_TRADING_MECHANISM_AND_REQUIREMENTS.md`.
+```
+umc_twd_fair = umc_price × usd_twd / 5      # one ADR is five ordinary shares
+spread       = (umc_twd_fair − ccf) / (umc_twd_fair + ccf) × 200
+```
 
-## Modes (target)
+The spread is a normalized percentage, not a difference. The strategy takes a
+position when its rolling z-score is far from the mean and closes when it comes
+back.
 
-| Mode | Purpose | Sends real orders |
+**Entries are scored on the executable spread, not the mid.** `short_spread`
+prices the round trip you would actually get selling UMC and buying CCF (UMC bid
++ CCF ask); `long_spread` is the other direction. `long ≥ mid ≥ short` always
+holds, and the gap between them is the execution cost the signal has to clear.
+
+| Position | Opens when | Closes when |
 | --- | --- | --- |
-| `replay` | Validate strategy against the PoC/reference dataset. | No |
-| `live --mode dry-run` | Full live rehearsal on real/live-like data with a simulated adapter. | No |
-| `live --mode execute` | Minimal supervised two-leg real execution behind safety gates. | Yes |
+| Short UMC / long CCF | `short_z > +entry_z` | `long_z < −exit_z` |
+| Long UMC / short CCF | `long_z < −entry_z` | `short_z > +exit_z` |
 
-`paper` mode from the legacy system is intentionally dropped.
+The decision z-score flips to the closing side once a position is open, so
+`exit_z` is not symmetric with `entry_z` in effect — raising it delays every
+exit rather than taking profit sooner.
 
-## Environment
+The pair trades only where both venues are open: Taipei **21:30–04:00** in US
+summer, 22:30–05:00 in US winter.
 
-Python via the Miniconda `Quant` environment:
+## Safety model
+
+`live --mode execute` is the only entrypoint that sends real orders, and it is
+held shut by four independent locks plus three environment gates:
+
+1. `safety.allow_live_order = true`
+2. `[live_execution] enabled = true`
+3. `[live_execution] ccf_first = true` — the futures leg goes first, because a
+   stranded CCF position can be closed in its own session while a stranded UMC
+   short accrues borrow every day it is open
+4. `require_readonly_reconciliation = true` — a fresh, matched read-only
+   reconciliation against both brokers at every startup
+5. `PROJECT_LUX_ALLOW_LIVE_ORDER`, `FUBON_ALLOW_LIVE_ORDER`,
+   `IBKR_ALLOW_LIVE_ORDER` set to `1` (done for you by `scripts/lux.ps1`)
+
+Everything else fails closed. A stale quote, a skewed pair of legs, or a
+position the brokers and the store disagree about produces a skipped minute or a
+refused startup, never a trade on a guess.
+
+**Run it attended.** See [docs/HANDOFF.md](docs/HANDOFF.md).
+
+## Setup
+
+Python 3.12 in a Conda environment named `Quant`:
 
 ```powershell
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python --version
+conda create -n Quant python=3.12
+conda activate Quant
+pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-## M1 — replay alignment
+The Fubon SDK is not on PyPI — install the vendor wheel separately. Broker
+credentials live in `.env` (git-ignored); point `fubon_env_path` at it.
 
-Deterministic replay is pinned to the committed fixture under
-`tests/fixtures/replay/` (self-contained; independent of the mutable PoC
-workspace).
+`scripts/lux.ps1` finds Conda itself, so no path needs hardcoding.
+
+## Usage
+
+### Replay — deterministic, no broker contact
 
 ```powershell
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader replay  --config configs/replay.fixture.ccf_umc.toml --reset-store
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant python -m lux_trader summary --config configs/replay.fixture.ccf_umc.toml
-& 'D:\Users\miniconda3\condabin\conda.bat' run -n Quant pytest -q
+.\scripts\lux.ps1 replay  --config configs/replay.fixture.ccf_umc.toml --reset-store
+.\scripts\lux.ps1 summary --config configs/replay.fixture.ccf_umc.toml
 ```
 
-Aligned reference summary: `rows=29909`, `trade_count=66`,
-`net_pnl_twd≈261507.83`, `total_fee_twd≈68317.50`.
+Pinned to the committed fixture under `tests/fixtures/replay/`: 12,460 bars, 18
+trades, net 235,726.66 TWD, 20,134.41 TWD of fees. `tests/integration/test_replay_golden.py`
+asserts those to the last digit and is the tripwire for any change to the maths.
 
-> Note: the mechanism doc quotes an older PoC summary (`net_pnl=265481.32`). The
-> PoC rebuilt its input window on 2026-06-29, permanently dropping early CCF opens;
-> the trade set is unchanged (66 trades) and sizing/fill logic is byte-for-byte
-> identical. The committed fixture is the frozen regression baseline.
+That golden pins the **strategy**, not live behaviour: replay scores on the mid
+z-score and fills on the next bar, while live scores on the directional spread
+and fills on the same bar. A green golden does not mean live would take these
+trades.
 
-## M2 — live dry-run + terminal UI
-
-`live --mode dry-run` runs the full live rehearsal (auto warmup, 1s polling, minute
-finalization, tradable bid/ask spread decisions, simulated `DRYRUN-*`
-execution, reconciliation, resume) without touching any real order API.
+### Dry run — full live rehearsal, simulated fills
 
 ```powershell
-.\scripts\lux.ps1 live --mode dry-run --config configs/live.example.toml --reset-store
-.\scripts\lux.ps1 live --mode dry-run --config configs/live.example.toml --resume
+.\scripts\lux.ps1 live --mode dry-run --config configs/config.live.ccf_umc.dryrun.local.toml --reset-store
 ```
 
-Terminal UI styles (acceptance fields: session, symbols, latest quote/bar,
-spread/z-score, state, position, latest decision, reconciliation/gate):
+Real market data, real warmup, real reconciliation, `DRYRUN-*` orders. Touches
+no order API.
 
-- `--ui compact` (default): legacy single-line reporter.
-- `--ui dashboard`: rich multi-panel live dashboard.
-- `--quiet-ui`: no live UI, final summary only (CI/logs).
-
-Operator commands (no real orders):
+### Live execute — real orders
 
 ```powershell
-& conda run -n Quant python -m lux_trader status doctor --config <cfg> --mode live
-& conda run -n Quant python -m lux_trader status doctor --config <cfg> --mode ibkr    # UMC tier + bid/ask; needs LUX_LIVE_MARKETDATA=1
-& conda run -n Quant python -m lux_trader status live --config <cfg>
-& conda run -n Quant python -m lux_trader status reconcile --config <cfg> --readonly  # needs LUX_READONLY_BROKER=1
-& conda run -n Quant python -m lux_trader recover clear-pause --config <cfg> --readonly  # only after matched reconciliation
-& conda run -n Quant python -m lux_trader warmup --config <cfg> --reset-store
-& conda run -n Quant python -m lux_trader summary --config <cfg> --execution
+.\scripts\lux.ps1 live --mode execute --config configs/config.live.ccf_umc.execute.local.toml --resume
 ```
 
-Real-API smokes are opt-in via env gates (`LUX_LIVE_MARKETDATA=1`,
-`LUX_READONLY_BROKER=1`); the default `pytest -q` run never touches external
-APIs (gated smoke tests skip).
+`--resume` carries an open position across a restart; `--reset-store` starts
+clean and must never be used while a position is open. Ctrl+C shuts down
+cleanly — brokers closed, lease released.
 
-## M3 — real execution + M6 two-leg smoke
+### Web viewer
 
-`live --mode execute` is the only real-order entrypoint for the PAIR. It requires
-`safety.allow_live_order=true`, `[live_execution] enabled=true`, the three
-`*_ALLOW_LIVE_ORDER=1` env gates, and a matched read-only reconciliation.
-At every startup (including resume), it refreshes reconciliation through the
-read-only Fubon and IBKR adapters before evaluating the order gate or
-creating the real execution runner. A manual read-only preview remains
-available:
+A read-only chart of the spread, the executable band, both directional
+z-scores, and entry/exit markers. `live` starts one automatically on port 8787;
+to run it alone:
 
 ```powershell
+.\scripts\lux-web.ps1 --config configs/config.live.ccf_umc.execute.local.toml --port 8787
+```
+
+It opens the store `mode=ro` and can never write to it. Binding anything other
+than loopback mints a required token — plain HTTP with no TLS, so keep it on a
+LAN or VPN.
+
+| Variable | Effect |
+| --- | --- |
+| `LUX_NO_WEB=1` | do not start the viewer with `live` |
+| `LUX_WEB_HOST` | bind address (default `127.0.0.1`) |
+| `LUX_WEB_PORT` | port (default `8787`) |
+| `LUX_WEB_TOKEN` | supply a token instead of generating one |
+
+### Status and recovery
+
+```powershell
+# Read-only broker reconciliation — no orders, safe any time
 $env:LUX_READONLY_BROKER='1'
-& conda run -n Quant python -m lux_trader status reconcile --config <cfg> --readonly
+.\scripts\lux.ps1 status reconcile --config <cfg> --readonly
+
+.\scripts\lux.ps1 status doctor  --config <cfg> --mode live
+.\scripts\lux.ps1 status live    --config <cfg>
+.\scripts\lux.ps1 status broker  --config <cfg> [--funds | --orders SYMBOL]
+.\scripts\lux.ps1 status margin  --config <cfg>
 ```
 
-Single-venue tools (real orders, extra env gates required):
+`admin exec-smoke` places one minimal real order per venue and
+`admin manual-close` flattens a single stranded leg. Both need their own extra
+env gates; `manual-close` is close-only and refuses anything that would grow or
+flip a position.
+
+### Tests
 
 ```powershell
-# Fubon: PROJECT_LUX_ALLOW_LIVE_ORDER=1 FUBON_ALLOW_LIVE_ORDER=1 LUX_FUBON_EXECUTION_SMOKE=1
-& conda run -n Quant python -m lux_trader admin exec-smoke   --config <cfg> --venue fubon --symbol CCFH6 --lot 1 --confirm-symbol CCFH6
-
-# IBKR: PROJECT_LUX_ALLOW_LIVE_ORDER=1 IBKR_ALLOW_LIVE_ORDER=1 LUX_IBKR_EXECUTION_SMOKE=1
-# Defaults to ONE share. --side sell opens the round trip short, which is the
-# path borrow makes different and the one half the strategy's trades need.
-& conda run -n Quant python -m lux_trader admin exec-smoke   --config <cfg> --venue ibkr [--side sell] [--shares 1] --confirm-symbol UMC
-
-# Emergency close of one stranded leg. Close-only: it refuses a side or size
-# that would grow or flip the position. No extra gate beyond the two live-order
-# ones -- the exit must not be harder to reach than the entrance.
-& conda run -n Quant python -m lux_trader admin manual-close --config <cfg> --venue fubon --symbol CCFH6 --side sell --lot 1 --confirm-symbol CCFH6
-& conda run -n Quant python -m lux_trader admin manual-close --config <cfg> --venue ibkr  --symbol UMC   --side sell --shares 400 --confirm-symbol UMC
-
-& conda run -n Quant python -m lux_trader status broker --config <cfg> [--funds | --orders SYMBOL]
+conda run -n Quant python -m pytest -q
 ```
-
-Fubon fill confirmation is layered (official status enum: 10=New Order,
-50=Fully filled, 30=Cancel, 90=Failed): the SDK's futures report callbacks
-(`set_on_futopt_filled` / `set_on_futopt_order`) are the primary channel,
-`get_order_results` polling runs in parallel as backup, position-delta is only
-a post-timeout fallback, and post-trade reconciliation remains the final
-check. Outcome payloads record `fill_source`
-(`filled_callback | order_result | position_delta`), `fill_events`, and
-`callback_stream_unreliable` for audit.
-
-Binance fill confirmation mirrors the same layering: every order carries a
-pre-assigned `newClientOrderId` so a create_order timeout can be resolved by
-`origClientOrderId` lookup (found → normal outcome, confirmed absent → FAILED,
-lookup unavailable → position-delta evidence, else UNKNOWN); `fetch_order`
-runs as a bounded polling loop (working statuses keep polling, terminal
-statuses exit fast); position-delta is the last-resort fill evidence. Payloads
-record `fill_source`, `client_order_id`, `recovery`, and `poll_errors`.
-
-The M6 two-leg minimal real-order acceptance (Fubon TMF `FITMN07` 1 lot +
-Binance UMC 0.1 unit, ccf-first, pre/post reconciliation, leg timing gap,
-final flat) is driven by `tests/smoke/test_live_execute_smoke.py` and MUST be
-run supervised — see [docs/M6_RUNBOOK.md](docs/M6_RUNBOOK.md). Until M6 (and a
-longer soak) passes, the system must not run unattended with real orders.
-
-## Web viewer — read-only spread chart
-
-`lux_trader/web/` serves a lightweight-charts view of the spread over any store.
-It is an observer: every SQLite connection it opens is `mode=ro`, it imports no
-broker or execution code, and it is safe to run against the database of a
-live-execute process that is trading right now (WAL lets a reader in another
-process read committed data without blocking the writer). It is deliberately
-NOT a subcommand of `python -m lux_trader`, so nothing on the live import path
-had to change to add it.
-
-```powershell
-& conda run -n Quant python -m lux_trader.web --config <cfg> [--port 8787]
-& conda run -n Quant python -m lux_trader.web --config <cfg> --store <other.sqlite3>
-```
-
-`scripts\lux.ps1 live ...` brings it up automatically and kills it (tree kill, so
-the `conda run` wrapper does not leave the port held) when the run ends. It is
-started as a separate process, before the live-order env gates are set, so it
-neither inherits them nor shares a process with the loop placing real orders.
-Configured by environment variable rather than by script parameters, so nothing
-about `@args` passing to `lux_trader` changed:
-
-| variable | default | effect |
-|---|---|---|
-| `LUX_NO_WEB` | unset | `1` skips the viewer |
-| `LUX_WEB_PORT` | `8787` | port; if already in use the launcher leaves the existing one alone |
-| `LUX_WEB_HOST` | `127.0.0.1` | anything else binds beyond this machine **and turns on token auth** |
-| `LUX_WEB_TOKEN` | unset | supply a token instead of generating one |
-
-**Off-machine access.** A non-loopback bind never goes out unauthenticated: if no
-token is given, one is generated and the launcher prints the full
-`http://host:port/?token=…` URL. The token is accepted as a query parameter once
-and then kept in a `SameSite=Strict` cookie. There is **no TLS** — the token and
-the position data cross the network in clear text, so this belongs on a VPN
-(Tailscale/WireGuard) or a trusted LAN, not on a port forwarded to the internet.
-What it exposes if someone gets in: position direction and size, entry price,
-unrealized P&L, equity, and the spread history. No credentials, no order path,
-no writes of any kind.
-
-Two panes on one time axis:
-
-- **spread** — candles, plus the executable band (`long_spread` / `short_spread`)
-  and the rolling `mean ± entry_z·std` thresholds, all in spread units. The band
-  edges are what an entry has to cross: `long_spread >= mid >= short_spread`
-  always holds, so a short entry needs the *lower* edge above `+entry_z`.
-- **z** — `long_z` / `short_z` / `mid_z` against flat `±entry_z` / `±exit_z`
-  lines. The thickness of the band there is the round-trip execution cost in
-  sigma (measured 0.86σ average, 1.94σ worst, over 2026-08-07's 335 bars).
-
-Notes that matter when reading it:
-
-- A candle's **close is always `bars.spread`** — the number the strategy scored
-  and traded on. Only open/high/low are reconstructed from `market_ticks`, which
-  the engine writes about 54 times a minute. A store with no ticks (replay) falls
-  back to aggregating one-minute closes and opens on 5m, because a 1m candle
-  there could only be open==high==low==close.
-- Minutes the engine rejected get **no candle**, rather than an invented one.
-- Unrealized P&L is shown as a price-line label, never as a second axis: it is a
-  function of both legs' prices (`strategy.py`), not of the spread, so a TWD
-  scale beside a spread scale would be a lie. It is also the **model's**
-  mark-to-market — the broker's own uPnL lives only in memory
-  (`margin/display.py`) and never reaches the store.
-- The engine commits once per finalized minute (`engine.py`), so the viewer's
-  "now" can trail by up to a minute. The header shows the lag instead of hiding
-  it.
 
 ## Layout
 
-```text
+```
 lux_trader/
-  core/            strategy, indicator, sizing, fees, calendar, contract policy, models (frozen)
-  market_data/     replay input, minute bars, warmup, sessions (frozen)
-  execution/       execution intent, price policy, coordinator, gate, outcome (frozen)
-  reconciliation/  read-only + post-trade reconciliation (frozen)
-  integrations/    Fubon, Binance, BitoPro, TAIFEX adapters (frozen)
-  persistence/     SQLite schema + query stores (frozen)
-  brokers/         PaperBroker used by replay accounting (frozen)
-  runtime/live/    shared live engine + dry-run/execute handlers (paper mode removed)
-  store.py         single SQLite facade (frozen)
-  config.py        TOML config loader (frozen)
-  runner.py        replay orchestration (frozen)
-  cli/             thin command shell (rebuilt, consolidated)
-  terminal_ui.py   compact one-line live reporter (legacy style)
-  dashboard_ui.py  rich multi-panel live dashboard
-  web/             read-only spread chart (stdlib http.server + lightweight-charts)
-tests/             unit + integration + gated smoke + fixtures
-configs/           example + fixture configs
+  core/           strategy, indicators, sizing, fees, calendar — the frozen maths
+  market_data/    minute bar assembly, staleness and skew gates, warmup
+  execution/      execution intent, gate, coordinators, price policy
+  integrations/   fubon/, ibkr/, twelvedata/, taifex/ — each broker in its own process
+  reconciliation/ broker-vs-store position checks
+  runtime/live/   the live loop, bootstrap, contract rollover
+  persistence/    SQLite schema and migrations
+  web/            read-only viewer
+  cli/            command dispatch
+configs/          one TOML per mode; *.local.toml hold machine-specific paths
+docs/             design notes and runbooks
+scripts/          PowerShell launchers
 ```
 
-## Margin management — daily 10:00 transfer guidance
+Every broker integration runs in its own spawned process, so a wedged SDK
+thread or a hung socket has an OS-enforceable deadline instead of blocking the
+trading loop.
 
-Semi-automatic dual-account margin policy (source: PoC
-`docs/margin_management_analysis.md`): the system reads both accounts' equity
-and maintenance margin (Fubon `query_margin_equity`; Binance `/fapi/v3/account`
-via ccxt), computes equity/notional ratios, and reports transfer guidance in
-the terminal UI. It never places orders or initiates transfers.
+## Docs
 
-- Daily check at 10:00 Taipei (Mon-Fri) inside the live loop, plus a red-line
-  check every 15 minutes while a position is open. Enable with
-  `[margin_management] enabled = true` and `LUX_READONLY_BROKER=1`.
-- Levels: `red_line` (close immediately — a transfer arrives too late),
-  `transfer` (initiate today's 10:00 transfer back to the 30% target),
-  `rebalance` (flat, top up opportunistically), `ok`.
-- Standalone check (also schedulable via Windows Task Scheduler):
-
-```powershell
-$env:LUX_READONLY_BROKER='1'
-.\scripts\lux.ps1 status margin --config <cfg>
-```
-
-- Every check is recorded in the `margin_checks` SQLite table for later
-  calibration; the dashboard shows a dedicated Margin panel.
+- [docs/CCF_UMC_PLAN.md](docs/CCF_UMC_PLAN.md) — design decisions and what was measured
+- [docs/HANDOFF.md](docs/HANDOFF.md) — operating notes
+- [docs/LIVE_START_COMMANDS.md](docs/LIVE_START_COMMANDS.md) — startup sequence
+- [docs/MIGRATION.md](docs/MIGRATION.md) — moving to another machine
