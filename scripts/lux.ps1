@@ -14,21 +14,7 @@
 #   LUX_WEB_TOKEN     supply your own token instead of a generated one
 
 $ErrorActionPreference = 'Stop'
-$condaCommand = Get-Command conda -ErrorAction SilentlyContinue
-$conda = if ($condaCommand) {
-    $condaCommand.Source
-}
-else {
-    $candidates = @(
-        (Join-Path $env:USERPROFILE 'anaconda3\condabin\conda.bat'),
-        (Join-Path $env:USERPROFILE 'miniconda3\condabin\conda.bat'),
-        'D:\Users\miniconda3\condabin\conda.bat'
-    )
-    $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-}
-if (-not $conda) {
-    throw 'Unable to find conda. Add conda to PATH or install Anaconda/Miniconda.'
-}
+$conda = & (Join-Path $PSScriptRoot 'find-conda.ps1')
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $liveExecuteEnvGates = @(
     'LUX_READONLY_BROKER',

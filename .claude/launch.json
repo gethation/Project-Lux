@@ -1,0 +1,37 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "lux-web-live",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/lux-web.ps1",
+        "--config",
+        "configs/config.live.ccf_umc.execute.local.toml",
+        "--port",
+        "8787"
+      ],
+      "port": 8787
+    },
+    {
+      "name": "lux-web-replay",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/lux-web.ps1",
+        "--config",
+        "configs/replay.fixture.ccf_umc.toml",
+        "--port",
+        "8788"
+      ],
+      "port": 8788
+    }
+  ]
+}
