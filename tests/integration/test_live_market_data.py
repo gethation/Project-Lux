@@ -50,6 +50,7 @@ from lux_trader.runtime.live.contracts import (
     resolve_force_exit_reason,
     should_force_exit_for_contract_policy,
     should_switch_contract_before_processing,
+    switch_to_contract,
 )
 from lux_trader.runtime.live.engine import build_live_decision_snapshot
 from lux_trader.runtime.live.warmup import (
@@ -4101,3 +4102,75 @@ def test_cleanup_error_history_is_bounded() -> None:
 
     assert len(provider.last_cleanup_errors) == 8
     assert provider.last_cleanup_errors[-1].endswith("24")
+
+
+def test_completing_a_rollover_rebuilds_warmup_on_the_new_contract(tmp_path) -> None:
+    """REGRESSION 2026-08-17: switch_to_contract used load_or_build_live_indicator
+    without importing it, and raised NameError the first time a rollover
+    completed live -- after the position had already closed.
+
+    It survived because nothing called this function. The three contract-switch
+    tests all cover the DECISION to roll (cancel entry-pending, mark
+    pending_symbol_switch); none reached the switch itself, which only runs once
+    a pending rollover goes flat.
+
+    The import has to stay inside the function: warmup imports
+    resolve_ccf_contract from contracts, so a module-level import closes the
+    cycle and neither module loads. That makes "does this name resolve at call
+    time" a real question, and this is the test that asks it.
+    """
+    config = small_live_config(tmp_path)
+    # Same window the auto-warmup test uses: a mid-session stretch with no
+    # weekend behind it, so the builder's lookback lands on real bars.
+    bars = [
+        ("2026-06-18T02:42:00+08:00", 100.0),
+        ("2026-06-18T02:43:00+08:00", 101.0),
+        ("2026-06-18T02:44:00+08:00", 102.0),
+    ]
+    ccf = FakeCcfProvider(rows(bars))
+    umc = FakeOhlcvProvider(rows([(t, 20.0 + i) for i, (t, _) in enumerate(bars)]))
+    usd = FakeOhlcvProvider(rows([(t, 30.0) for t, _ in bars]))
+
+    state = StrategyRuntimeState(
+        state=StrategyState.FLAT,
+        trading_ccf_symbol="CCFH6",
+        eligible_active_ccf_symbol="CCFI6",
+        pending_symbol_switch=True,
+        contract_policy_state="pending_symbol_switch",
+    )
+    contract = CcfContractResolution(
+        symbol="CCFI6",
+        expiry="2026-09-16",
+        policy_state="active",
+    )
+
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        symbol, expiry, indicator, seed_bars = switch_to_contract(
+            store,
+            config,
+            state,
+            contract,
+            ccf_provider=ccf,
+            umc_provider=umc,
+            usd_twd_provider=usd,
+            end=ts("2026-06-18T02:45:00+08:00"),
+        )
+    finally:
+        store.close()
+
+    # The switch completed rather than raising, and moved the state onto CCFI6.
+    assert symbol == "CCFI6"
+    assert expiry == "2026-09-16"
+    assert state.trading_ccf_symbol == "CCFI6"
+    assert state.eligible_active_ccf_symbol == "CCFI6"
+    assert state.pending_symbol_switch is False
+    assert state.contract_policy_state == "active"
+    assert state.last_warmup_symbol == "CCFI6"
+
+    # Warmup was rebuilt on the NEW contract, not carried over from the old one.
+    assert indicator is not None
+    assert len(seed_bars) == len(bars)
+    assert ccf.fetch_1m_calls, "the new contract's history was never fetched"
+    assert ccf.fetch_1m_calls[0][0] == "CCFI6"

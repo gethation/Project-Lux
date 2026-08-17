@@ -291,6 +291,13 @@ def switch_to_contract(
     usd_twd_provider: OhlcvProvider,
     end: datetime,
 ) -> tuple[str, str | None, IndicatorEngine, list[Any]]:
+    # Imported here, not at module scope: warmup imports resolve_ccf_contract
+    # from THIS module, so a top-level import closes the cycle and neither
+    # module loads. The name was simply missing before -- this function is only
+    # reached when a rollover completes while flat, which first happened live on
+    # 2026-08-17, and it raised NameError with the position already closed.
+    from lux_trader.runtime.live.warmup import load_or_build_live_indicator
+
     state.trading_ccf_symbol = contract.symbol
     state.trading_ccf_expiry = contract.expiry
     state.eligible_active_ccf_symbol = contract.symbol
