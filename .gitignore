@@ -28,5 +28,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Codex delegation session logs
+# Codex delegation session logs and the files uploaded into those sessions
 .codex-logs/
+.codex-remote-attachments/
