@@ -23,6 +23,13 @@ from ...market_data.session import select_ccf_front_month
 from ...market_data.types import LiveQuote
 from .auth import login_fubon_sdk
 
+# Matches the live config's `ccf_book_stale_seconds` default. Measured
+# 2026-08-15 over 22,579 book publishes across six sessions: p50 2.4s,
+# p99 50.9s, max 478s. 600 clears that worst case while still catching a
+# socket the peer closed inside ten minutes.
+DEFAULT_BOOK_STALE_SECONDS = 600.0
+
+
 def candidate_rows(data: Any) -> list[Any]:
     if data is None:
         return []
@@ -87,20 +94,31 @@ class FubonCcfMarketData:
         env_path: Path | None = None,
         *,
         book_wait_timeout_seconds: float = 5.0,
+        book_stale_seconds: float = DEFAULT_BOOK_STALE_SECONDS,
     ) -> None:
         self.env_path = env_path
         self.sdk = None
         self.intraday = None
         self.websocket = None
         self.book_wait_timeout_seconds = book_wait_timeout_seconds
+        # How long a cached book may go without a refresh before it stops
+        # counting as a quote. A websocket the peer closed cleanly does not
+        # always raise an error event, so without this the last book received
+        # is served forever -- measured 2026-08-15, a CCF price frozen at
+        # 120.75 for three hours while every poll recorded it as current.
+        self.book_stale_seconds = float(book_stale_seconds)
         self._book_condition = Condition()
         self._latest_books: dict[str, LiveQuote] = {}
+        # Arrival time, not the vendor's clock: this answers "is the stream
+        # still delivering", which is the question a wedged socket breaks.
+        self._book_received_at: dict[str, float] = {}
         self._book_subscription_ids: dict[str, str] = {}
         self._book_subscribed_symbols: set[str] = set()
         self._websocket_connected = False
         self._websocket_handlers_registered = False
         self.last_candidate_session_counts: dict[str, int] = {}
         self.last_candidate_session_summaries: dict[str, str] = {}
+        self.last_cleanup_errors: list[str] = []
 
     def connect(self) -> None:
         from fubon_neo.sdk import FubonSDK, Mode
@@ -121,11 +139,26 @@ class FubonCcfMarketData:
         self.intraday = sdk.marketdata.rest_client.futopt.intraday
         self.websocket = sdk.marketdata.websocket_client.futopt
 
+    def _record_cleanup_error(self, stage: str, exc: BaseException) -> None:
+        """Keep a failed teardown visible.
+
+        Both teardown steps used to swallow their exception silently. When a
+        disconnect fails the old SDK's background threads outlive the object
+        that owned them, and the only symptom is a socket nobody closes -- the
+        2026-08-15 stall took hours to trace because nothing recorded this.
+        Recording must never itself break a teardown, hence the cap and the
+        absence of any raise.
+        """
+        entry = f"{stage}: {type(exc).__name__}: {exc}"
+        self.last_cleanup_errors.append(entry)
+        del self.last_cleanup_errors[:-8]
+
     def reconnect(self) -> None:
         # Drop the current (possibly token-expired) marketdata session and log in
         # again so the Fugle token is fresh. Called when entering a trading session
         # after an idle non-trading gap: an overnight token expires, and a bare
         # websocket restart would keep reusing the dead token (HTTP 401 Token expired).
+        self.last_cleanup_errors = []
         self.teardown_books_session()
         old_sdk = self.sdk
         self.sdk = None
@@ -135,22 +168,23 @@ class FubonCcfMarketData:
         if old_sdk is not None:
             try:
                 old_sdk.logout()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._record_cleanup_error("sdk.logout", exc)
         self.connect()
 
     def close(self) -> None:
         if self.websocket is not None:
             try:
                 self.websocket.disconnect()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._record_cleanup_error("websocket.disconnect", exc)
         if self.sdk is not None:
             self.sdk.logout()
 
     def teardown_books_session(self) -> None:
         with self._book_condition:
             self._latest_books.clear()
+            self._book_received_at.clear()
             self._book_subscription_ids.clear()
             self._book_subscribed_symbols.clear()
             self._websocket_connected = False
@@ -158,8 +192,8 @@ class FubonCcfMarketData:
         if self.websocket is not None:
             try:
                 self.websocket.disconnect()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._record_cleanup_error("websocket.disconnect", exc)
 
     def restart_books_session(
         self,
@@ -248,6 +282,7 @@ class FubonCcfMarketData:
             subscription_id = self._book_subscription_ids.pop(symbol, None)
             self._book_subscribed_symbols.discard(symbol)
             self._latest_books.pop(symbol, None)
+            self._book_received_at.pop(symbol, None)
         try:
             if subscription_id:
                 self.websocket.unsubscribe({"id": subscription_id})
@@ -270,6 +305,7 @@ class FubonCcfMarketData:
     def _handle_websocket_error(self, error: Any) -> None:
         with self._book_condition:
             self._latest_books.clear()
+            self._book_received_at.clear()
             self._book_subscription_ids.clear()
             self._book_subscribed_symbols.clear()
             self._websocket_connected = False
@@ -288,6 +324,7 @@ class FubonCcfMarketData:
             return
         with self._book_condition:
             self._latest_books[quote.symbol] = quote
+            self._book_received_at[quote.symbol] = time.monotonic()
             self._book_condition.notify_all()
 
     def _remember_book_subscription(self, message: dict[str, Any]) -> None:
@@ -306,11 +343,27 @@ class FubonCcfMarketData:
                 if symbol and subscription_id and channel.lower() == "books":
                     self._book_subscription_ids[str(symbol)] = str(subscription_id)
 
+    def _book_is_current(self, symbol: str) -> bool:
+        """Whether the cached book for `symbol` is recent enough to serve.
+
+        Caller must hold `_book_condition`.
+        """
+        if self.book_stale_seconds <= 0:
+            return True
+        received_at = self._book_received_at.get(symbol)
+        if received_at is None:
+            return False
+        return (time.monotonic() - received_at) <= self.book_stale_seconds
+
     def _wait_for_book_quote(self, symbol: str) -> LiveQuote | None:
         deadline = time.monotonic() + self.book_wait_timeout_seconds
         with self._book_condition:
             quote = self._latest_books.get(symbol)
-            while quote is None:
+            # A book too old to trust is treated exactly as a missing one: wait
+            # for the stream to deliver a fresh one, and fall through to the
+            # REST path if it does not. Returning the stale copy instead is
+            # what let a dead websocket look healthy indefinitely.
+            while quote is None or not self._book_is_current(symbol):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return None
@@ -438,6 +491,13 @@ def parse_fubon_books_quote(message: dict[str, Any]) -> LiveQuote | None:
         source="fubon_ccf",
         symbol=symbol,
         timestamp=timestamp,
+        # `price` here is the book midpoint, so its clock IS the book clock --
+        # unlike IBKR, where price is a trade print and the two diverge. Saying
+        # so explicitly rather than leaving it None matters: price_time() falls
+        # back to `timestamp` either way, but the skew gate and every staleness
+        # check read price_timestamp first, and a None there reads as "this
+        # source has no price clock" rather than "they are the same clock".
+        price_timestamp=timestamp,
         price=price,
         bid=bid,
         ask=ask,

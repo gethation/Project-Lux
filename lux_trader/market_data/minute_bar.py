@@ -33,6 +33,7 @@ class LiveMinuteBarBuilder:
         max_leg_timestamp_skew_seconds: float,
         usd_twd_stale_seconds: float | None = None,
         umc_trade_stale_seconds: float = 60.0,
+        ccf_forward_fill_max_seconds: float | None = None,
         closed_dates: Iterable[date] = (),
         weekend_policy: str = DEFAULT_WEEKEND_POLICY,
     ) -> None:
@@ -49,12 +50,28 @@ class LiveMinuteBarBuilder:
         self.usd_twd_stale_seconds = (
             stale_seconds if usd_twd_stale_seconds is None else usd_twd_stale_seconds
         )
+        # A CEILING on the forward fill, not a second freshness budget.
+        # `stale_seconds` decides whether THIS minute's CCF quote is fresh
+        # enough to be the close; when it is not, `last_ccf_close` carries the
+        # previous one, which is correct for a thin minute and wrong for a dead
+        # feed. Nothing used to bound the carry, so a websocket the peer closed
+        # produced a bar every minute from a price hours old. None keeps the
+        # old unbounded behaviour for callers that have not opted in.
+        self.ccf_forward_fill_max_seconds = (
+            None
+            if ccf_forward_fill_max_seconds is None
+            else float(ccf_forward_fill_max_seconds)
+        )
         self.max_leg_timestamp_skew_seconds = max_leg_timestamp_skew_seconds
         self.closed_dates = tuple(closed_dates)
         self.weekend_policy = validate_weekend_policy(weekend_policy)
         self.current_minute: datetime | None = None
         self.current_quotes: dict[str, LiveQuote] = {}
         self.last_ccf_close: float | None = None
+        # When `last_ccf_close` was last set from a FRESH quote. Seeded
+        # alongside it at startup so a warmup-seeded price cannot be carried
+        # into live trading unchecked.
+        self.last_ccf_close_at: datetime | None = None
 
     def reset_current_minute(self) -> None:
         self.current_minute = None
@@ -178,12 +195,35 @@ class LiveMinuteBarBuilder:
         ccf_close = ccf.price if ccf is not None and ccf_is_fresh else None
         if ccf_close is not None:
             self.last_ccf_close = ccf_close
+            self.last_ccf_close_at = close_time
         if self.last_ccf_close is None:
             return MinuteBuildResult(
                 None,
                 "missing_ccf_forward_fill",
                 quote_set=quote_set,
             )
+
+        # The carry has a limit. Past it the CCF leg is not thin, it is gone,
+        # and a spread built from a price this old is a fiction with a real
+        # position behind it.
+        if self.ccf_forward_fill_max_seconds is not None and ccf_close is None:
+            carried_for = (
+                None
+                if self.last_ccf_close_at is None
+                else (close_time - ensure_taipei(self.last_ccf_close_at)).total_seconds()
+            )
+            if carried_for is None or carried_for > self.ccf_forward_fill_max_seconds:
+                return MinuteBuildResult(
+                    None,
+                    "market_data_stale",
+                    {
+                        "source": "ccf",
+                        "age_seconds": carried_for,
+                        "budget_seconds": self.ccf_forward_fill_max_seconds,
+                        "forward_filled": True,
+                    },
+                    quote_set,
+                )
 
         usd_twd_rate = usd_twd.price
         umc_twd_fair = umc.price * usd_twd_rate / 5.0

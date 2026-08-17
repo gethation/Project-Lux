@@ -383,7 +383,13 @@ def test_load_config_defaults_live_freshness_and_clock_preflight(tmp_path) -> No
     config = load_config(write_minimal_config(tmp_path))
 
     assert config.live.stale_seconds == pytest.approx(10.0)
-    assert config.live.ccf_book_stale_seconds == pytest.approx(55.0)
+    # Both CCF budgets were 55.0, a number inherited from a doctor warning and
+    # never measured against the feed. Measured 2026-08-15 across six sessions:
+    # book publishes reach 478s, and a legitimate forward-fill carry reaches
+    # 1080s. 55 rejected 35.8% of all minutes, because the carry is always a
+    # multiple of 60 and 55 sits below the first one.
+    assert config.live.ccf_book_stale_seconds == pytest.approx(600.0)
+    assert config.live.ccf_forward_fill_max_seconds == pytest.approx(900.0)
     assert config.live.sync_windows_time_on_startup is True
     assert config.live.clock_skew_fail_seconds == pytest.approx(60.0)
     assert config.live.windows_time_sync_timeout_seconds == pytest.approx(15.0)
@@ -3897,3 +3903,201 @@ def test_live_dry_run_weekend_force_exit_flattens_before_weekend(tmp_path) -> No
         assert state.strategy.state == StrategyState.FLAT
     finally:
         store.close()
+
+
+def test_a_book_the_stream_stopped_refreshing_is_not_served_as_a_quote() -> None:
+    """REGRESSION 2026-08-15: a websocket the peer closed cleanly raises no
+    error event, so the books cache was never cleared and `fetch_quote` handed
+    back the same LiveQuote for three hours. CCF sat at 120.75 while every poll
+    recorded it as current."""
+    provider = FubonCcfMarketData(
+        None,
+        book_wait_timeout_seconds=0.0,
+        book_stale_seconds=55.0,
+    )
+    provider.intraday = FakeFubonIntraday(
+        {"REGULAR": {"data": []}, "AFTERHOURS": {"data": []}}
+    )
+    websocket = FakeFubonWebSocket()
+    provider.websocket = websocket
+    provider.ensure_books_subscription("CCFG6", after_hours=True)
+    websocket.emit(
+        {
+            "event": "data",
+            "channel": "books",
+            "data": {
+                "symbol": "CCFG6",
+                "time": "2026-06-18T02:45:01+08:00",
+                "bids": [{"price": 2409.0, "size": 3}],
+                "asks": [{"price": 2411.0, "size": 4}],
+            },
+        }
+    )
+
+    # Fresh off the wire: served.
+    assert provider._wait_for_book_quote("CCFG6") is not None
+
+    # Same book, nothing new for longer than the budget: no longer a quote.
+    provider._book_received_at["CCFG6"] -= 56.0
+    assert provider._wait_for_book_quote("CCFG6") is None
+
+    # And a new message revives it without needing a resubscribe.
+    websocket.emit(
+        {
+            "event": "data",
+            "channel": "books",
+            "data": {
+                "symbol": "CCFG6",
+                "time": "2026-06-18T02:46:01+08:00",
+                "bids": [{"price": 2412.0, "size": 3}],
+                "asks": [{"price": 2414.0, "size": 4}],
+            },
+        }
+    )
+    revived = provider._wait_for_book_quote("CCFG6")
+    assert revived is not None and revived.bid == 2412.0
+
+
+def test_ccf_books_quote_carries_a_price_timestamp() -> None:
+    """`price` is the book midpoint, so its clock IS the book clock. Leaving
+    price_timestamp None read as 'this source has no price clock' to every
+    gate that consults it."""
+    parsed = parse_fubon_books_quote(
+        {
+            "event": "data",
+            "channel": "books",
+            "data": {
+                "symbol": "CCFG6",
+                "time": "2026-06-18T02:45:01+08:00",
+                "bids": [{"price": 2409.0, "size": 3}],
+                "asks": [{"price": 2411.0, "size": 4}],
+            },
+        }
+    )
+
+    assert parsed is not None
+    assert parsed.price_timestamp == parsed.timestamp
+    assert parsed.price_timestamp == ts("2026-06-18T02:45:01+08:00")
+
+
+def test_forward_filled_ccf_is_refused_once_the_carry_outlives_its_budget() -> None:
+    """REGRESSION 2026-08-15: `stale_seconds` decided whether THIS minute's CCF
+    quote could be the close, and nothing bounded how long the previous one was
+    carried when it could not. A dead feed produced a bar every minute from a
+    price hours old."""
+    builder = LiveMinuteBarBuilder(
+        stale_seconds=10.0,
+        usd_twd_stale_seconds=600.0,
+        ccf_forward_fill_max_seconds=55.0,
+        max_leg_timestamp_skew_seconds=30.0,
+    )
+    builder.last_ccf_close = 100.0
+    # The last CCF quote anyone confirmed. The feed dies immediately after.
+    builder.last_ccf_close_at = ts("2026-06-18T02:45:30+08:00")
+    frozen_ccf = "2026-06-18T02:45:30+08:00"
+
+    def minute_at(moment: str) -> LiveQuoteSet:
+        """UMC and FX current for their minute; CCF stuck at 02:45:30."""
+        return LiveQuoteSet(
+            ccf=quote("ccf", frozen_ccf, 100.0),
+            umc=quote("umc", moment, 20.0),
+            usd_twd=quote("usd", moment, 30.0),
+        )
+
+    # update() finalizes the PREVIOUS minute, so each call closes the one before.
+    builder.update(minute_at("2026-06-18T02:45:59+08:00"), ts("2026-06-18T02:45:59+08:00"))
+
+    # Minute 02:45 closes at 02:46:00 -- the carry is 30s, inside the ceiling.
+    # CCF is already past the 10s freshness budget, so this bar is forward
+    # filled, which is the behaviour a thin minute is supposed to get.
+    within = builder.update(
+        minute_at("2026-06-18T02:46:59+08:00"), ts("2026-06-18T02:46:59+08:00")
+    )
+    assert within is not None
+    assert within.skipped_reason is None
+    assert within.bar is not None
+    assert within.bar.ccf_close is None
+    assert within.bar.ccf_close_filled == 100.0
+
+    # Minute 02:46 closes at 02:47:00 -- the carry is now 90s. Refused rather
+    # than built from a price nobody has confirmed for a minute and a half.
+    beyond = builder.update(
+        minute_at("2026-06-18T02:47:59+08:00"), ts("2026-06-18T02:47:59+08:00")
+    )
+    assert beyond is not None
+    assert beyond.skipped_reason == "market_data_stale"
+    assert beyond.payload["source"] == "ccf"
+    assert beyond.payload["forward_filled"] is True
+    assert beyond.payload["age_seconds"] == pytest.approx(90.0)
+
+
+def test_a_fresh_ccf_quote_restarts_the_forward_fill_budget() -> None:
+    """The ceiling must not accumulate across healthy minutes: a thin feed that
+    prints once a minute is normal, and rejecting it would be the same class of
+    mistake as the bug the ceiling exists to stop."""
+    builder = LiveMinuteBarBuilder(
+        stale_seconds=10.0,
+        usd_twd_stale_seconds=600.0,
+        ccf_forward_fill_max_seconds=55.0,
+        max_leg_timestamp_skew_seconds=30.0,
+    )
+    builder.last_ccf_close = 100.0
+    builder.last_ccf_close_at = ts("2026-06-18T02:45:00+08:00")
+
+    base = ts("2026-06-18T02:45:59+08:00")
+    for index in range(6):
+        moment = base + timedelta(minutes=index)
+        result = builder.update(
+            LiveQuoteSet(
+                ccf=LiveQuote(
+                    source="ccf",
+                    symbol="ccf",
+                    timestamp=moment,
+                    price_timestamp=moment,
+                    price=100.0 + index,
+                ),
+                umc=quote("umc", moment.isoformat(), 20.0),
+                usd_twd=quote("usd", moment.isoformat(), 30.0),
+            ),
+            moment,
+        )
+        if result is not None:
+            assert result.skipped_reason is None
+
+
+def test_a_failed_teardown_is_recorded_rather_than_swallowed() -> None:
+    """REGRESSION 2026-08-15: both teardown steps swallowed their exception
+    with a bare pass. When a disconnect fails the old SDK's threads outlive the
+    object that owned them, and the only symptom is a socket nobody closes --
+    tracing it took hours because nothing recorded the failure."""
+
+    class RefusesToDisconnect:
+        def __init__(self) -> None:
+            self.listeners: dict[str, object] = {}
+
+        def on(self, event: str, listener: object) -> None:
+            self.listeners[event] = listener
+
+        def disconnect(self) -> None:
+            raise OSError("WinError 10054")
+
+    provider = FubonCcfMarketData(None, book_wait_timeout_seconds=0.0)
+    provider.websocket = RefusesToDisconnect()
+
+    # Teardown must still complete: recording cannot become a new failure mode.
+    provider.teardown_books_session()
+
+    assert len(provider.last_cleanup_errors) == 1
+    recorded = provider.last_cleanup_errors[0]
+    assert recorded.startswith("websocket.disconnect: OSError:")
+    assert "10054" in recorded
+
+
+def test_cleanup_error_history_is_bounded() -> None:
+    """A teardown that fails every session must not grow without limit."""
+    provider = FubonCcfMarketData(None, book_wait_timeout_seconds=0.0)
+    for index in range(25):
+        provider._record_cleanup_error("websocket.disconnect", OSError(str(index)))
+
+    assert len(provider.last_cleanup_errors) == 8
+    assert provider.last_cleanup_errors[-1].endswith("24")

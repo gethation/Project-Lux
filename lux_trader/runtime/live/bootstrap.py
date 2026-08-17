@@ -121,7 +121,10 @@ def open_live_quote_providers(
     started_at: datetime,
 ) -> LiveProviderSet:
     reporter.event(started_at, "startup", "init_fubon")
-    ccf = ccf_provider or FubonCcfMarketDataProcess(config.live.fubon_env_path)
+    ccf = ccf_provider or FubonCcfMarketDataProcess(
+        config.live.fubon_env_path,
+        book_stale_seconds=config.live.ccf_book_stale_seconds,
+    )
     reporter.event(started_at, "startup", "init_umc")
     umc = umc_provider or open_umc_quote_provider(config)
     reporter.event(started_at, "startup", "init_fx")
@@ -169,6 +172,7 @@ def build_live_minute_builder(
         stale_seconds=config.live.stale_seconds,
         usd_twd_stale_seconds=config.live.fx_stale_seconds,
         umc_trade_stale_seconds=config.live.umc_trade_stale_seconds,
+        ccf_forward_fill_max_seconds=config.live.ccf_forward_fill_max_seconds,
         max_leg_timestamp_skew_seconds=(
             config.live.max_leg_timestamp_skew_seconds
         ),
@@ -176,6 +180,10 @@ def build_live_minute_builder(
         weekend_policy=config.strategy.weekend_policy,
     )
     builder.last_ccf_close = seed_bars[-1].ccf_close_filled
+    # Stamped with the seed bar's own minute, not "now". A resume can seed from
+    # a bar built hours ago, and that price is not evidence about the current
+    # book -- the ceiling should reject on it until a live quote arrives.
+    builder.last_ccf_close_at = seed_bars[-1].timestamp
     return builder
 
 

@@ -1,14 +1,27 @@
 # CCF/UMC LIVE EXECUTE — this file sends REAL two-leg orders.
 #
-# One lot, both venues, at entry_z 2.0 / exit_z 0.0 over a 780-bar window.
+# One lot, both venues, at entry_z 1.0 / exit_z 0.5 over a 2500-bar window.
 #
-# Those are NOT the soak's thresholds. They were changed on 2026-08-06 from
-# 1.5 / 0.0 / 2500, so every number the soak measured -- the +0.19 haircut, the
-# 1.24 executable-z peak, the 1.245 spread_std -- was measured under a
-# different z and does not carry over. What this set actually does is
-# unmeasured: two live sessions produced exactly one entry, which is no sample
-# at all. Measuring it needs the seven-week fixture, re-run rather than
-# filtered (see docs/HANDOFF.md).
+# Changed 2026-08-13 from 2.0 / 0.0 / 780, which had itself replaced the soak's
+# 1.5 / 0.0 / 2500 on 2026-08-06. So none of the soak's numbers -- the +0.19
+# haircut, the 1.24 executable-z peak, the 1.245 spread_std -- describe this
+# set either. This one is ALSO unmeasured: the seven-week fixture sweep that
+# would price it had not been run when the values were changed. The fixture is
+# already cut for a 2500 window (tests/fixtures/replay/ccf_umc_spread_zscore_
+# w2500.csv), so e/x can be swept on it without regenerating the z column.
+#
+# WHAT THE 780 -> 2500 CHANGE DID TO THE POSITION THAT WAS OPEN AT THE TIME
+#
+# Measured on the store at 2026-08-13 23:18, same short_spread of -0.308:
+#
+#   w780  mean +0.068 std 0.622 -> short_z -0.61, exit_z 0.0 was 0.61 sigma away
+#   w2500 mean +1.113 std 0.959 -> short_z -1.48, exit_z 0.5 is 1.98 sigma away
+#
+# The long window still holds the pre-gap regime the short one had already
+# absorbed, so re-anchoring the mean moved the exit further out than the
+# exit_z change alone did. A position entered under one window is scored for
+# exit under another; that is a property of changing the ruler mid-trade, not
+# a defect.
 #
 # ---------------------------------------------------------------------------
 # WHAT THIS CANNOT DO ON ITS OWN
@@ -54,9 +67,14 @@ usd_twd_ohlcv_csv = 'tests/fixtures/replay/usd_twd_1m_open.csv'
 [strategy]
 # The real thresholds. The 0.3 used in the coverage soak was for exercising the
 # order path, and every number that run produced is meaningless here.
-entry_z = 2.0
-exit_z = 0.0
-zscore_window = 780
+#
+# exit_z is NOT symmetric in effect. should_exit (strategy.py:38-41) closes a
+# LONG_UMC_SHORT_CCF when short_z > +exit_z and a SHORT_UMC_LONG_CCF when
+# long_z < -exit_z, so a nonzero exit_z holds PAST the mean in both directions.
+# Raising it from 0.0 to 0.5 delays every exit; it does not take profit sooner.
+entry_z = 1.0
+exit_z = 0.5
+zscore_window = 2500
 max_entry_delay_minutes = 15
 weekend_policy = 'none'
 
@@ -168,15 +186,43 @@ stale_seconds = 10.0
 # stamped with the BOOK clock, so stale_seconds does not bound this. One bar
 # period: the correct close of a quiet minute IS the last trade in it.
 umc_trade_stale_seconds = 60.0
-# CCF book. CCF updates about once every five polls and can sit unchanged for
-# 99. An old CCF timestamp means nothing traded, not that the price is wrong.
-ccf_book_stale_seconds = 55.0
+# CCF book, two budgets. Both were 55.0, which was inherited from a value that
+# only ever drove a doctor warning and had never been measured against the feed.
+#
+# Measured 2026-08-15 over six sessions (2,113 session minutes, 22,579 book
+# publishes), after the 2026-08-15 stall:
+#
+#   publish gap        p50 2.4s   p99 50.9s   max  478s
+#   forward-fill carry p50 120s   p95  480s   max 1080s
+#
+# ccf_book_stale_seconds bounds a BOOK's age at the transport: past it a cached
+# book stops counting as a quote and the REST path is used instead. 600 clears
+# the measured 478s worst case and still catches a dead socket inside ten
+# minutes -- the 2026-08-15 wedge served a frozen 120.75 for three hours.
+ccf_book_stale_seconds = 600.0
+# ccf_forward_fill_max_seconds bounds how long the last FRESH CCF close may be
+# carried, which runs longer than any book age because only a book inside
+# stale_seconds (10s) resets it. A thin 03:00 hour legitimately carries for 18
+# minutes, so this is a fault detector, not a thinness policy.
+#
+# Both endpoints are minute closes, so the carry is ALWAYS a multiple of 60.
+# Anything below 60 rejects every carrying minute: 55 measured 35.8% of all
+# minutes rejected, against 0.14% at 900. Do not pick a value between multiples
+# of 60 and expect it to behave proportionally.
+ccf_forward_fill_max_seconds = 900.0
 # USD/TWD arrives from a 300s vendor cache: p50 193s, max 391s. NOTHING was
 # ever within 10s. Measured drift at 300-600s staleness is 0.045% p90, which is
 # 0.036 z -- a fifth of the execution haircut. Re-measure if FX turns volatile.
 max_leg_timestamp_skew_seconds = 10.0
 
-warmup_minutes = 2500
+# 300 minutes of headroom over zscore_window, deliberately. warmup.py:313
+# refuses to start when the rebuild produces fewer bars than the window, and a
+# rebuild routinely comes up short: the FX vendor does not publish every minute
+# (see the 2026-08-12 fix that trims unpublished warmup minutes instead of
+# dying). At 2500 == 2500 a single missing minute is a failed startup. Only a
+# REBUILD is at risk -- a --resume seeds from warmup_bars UNION bars and does
+# not refetch -- so this bites on a contract switch or after --reset-store.
+warmup_minutes = 2800
 warmup_forward_fill_max_ratio = 0.9
 warmup_ccf_max_trailing_fill_minutes = 5
 

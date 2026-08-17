@@ -38,6 +38,7 @@ def _first_init_hangs_worker(
     connection: Connection,
     marker: Path | None,
     _book_wait_timeout_seconds: float,
+    _book_stale_seconds: float,
 ) -> None:
     assert marker is not None
     try:
@@ -62,6 +63,7 @@ def _reconnect_hangs_worker(
     connection: Connection,
     marker: Path | None,
     _book_wait_timeout_seconds: float,
+    _book_stale_seconds: float,
 ) -> None:
     assert marker is not None
     first_worker = not marker.exists()
@@ -85,6 +87,7 @@ def _always_hangs_worker(
     connection: Connection,
     _marker: Path | None,
     _book_wait_timeout_seconds: float,
+    _book_stale_seconds: float,
 ) -> None:
     try:
         while True:
@@ -150,5 +153,87 @@ def test_replacement_worker_timeout_is_bounded_and_leaves_no_worker(tmp_path) ->
             provider.connect()
         assert time.monotonic() - started < 5.0
         assert provider.worker_pid is None
+    finally:
+        provider.close()
+
+
+def _hangs_on_fetch_worker(
+    connection: Connection,
+    marker: Path | None,
+    _book_wait_timeout_seconds: float,
+    _book_stale_seconds: float,
+) -> None:
+    """Answers setup, then wedges on every fetch -- the shape of a dead SDK
+    thread: the process is alive and the pipe is fine, but nothing comes back."""
+    assert marker is not None
+    with marker.open("a", encoding="utf-8") as handle:
+        handle.write(f"{os.getpid()}\n")
+    try:
+        while True:
+            request = connection.recv()
+            operation = request["operation"]
+            if operation == "fetch_candidates":
+                time.sleep(30.0)
+                continue
+            _send_ok(connection)
+            if operation == "close":
+                return
+    except (EOFError, BrokenPipeError, OSError):
+        return
+
+
+def test_repeated_request_timeouts_scrap_the_worker_instead_of_retrying_it(
+    tmp_path,
+) -> None:
+    """REGRESSION 2026-08-15: only connect/reconnect recycled the worker, so a
+    wedged one was asked again once per timeout forever -- nineteen hours on the
+    same process, one request every two minutes, none of them answered."""
+    marker = tmp_path / "worker-pids.txt"
+    provider = FubonCcfMarketDataProcess(
+        marker,
+        request_timeout_seconds=0.4,
+        init_timeout_seconds=WORKER_REBUILD_TIMEOUT_SECONDS,
+        max_consecutive_timeouts=2,
+        worker_target=_hangs_on_fetch_worker,
+    )
+    try:
+        # Workers are spawned lazily, so the replacement for the second scrap
+        # only appears on the fifth call -- which is the point: the recovery
+        # path has to actually bring one up, not just kill the old one.
+        for _ in range(5):
+            with pytest.raises(FubonMarketDataWorkerTimeout):
+                provider.fetch_candidates("CCF")
+
+        # Five timeouts at a budget of two: scrapped twice, never retried on
+        # the same wedged process indefinitely.
+        assert provider.worker_recycle_count == 2
+        pids = [
+            line for line in marker.read_text(encoding="utf-8").splitlines() if line
+        ]
+        assert len(pids) == 3, pids
+        assert len(set(pids)) == 3, pids
+    finally:
+        provider.close()
+
+
+def test_a_single_timeout_does_not_cost_a_rebuild(tmp_path) -> None:
+    """One slow reply is not a wedge. Scrapping on the first timeout would turn
+    every hiccup into a spawn, which on Windows costs seconds."""
+    marker = tmp_path / "worker-pids.txt"
+    provider = FubonCcfMarketDataProcess(
+        marker,
+        request_timeout_seconds=0.4,
+        init_timeout_seconds=WORKER_REBUILD_TIMEOUT_SECONDS,
+        max_consecutive_timeouts=2,
+        worker_target=_hangs_on_fetch_worker,
+    )
+    try:
+        with pytest.raises(FubonMarketDataWorkerTimeout):
+            provider.fetch_candidates("CCF")
+        assert provider.worker_recycle_count == 0
+        pids = [
+            line for line in marker.read_text(encoding="utf-8").splitlines() if line
+        ]
+        assert len(pids) == 1, pids
     finally:
         provider.close()

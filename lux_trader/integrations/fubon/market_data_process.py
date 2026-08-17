@@ -11,12 +11,18 @@ from typing import Any, Callable
 import pandas as pd
 
 from ...market_data.types import LiveQuote
-from .market_data import FubonCcfMarketData
+from .market_data import DEFAULT_BOOK_STALE_SECONDS, FubonCcfMarketData
 
 
 DEFAULT_INIT_TIMEOUT_SECONDS = 30.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
 DEFAULT_TERMINATE_TIMEOUT_SECONDS = 3.0
+# How many request timeouts in a row before the worker is scrapped rather than
+# asked again. A worker whose SDK threads have wedged answers nothing, ever,
+# and the old code retried it at one request per timeout indefinitely --
+# measured 2026-08-15, nineteen hours on the same process. Two rather than one
+# so a single slow reply does not cost a rebuild.
+DEFAULT_MAX_CONSECUTIVE_TIMEOUTS = 2
 
 
 class FubonMarketDataWorkerError(RuntimeError):
@@ -31,10 +37,12 @@ def _fubon_market_data_worker(
     connection: Connection,
     env_path: Path | None,
     book_wait_timeout_seconds: float,
+    book_stale_seconds: float = DEFAULT_BOOK_STALE_SECONDS,
 ) -> None:
     provider = FubonCcfMarketData(
         env_path,
         book_wait_timeout_seconds=book_wait_timeout_seconds,
+        book_stale_seconds=book_stale_seconds,
     )
     try:
         while True:
@@ -92,22 +100,28 @@ class FubonCcfMarketDataProcess:
         env_path: Path | None = None,
         *,
         book_wait_timeout_seconds: float = 5.0,
+        book_stale_seconds: float = DEFAULT_BOOK_STALE_SECONDS,
         init_timeout_seconds: float = DEFAULT_INIT_TIMEOUT_SECONDS,
         request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
         terminate_timeout_seconds: float = DEFAULT_TERMINATE_TIMEOUT_SECONDS,
+        max_consecutive_timeouts: int = DEFAULT_MAX_CONSECUTIVE_TIMEOUTS,
         worker_target: Callable[..., None] = _fubon_market_data_worker,
     ) -> None:
         self.env_path = env_path
         self.book_wait_timeout_seconds = float(book_wait_timeout_seconds)
+        self.book_stale_seconds = float(book_stale_seconds)
         self.init_timeout_seconds = float(init_timeout_seconds)
         self.request_timeout_seconds = float(request_timeout_seconds)
         self.terminate_timeout_seconds = float(terminate_timeout_seconds)
+        self.max_consecutive_timeouts = int(max_consecutive_timeouts)
         if self.init_timeout_seconds <= 0:
             raise ValueError("init_timeout_seconds must be positive")
         if self.request_timeout_seconds <= 0:
             raise ValueError("request_timeout_seconds must be positive")
         if self.terminate_timeout_seconds < 0:
             raise ValueError("terminate_timeout_seconds must not be negative")
+        if self.max_consecutive_timeouts < 1:
+            raise ValueError("max_consecutive_timeouts must be at least 1")
         self._worker_target = worker_target
         self._context = multiprocessing.get_context("spawn")
         self._connection: Connection | None = None
@@ -115,6 +129,8 @@ class FubonCcfMarketDataProcess:
         self._connected = False
         self._closed = False
         self._lock = threading.RLock()
+        self._consecutive_timeouts = 0
+        self.worker_recycle_count = 0
         self.last_candidate_session_counts: dict[str, int] = {}
         self.last_candidate_session_summaries: dict[str, str] = {}
 
@@ -213,13 +229,30 @@ class FubonCcfMarketDataProcess:
         with self._lock:
             self._require_open()
             self.connect()
-            return self._request(
-                operation,
-                args=args,
-                kwargs=kwargs,
-                timeout=self.request_timeout_seconds,
-                deadline_name=operation,
-            )
+            try:
+                result = self._request(
+                    operation,
+                    args=args,
+                    kwargs=kwargs,
+                    timeout=self.request_timeout_seconds,
+                    deadline_name=operation,
+                )
+            except FubonMarketDataWorkerTimeout:
+                # A timeout is the only failure the worker cannot report on
+                # itself, so it is the only one that can repeat forever. Give
+                # it a couple of chances, then scrap the process: a wedged SDK
+                # thread does not recover, and the next `connect()` builds a
+                # clean one. The exception still propagates either way -- the
+                # caller decides what a missing quote means, and this layer
+                # does not get to invent one.
+                self._consecutive_timeouts += 1
+                if self._consecutive_timeouts >= self.max_consecutive_timeouts:
+                    self._consecutive_timeouts = 0
+                    self.worker_recycle_count += 1
+                    self._terminate_worker()
+                raise
+            self._consecutive_timeouts = 0
+            return result
 
     def _connect_with_one_rebuild(self, deadline_name: str) -> None:
         last_timeout: FubonMarketDataWorkerTimeout | None = None
@@ -255,7 +288,12 @@ class FubonCcfMarketDataProcess:
         parent, child = self._context.Pipe(duplex=True)
         process = self._context.Process(
             target=self._worker_target,
-            args=(child, self.env_path, self.book_wait_timeout_seconds),
+            args=(
+                child,
+                self.env_path,
+                self.book_wait_timeout_seconds,
+                self.book_stale_seconds,
+            ),
             name="project-lux-fubon-market-data",
             daemon=True,
         )
@@ -362,6 +400,7 @@ class FubonCcfMarketDataProcess:
 
 __all__ = [
     "DEFAULT_INIT_TIMEOUT_SECONDS",
+    "DEFAULT_MAX_CONSECUTIVE_TIMEOUTS",
     "FubonMarketDataWorkerError",
     "FubonMarketDataWorkerTimeout",
     "FubonCcfMarketDataProcess",

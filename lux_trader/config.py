@@ -93,6 +93,11 @@ class LiveMarketDataConfig:
     polling_seconds: float
     minute_finalize_delay_seconds: float
     stale_seconds: float
+    # How long the CCF books stream may go without delivering before a cached
+    # book stops counting as a quote. Measured 2026-08-15 over 22,579 publishes
+    # across six sessions: p50 2.4s, p99 50.9s, max 478s. 600 clears the
+    # measured worst case with room and still catches a dead socket inside ten
+    # minutes -- the 2026-08-15 wedge ran for three hours unnoticed.
     ccf_book_stale_seconds: float
     sync_windows_time_on_startup: bool
     clock_skew_fail_seconds: float
@@ -147,6 +152,18 @@ class LiveMarketDataConfig:
     # the bar's close is built from the price. One bar period: the correct close
     # of a minute with no prints is the last trade in it.
     umc_trade_stale_seconds: float = 60.0
+    # A CEILING on the forward fill, distinct from ccf_book_stale_seconds above.
+    # That one bounds a BOOK's age; this one bounds how long the last fresh CCF
+    # close may be carried, which is systematically longer because only a book
+    # inside `stale_seconds` (10s) resets it. Measured 2026-08-15 over 2,113
+    # session minutes: 64.2% are fresh, and a carry on the rest runs p50 120s,
+    # p95 480s, max 1080s -- a thin 03:00 hour, not a fault.
+    #
+    # Both endpoints are minute closes, so the carry is always a multiple of 60.
+    # A budget below 60 therefore rejects EVERY carrying minute: 55 measured
+    # 35.8% of all minutes rejected, against 0.14% at 900. Do not set this
+    # between multiples of 60 expecting proportional behaviour.
+    ccf_forward_fill_max_seconds: float = 900.0
     # How long a cached rate may still be served after refetch failures before
     # the provider gives up. Without it a dead upstream becomes a frozen rate
     # that the staleness gate would eventually catch -- but only eventually.
@@ -377,7 +394,10 @@ def load_config(path: Path) -> AppConfig:
                 live.get("minute_finalize_delay_seconds", 1.0)
             ),
             stale_seconds=float(live.get("stale_seconds", 10.0)),
-            ccf_book_stale_seconds=float(live.get("ccf_book_stale_seconds", 55.0)),
+            ccf_book_stale_seconds=float(live.get("ccf_book_stale_seconds", 600.0)),
+            ccf_forward_fill_max_seconds=float(
+                live.get("ccf_forward_fill_max_seconds", 900.0)
+            ),
             sync_windows_time_on_startup=bool(
                 live.get("sync_windows_time_on_startup", True)
             ),

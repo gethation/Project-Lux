@@ -107,7 +107,8 @@ minute_finalize_delay_seconds = 1.0
 # 10s, not the 1200s of the delayed-data era. Live NYSE data reaches the API as
 # of 2026-08-03 (tier 1, real bid/ask), so a stale quote is now a real fault.
 stale_seconds = 10.0
-ccf_book_stale_seconds = 55.0
+ccf_book_stale_seconds = 600.0
+ccf_forward_fill_max_seconds = 900.0
 sync_windows_time_on_startup = true
 clock_skew_fail_seconds = 60.0
 windows_time_sync_timeout_seconds = 15.0
