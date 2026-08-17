@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Project Lux — CCF/UMC Spread</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="toolbar">
+    <div class="tb-group symbol-group">
+      <span class="symbol" id="symbol">CCF / UMC</span>
+      <span class="symbol-sub" id="symbolSub">spread</span>
+    </div>
+    <div class="tb-sep"></div>
+    <div class="tb-group" id="intervals"></div>
+    <div class="tb-sep"></div>
+    <div class="tb-group">
+      <button class="chip" id="fitBtn" title="Fit all data">Fit</button>
+      <button class="chip" id="bandBtn" title="Executable band (long / short)">Band</button>
+      <button class="chip" id="threshBtn" title="Rolling mean ± entry_z · std">Thresholds</button>
+      <button class="chip" id="markerBtn" title="Entry / exit markers">Markers</button>
+    </div>
+    <div class="tb-spacer"></div>
+    <div class="tb-group">
+      <span class="pill" id="statusPill"><i></i><span id="statusText">Connecting</span></span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="chart-wrap">
+      <div class="legend" id="legend">
+        <div class="legend-row legend-title">
+          <span class="legend-name" id="legendTitle">CCF/UMC spread</span>
+          <span class="legend-interval" id="legendInterval">1m</span>
+        </div>
+        <div class="legend-row" id="legendOhlc"></div>
+        <div class="legend-row" id="legendBand"></div>
+        <div class="legend-row" id="legendThresh"></div>
+      </div>
+      <div class="legend legend-z" id="legendZ"></div>
+      <div id="chart"></div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="card">
+        <div class="card-head">Position</div>
+        <div class="kv"><span>State</span><b id="pState">—</b></div>
+        <div class="kv"><span>Direction</span><b id="pDirection">—</b></div>
+        <div class="kv"><span>Size</span><b id="pSize">—</b></div>
+        <div class="kv"><span>Entry z</span><b id="pEntryZ">—</b></div>
+        <div class="kv"><span>Entry spread</span><b id="pEntrySpread">—</b></div>
+        <div class="kv big"><span>Unrealized (model)</span><b id="pUpnl">—</b></div>
+        <div class="note" id="pUpnlNote">Model mark-to-market — not the broker's reported figure.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">Executable band</div>
+        <div class="kv"><span>long &middot; buy UMC / sell CCF</span><b id="pLong">—</b></div>
+        <div class="kv"><span>mid</span><b id="pMid">—</b></div>
+        <div class="kv"><span>short &middot; sell UMC / buy CCF</span><b id="pShort">—</b></div>
+        <div class="kv big"><span>Width (&sigma;)</span><b id="pBandWidth">—</b></div>
+        <div class="note">Width = long_z &minus; short_z: the round-trip execution cost. An entry has to clear entry_z <em>and</em> this.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">Thresholds</div>
+        <div class="kv"><span>entry_z</span><b id="pEntryZCfg">—</b></div>
+        <div class="kv"><span>exit_z</span><b id="pExitZCfg">—</b></div>
+        <div class="kv"><span>z window</span><b id="pWindow">—</b></div>
+        <div class="note" id="pRule">FLAT: short_z &gt; +entry_z opens the short spread; long_z &lt; &minus;entry_z opens the long spread. Once open, the closing side's z decides the exit.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">Data</div>
+        <div class="kv"><span>Last bar</span><b id="pBarTime">—</b></div>
+        <div class="kv"><span>Last tick</span><b id="pTickTime">—</b></div>
+        <div class="kv"><span>bars / trades</span><b id="pCounts">—</b></div>
+        <div class="kv"><span>Candle source</span><b id="pSource">—</b></div>
+        <div class="note" id="pLagNote"></div>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="statusbar">
+    <span id="sbStore">—</span>
+    <span class="sb-sep">·</span>
+    <span id="sbTime">—</span>
+    <span class="sb-spacer"></span>
+    <span id="sbHint">Read-only viewer — never writes to the store</span>
+  </footer>
+
+  <script src="/static/lightweight-charts.standalone.production.js"
+          onerror="window.__lwcLocalFailed=true"></script>
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>

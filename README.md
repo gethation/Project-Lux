@@ -139,6 +139,72 @@ final flat) is driven by `tests/smoke/test_live_execute_smoke.py` and MUST be
 run supervised — see [docs/M6_RUNBOOK.md](docs/M6_RUNBOOK.md). Until M6 (and a
 longer soak) passes, the system must not run unattended with real orders.
 
+## Web viewer — read-only spread chart
+
+`lux_trader/web/` serves a lightweight-charts view of the spread over any store.
+It is an observer: every SQLite connection it opens is `mode=ro`, it imports no
+broker or execution code, and it is safe to run against the database of a
+live-execute process that is trading right now (WAL lets a reader in another
+process read committed data without blocking the writer). It is deliberately
+NOT a subcommand of `python -m lux_trader`, so nothing on the live import path
+had to change to add it.
+
+```powershell
+& conda run -n Quant python -m lux_trader.web --config <cfg> [--port 8787]
+& conda run -n Quant python -m lux_trader.web --config <cfg> --store <other.sqlite3>
+```
+
+`scripts\lux.ps1 live ...` brings it up automatically and kills it (tree kill, so
+the `conda run` wrapper does not leave the port held) when the run ends. It is
+started as a separate process, before the live-order env gates are set, so it
+neither inherits them nor shares a process with the loop placing real orders.
+Configured by environment variable rather than by script parameters, so nothing
+about `@args` passing to `lux_trader` changed:
+
+| variable | default | effect |
+|---|---|---|
+| `LUX_NO_WEB` | unset | `1` skips the viewer |
+| `LUX_WEB_PORT` | `8787` | port; if already in use the launcher leaves the existing one alone |
+| `LUX_WEB_HOST` | `127.0.0.1` | anything else binds beyond this machine **and turns on token auth** |
+| `LUX_WEB_TOKEN` | unset | supply a token instead of generating one |
+
+**Off-machine access.** A non-loopback bind never goes out unauthenticated: if no
+token is given, one is generated and the launcher prints the full
+`http://host:port/?token=…` URL. The token is accepted as a query parameter once
+and then kept in a `SameSite=Strict` cookie. There is **no TLS** — the token and
+the position data cross the network in clear text, so this belongs on a VPN
+(Tailscale/WireGuard) or a trusted LAN, not on a port forwarded to the internet.
+What it exposes if someone gets in: position direction and size, entry price,
+unrealized P&L, equity, and the spread history. No credentials, no order path,
+no writes of any kind.
+
+Two panes on one time axis:
+
+- **spread** — candles, plus the executable band (`long_spread` / `short_spread`)
+  and the rolling `mean ± entry_z·std` thresholds, all in spread units. The band
+  edges are what an entry has to cross: `long_spread >= mid >= short_spread`
+  always holds, so a short entry needs the *lower* edge above `+entry_z`.
+- **z** — `long_z` / `short_z` / `mid_z` against flat `±entry_z` / `±exit_z`
+  lines. The thickness of the band there is the round-trip execution cost in
+  sigma (measured 0.86σ average, 1.94σ worst, over 2026-08-07's 335 bars).
+
+Notes that matter when reading it:
+
+- A candle's **close is always `bars.spread`** — the number the strategy scored
+  and traded on. Only open/high/low are reconstructed from `market_ticks`, which
+  the engine writes about 54 times a minute. A store with no ticks (replay) falls
+  back to aggregating one-minute closes and opens on 5m, because a 1m candle
+  there could only be open==high==low==close.
+- Minutes the engine rejected get **no candle**, rather than an invented one.
+- Unrealized P&L is shown as a price-line label, never as a second axis: it is a
+  function of both legs' prices (`strategy.py`), not of the spread, so a TWD
+  scale beside a spread scale would be a lie. It is also the **model's**
+  mark-to-market — the broker's own uPnL lives only in memory
+  (`margin/display.py`) and never reaches the store.
+- The engine commits once per finalized minute (`engine.py`), so the viewer's
+  "now" can trail by up to a minute. The header shows the lag instead of hiding
+  it.
+
 ## Layout
 
 ```text
@@ -157,6 +223,7 @@ lux_trader/
   cli/             thin command shell (rebuilt, consolidated)
   terminal_ui.py   compact one-line live reporter (legacy style)
   dashboard_ui.py  rich multi-panel live dashboard
+  web/             read-only spread chart (stdlib http.server + lightweight-charts)
 tests/             unit + integration + gated smoke + fixtures
 configs/           example + fixture configs
 ```
