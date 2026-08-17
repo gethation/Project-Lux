@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from ...core.models import BrokerName
 from ...reconciliation import BrokerAccountSnapshot
+from ..subprocess_transport import ignore_parent_interrupt
 from .readonly import FubonReadOnlyBroker
 
 
@@ -29,6 +30,7 @@ def _fubon_readonly_worker(
     env_path: Path | None,
     symbol: str | None,
 ) -> None:
+    ignore_parent_interrupt()
     broker = FubonReadOnlyBroker(env_path, symbol=symbol)
     try:
         while True:

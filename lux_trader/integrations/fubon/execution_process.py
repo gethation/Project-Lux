@@ -12,6 +12,7 @@ from ...core.models import StrategyState
 from ...execution import ExecutionOutcome, ExecutionOutcomeStatus
 from ...execution.intent import PairExecutionPlan
 from ...reconciliation import BrokerAccountSnapshot
+from ..subprocess_transport import ignore_parent_interrupt
 from .execution import FubonFutureExecutionAdapter, fubon_attempt_id
 from .readonly import FubonReadOnlyBroker
 
@@ -34,6 +35,7 @@ def _fubon_execution_worker(
     symbol: str,
     env_path: Path | None,
 ) -> None:
+    ignore_parent_interrupt()
     adapter = FubonFutureExecutionAdapter(symbol, env_path)
     readonly = FubonReadOnlyBroker(env_path, symbol=symbol)
     try:

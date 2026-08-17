@@ -11,6 +11,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from ...market_data.types import LiveQuote
+from ..subprocess_transport import ignore_parent_interrupt
 from .market_data import DEFAULT_BOOK_STALE_SECONDS, FubonCcfMarketData
 
 
@@ -39,6 +40,7 @@ def _fubon_market_data_worker(
     book_wait_timeout_seconds: float,
     book_stale_seconds: float = DEFAULT_BOOK_STALE_SECONDS,
 ) -> None:
+    ignore_parent_interrupt()
     provider = FubonCcfMarketData(
         env_path,
         book_wait_timeout_seconds=book_wait_timeout_seconds,

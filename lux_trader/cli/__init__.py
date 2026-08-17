@@ -4,7 +4,7 @@ M1 exposes only the replay-strategy surface: ``replay``, ``summary``, ``doctor``
 Live and execution commands are added by later milestones.
 """
 
-from .dispatch import main
+from .dispatch import main, run
 from .parser import build_parser
 
-__all__ = ["build_parser", "main"]
+__all__ = ["build_parser", "main", "run"]

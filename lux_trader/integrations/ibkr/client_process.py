@@ -10,7 +10,7 @@ from typing import Any, Callable
 from ib_async import IB, Stock, StartupFetch
 
 from ...core.time import TAIPEI_TZ
-from ..subprocess_transport import SubprocessTransport
+from ..subprocess_transport import SubprocessTransport, ignore_parent_interrupt
 
 
 DEFAULT_CLIENT_ID = 17_002
@@ -693,6 +693,7 @@ def _ibkr_worker(
     connection: Connection,
     connection_config: IbkrConnectionConfig,
 ) -> None:
+    ignore_parent_interrupt()
     client = _IbkrWorkerClient(connection_config)
     try:
         while True:

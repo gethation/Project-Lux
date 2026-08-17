@@ -1,5 +1,4 @@
-from lux_trader.cli import main
-
+from lux_trader.cli import run
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run())

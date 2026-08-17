@@ -1,9 +1,29 @@
 from __future__ import annotations
 
 import multiprocessing
+import signal
 import threading
 from multiprocessing.connection import Connection
 from typing import Any, Callable, Mapping
+
+
+def ignore_parent_interrupt() -> None:
+    """Detach this worker from the console's Ctrl+C.
+
+    Windows delivers CTRL_C_EVENT to every process attached to the console, so
+    without this each spawned worker raises KeyboardInterrupt inside its own
+    `connection.recv()` and prints its own traceback -- four of them, on top of
+    the parent's, for one deliberate Ctrl+C.
+
+    Ignoring it is not just quieter, it is more correct: the parent's `finally`
+    closes brokers and releases the lease, and that shutdown wants live workers
+    to talk to rather than ones that died underneath it. The parent terminates
+    them afterwards, and they are daemon processes, so nothing outlives it.
+    """
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except (ValueError, OSError):  # pragma: no cover - not the main thread
+        pass
 
 
 class SubprocessTransport:
@@ -161,4 +181,4 @@ class SubprocessTransport:
             raise RuntimeError(self.closed_message)
 
 
-__all__ = ["SubprocessTransport"]
+__all__ = ["SubprocessTransport", "ignore_parent_interrupt"]
