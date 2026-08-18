@@ -165,6 +165,20 @@ class LiveModeHandler:
         # a restart. Default is a no-op; live-execute overrides it.
         return None
 
+    def on_contract_switched(
+        self,
+        *,
+        ccf_symbol: str,
+        reporter: Any,
+        timestamp: datetime,
+    ) -> None:
+        """A rollover completed and the strategy now trades `ccf_symbol`.
+
+        Default is a no-op: a dry run has no broker session bound to a
+        contract. Only live-execute holds one, and only it has to move.
+        """
+        return None
+
     def on_umc_position_drift(
         self,
         store: SQLiteStore,
@@ -1023,6 +1037,36 @@ class LiveExecuteModeHandler(LiveModeHandler):
             },
         )
         return run_id
+
+    def on_contract_switched(
+        self,
+        *,
+        ccf_symbol: str,
+        reporter: Any,
+        timestamp: datetime,
+    ) -> None:
+        """Move the broker session onto the contract the strategy just rolled to.
+
+        build_live_execution_brokers returns the same FubonFutureExecutionProcess
+        as both the execution adapter and one of the read-only brokers, so one
+        retarget fixes both ordering and reconciliation. Duck-typed for the same
+        reason _restart_fubon_readonly_worker is: a simulated adapter has no
+        contract to move, and must not have to pretend otherwise.
+        """
+        seen: set[int] = set()
+        for adapter in (self.fubon_adapter, *(self.readonly_brokers or ())):
+            if adapter is None or id(adapter) in seen:
+                continue
+            seen.add(id(adapter))
+            retarget = getattr(adapter, "retarget_symbol", None)
+            if not callable(retarget):
+                continue
+            if retarget(ccf_symbol):
+                reporter.event(
+                    timestamp,
+                    "contract_switch_broker_retargeted",
+                    ccf_symbol,
+                )
 
     def _restart_fubon_readonly_worker(self) -> None:
         for broker in self.readonly_brokers or ():

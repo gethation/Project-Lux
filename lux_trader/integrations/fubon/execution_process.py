@@ -103,6 +103,31 @@ class FubonFutureExecutionProcess:
         self._closed = False
         self._lock = threading.RLock()
 
+    def retarget_symbol(self, symbol: str) -> bool:
+        """Point this process at a different CCF contract. Returns True if moved.
+
+        A rollover changes which contract the strategy trades, and the adapter
+        refuses any leg whose symbol is not its own -- correctly, since sending
+        an order for the wrong contract is worse than sending none. But nothing
+        used to move the adapter, so the first entry after a rollover was
+        rejected with "Fubon leg symbol CCFI6 does not match CCFH6" and the
+        strategy paused. Measured live 2026-08-18.
+
+        The worker is scrapped rather than told the new symbol: the child builds
+        a FubonContractIdentity and its own read-only broker from the symbol it
+        was spawned with, so a fresh one is the only way to be sure nothing
+        derived from the old contract survives. The next call spawns it.
+        """
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Fubon execution process is closed")
+            target = str(symbol).strip()
+            if not target or target == self.symbol:
+                return False
+            self.symbol = target
+            self._terminate_worker()
+            return True
+
     @property
     def worker_pid(self) -> int | None:
         process = self._process

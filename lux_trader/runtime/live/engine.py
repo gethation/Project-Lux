@@ -917,6 +917,14 @@ class LiveRuntime:
             self.reporter,
             bar.timestamp,
         )
+        # Market data has moved to the new contract; the ORDER path has to move
+        # with it. Without this the adapter still refuses every leg for the new
+        # symbol and the first entry after a rollover pauses the strategy.
+        self.handler.on_contract_switched(
+            ccf_symbol=ccf_symbol,
+            reporter=self.reporter,
+            timestamp=bar.timestamp,
+        )
         store.record_event(
             bar.row_index,
             bar.timestamp,

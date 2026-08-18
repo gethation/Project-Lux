@@ -38,6 +38,10 @@ from lux_trader.market_data import (
     select_ccf_front_month,
 )
 from lux_trader.runtime.live import LiveDryRunRunner, LiveExecuteRunner
+from lux_trader.runtime.live.modes import (
+    DryRunLiveModeHandler,
+    LiveExecuteModeHandler,
+)
 from lux_trader.runtime.live.bootstrap import (
     WindowsTimeSyncResult,
     run_live_startup_preflight,
@@ -4174,3 +4178,68 @@ def test_completing_a_rollover_rebuilds_warmup_on_the_new_contract(tmp_path) -> 
     assert len(seed_bars) == len(bars)
     assert ccf.fetch_1m_calls, "the new contract's history was never fetched"
     assert ccf.fetch_1m_calls[0][0] == "CCFI6"
+
+
+def test_a_completed_rollover_retargets_the_order_path_too(tmp_path) -> None:
+    """REGRESSION 2026-08-18: the rollover moved the strategy state and the
+    books subscription to CCFI6 and left the Fubon order adapter on CCFH6.
+    The next entry signal was rejected with "Fubon leg symbol CCFI6 does not
+    match CCFH6" and the strategy paused -- no order was ever submitted, which
+    is the adapter's check doing its job, but the rollover was only half done.
+
+    Duck-typed on purpose: a simulated adapter has no contract to move.
+    """
+    retargeted: list[str] = []
+
+    class FakeFubonAdapter:
+        def __init__(self, symbol: str) -> None:
+            self.symbol = symbol
+
+        def retarget_symbol(self, symbol: str) -> bool:
+            if symbol == self.symbol:
+                return False
+            self.symbol = symbol
+            retargeted.append(symbol)
+            return True
+
+    class AdapterWithoutRetarget:
+        """Stands in for the simulated adapter; must simply be skipped."""
+
+    adapter = FakeFubonAdapter("CCFH6")
+    handler = LiveExecuteModeHandler(
+        small_live_config(tmp_path),
+        fubon_adapter=adapter,
+        # The same object is returned as both adapter and read-only broker by
+        # build_live_execution_brokers, so it must not be retargeted twice.
+        readonly_brokers=(adapter, AdapterWithoutRetarget()),
+    )
+    reporter = LiveTerminalReporter(io.StringIO(), color=False)
+
+    handler.on_contract_switched(
+        ccf_symbol="CCFI6",
+        reporter=reporter,
+        timestamp=ts("2026-08-18T21:30:00+08:00"),
+    )
+
+    assert adapter.symbol == "CCFI6"
+    assert retargeted == ["CCFI6"], "the shared adapter was retargeted more than once"
+
+    # Idempotent: the rollover check runs every bar.
+    handler.on_contract_switched(
+        ccf_symbol="CCFI6",
+        reporter=reporter,
+        timestamp=ts("2026-08-18T21:31:00+08:00"),
+    )
+    assert retargeted == ["CCFI6"]
+
+
+def test_a_dry_run_rollover_does_not_need_a_contract_to_retarget(tmp_path) -> None:
+    """The base hook is a no-op, and must stay callable: the runtime calls it
+    for every mode, and a dry run holds no broker session bound to a contract."""
+    handler = DryRunLiveModeHandler(small_live_config(tmp_path))
+
+    handler.on_contract_switched(
+        ccf_symbol="CCFI6",
+        reporter=LiveTerminalReporter(io.StringIO(), color=False),
+        timestamp=ts("2026-08-18T21:30:00+08:00"),
+    )
