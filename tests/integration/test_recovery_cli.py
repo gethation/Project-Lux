@@ -375,3 +375,107 @@ def test_clear_pause_without_readonly_refuses_real_brokers(
         assert "--readonly" in str(exc)
     else:
         raise AssertionError("Expected SystemExit without --readonly")
+
+
+def seed_ccf_exit_already_filled(config_path: Path) -> None:
+    """The CCF leg's exit filled; the UMC leg's did not.
+
+    This is what a half-completed exit leaves behind, and it is the only state
+    manual-flat is ever reached from. The strategy still believes it holds both
+    legs, because the exit never completed, but the ledger has already recorded
+    the CCF side of it.
+    """
+    config = load_config(config_path)
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        request = OrderRequest(
+            broker=BrokerName.FUBON_CCF,
+            symbol="CCFG6",
+            side=OrderSide.SELL,
+            quantity=2.0,
+            price=1.0,
+            timestamp=ts(),
+            row_index=1,
+            ccf_symbol="CCFG6",
+        )
+        store.record_order(
+            OrderResult(order_id="exit-fubon", request=request, status=OrderStatus.FILLED)
+        )
+        store.record_fill(
+            Fill(
+                fill_id="fill-exit-fubon",
+                order_id="exit-fubon",
+                broker=BrokerName.FUBON_CCF,
+                symbol="CCFG6",
+                side=OrderSide.SELL,
+                quantity=2.0,
+                price=1.0,
+                fee_twd=0.0,
+                timestamp=ts(),
+                row_index=1,
+                ccf_symbol="CCFG6",
+            )
+        )
+        store.commit()
+    finally:
+        store.close()
+
+
+def test_manual_flat_squares_the_ledger_not_the_strategy(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """REGRESSION 2026-08-19: the adjustment mirrored the strategy state, which
+    disagrees with the ledger exactly when a pair half-completes -- the only
+    case this command exists for.
+
+    The CCF exit had filled, so the ledger was already square on CCF while the
+    strategy still counted the lot. Writing -state.ccf_contracts put a second
+    -2 onto a balanced ledger, leaving recorded exposure at -2 against a flat
+    broker. clear-pause then refused forever with recorded_fill_position_mismatch
+    and no tool could undo it.
+    """
+    config_path = write_config(tmp_path)
+    seed_state(config_path, state=StrategyState.PAUSED, with_position=True)
+    seed_recorded_exposure(config_path)
+    seed_ccf_exit_already_filled(config_path)
+    use_fake_brokers(monkeypatch, "matched")
+
+    config = load_config(config_path)
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        before = store.load_recorded_fill_exposure(
+            umc_symbol=config.live.umc_symbol, ccf_symbol="CCFG6"
+        )
+    finally:
+        store.close()
+    # The ledger and the strategy disagree: CCF is square, UMC is not.
+    assert before[BrokerName.FUBON_CCF] == 0.0
+    assert before[BrokerName.IBKR_UMC] == -100.0
+
+    args = build_parser().parse_args(
+        [
+            "recover", "manual-flat",
+            "--config", str(config_path),
+            "--readonly", "--apply",
+            "--reason", "half completed exit",
+        ]
+    )
+    assert command_recover_manual_flat(args) == 0
+
+    out = capsys.readouterr().out
+    assert "fubon_adjustment=0" in out, out
+    assert "umc_adjustment=100" in out, out
+
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        after = store.load_recorded_fill_exposure(
+            umc_symbol=config.live.umc_symbol, ccf_symbol="CCFG6"
+        )
+    finally:
+        store.close()
+    # Both legs now agree with the flat brokers, so clear-pause can proceed.
+    assert after[BrokerName.IBKR_UMC] == 0.0
+    assert after[BrokerName.FUBON_CCF] == 0.0

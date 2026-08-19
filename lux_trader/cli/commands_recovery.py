@@ -7,7 +7,7 @@ import hashlib
 
 from lux_trader.cli import helpers
 from lux_trader.config import load_config
-from lux_trader.core.models import StrategyState
+from lux_trader.core.models import BrokerName, StrategyState
 from lux_trader.reconciliation import BrokerReconciler, ReadOnlyBroker, ReconciliationStatus
 from lux_trader.runtime.live.lease import assert_live_lease_available
 from lux_trader.store import SQLiteStore
@@ -91,11 +91,35 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
             ccf_contracts=state.ccf_contracts,
             ccf_symbol=ccf_symbol,
         )
+        # Correct the LEDGER against the brokers, not against the strategy.
+        #
+        # These two disagree exactly when a pair half-completes, which is the
+        # only situation this command exists for. On 2026-08-19 the CCF exit
+        # filled and the UMC exit did not, so the ledger was already square on
+        # CCF while the strategy still believed it held the lot. Mirroring the
+        # strategy (-state.ccf_contracts) wrote a second -1 onto a balanced
+        # ledger and left recorded exposure at -1 against a flat broker --
+        # which then refused clear-pause indefinitely, with no tool able to
+        # undo it.
+        #
+        # The reconciliation above has already MATCHED the brokers against a
+        # flat prospective state, so flat is what they hold and zero is what
+        # the ledger has to reach.
+        recorded = store.load_recorded_fill_exposure(
+            umc_symbol=config.live.umc_symbol,
+            ccf_symbol=ccf_symbol,
+        )
+        # + 0.0 normalises IEEE negative zero, so a ledger that is already
+        # square prints "0" rather than "-0" to the operator reading it.
+        umc_adjustment = -float(recorded.get(BrokerName.IBKR_UMC, 0.0)) + 0.0
+        ccf_adjustment = -float(recorded.get(BrokerName.FUBON_CCF, 0.0)) + 0.0
         print(
             "Manual-flat recovery verified: "
             f"recovery_id={recovery_id}, "
-            f"umc_adjustment={-state.umc_units:g}, "
-            f"fubon_adjustment={-state.ccf_contracts:g}, "
+            f"umc_adjustment={umc_adjustment:g}, "
+            f"fubon_adjustment={ccf_adjustment:g}, "
+            f"recorded_before=(umc={recorded.get(BrokerName.IBKR_UMC, 0.0):g}, "
+            f"ccf={recorded.get(BrokerName.FUBON_CCF, 0.0):g}), "
             "brokers=flat, open_orders=0, pnl_status=pending"
         )
         if not args.apply:
@@ -109,8 +133,8 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
             row_index=resume_state.row_index,
             ccf_symbol=ccf_symbol,
             umc_symbol=config.live.umc_symbol,
-            umc_adjustment=-float(state.umc_units),
-            ccf_adjustment=-float(state.ccf_contracts),
+            umc_adjustment=umc_adjustment,
+            ccf_adjustment=ccf_adjustment,
             reason=str(args.reason).strip(),
             original_state=original_state,
         )
@@ -130,8 +154,8 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
             {
                 "recovery_id": recovery_id,
                 "reason": str(args.reason).strip(),
-                "umc_adjustment": -float(original_state.umc_units),
-                "ccf_adjustment": -float(original_state.ccf_contracts),
+                "umc_adjustment": umc_adjustment,
+                "ccf_adjustment": ccf_adjustment,
                 "ccf_symbol": ccf_symbol,
                 "pnl_status": "pending",
             },
