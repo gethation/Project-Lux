@@ -217,6 +217,61 @@ def build_parser() -> argparse.ArgumentParser:
         help="Required recovery reason when --apply is used",
     )
 
+    recover_settle = recover_subparsers.add_parser(
+        "settle-manual-close",
+        help="Book the PnL of a manual close that manual-flat left pending, "
+        "from IBKR's own realized PnL",
+    )
+    recover_settle.add_argument("--config", type=Path, required=True)
+    recover_settle.add_argument(
+        "--from-broker",
+        action="store_true",
+        help="Read today's realized PnL from IBKR (net of real commissions). "
+        "IBKR keeps it for the current trading day only",
+    )
+    add_readonly_argument(
+        recover_settle,
+        "Required with --from-broker (needs LUX_READONLY_BROKER=1)",
+    )
+    recover_settle.add_argument(
+        "--umc-exit-price",
+        type=float,
+        help="UMC exit fill in USD from your own record; cross-checked against "
+        "--from-broker when both are given",
+    )
+    recover_settle.add_argument(
+        "--ccf-exit-price",
+        type=float,
+        help="Override the recorded CCF exit fill (required if the CCF leg was "
+        "also closed outside this system)",
+    )
+    recover_settle.add_argument(
+        "--ccf-entry-price",
+        type=float,
+        help="Override the CCF entry price used as the cost basis",
+    )
+    recover_settle.add_argument(
+        "--usd-twd",
+        type=float,
+        help="Override the recorded USD/TWD tick nearest the close",
+    )
+    recover_settle.add_argument(
+        "--price-tolerance-usd",
+        type=float,
+        default=0.05,
+        help="How far a supplied exit price may sit from the one IBKR's "
+        "realized PnL implies before this refuses (default 0.05)",
+    )
+    recover_settle.add_argument(
+        "--apply",
+        action="store_true",
+        help="Persist the settlement; default is dry-run",
+    )
+    recover_settle.add_argument(
+        "--reason",
+        help="Required settlement reason when --apply is used",
+    )
+
     # -- admin -------------------------------------------------------------
     admin = subparsers.add_parser(
         "admin",

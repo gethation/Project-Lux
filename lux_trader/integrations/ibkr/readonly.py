@@ -153,6 +153,16 @@ class IbkrReadOnlyBroker:
             raw=dict(payload),
         )
 
+    def fetch_realized_pnl(self) -> dict[str, Any]:
+        """Today's account-level realized PnL, net of commissions.
+
+        Not part of the ReadOnlyBroker protocol -- reconciliation compares
+        positions, not money. This is here so `recover settle-manual-close` can
+        settle a leg that was closed by hand, which is the one case where the
+        fills are unreachable and the account's own PnL is the only record.
+        """
+        return self.client.fetch_realized_pnl()
+
     def close(self) -> None:
         if self._owns_client:
             self.client.close()

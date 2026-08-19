@@ -56,6 +56,18 @@ def build_real_readonly_brokers(
     )
 
 
+def build_umc_readonly_broker(config: object, *, readonly: bool):
+    """The IBKR read-only broker alone, for commands that need no Fubon view."""
+    if not readonly:
+        raise SystemExit("Pass --readonly to use the real IBKR read-only broker")
+    require_readonly_broker_enabled()
+    return open_umc_readonly_broker(
+        config.live.umc_symbol,
+        config.live.fubon_env_path,
+        config,
+    )
+
+
 def build_reconciliation_brokers(
     config: object,
     strategy_state: object,

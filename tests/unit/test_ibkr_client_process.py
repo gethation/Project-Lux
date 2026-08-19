@@ -295,3 +295,122 @@ def test_a_disconnect_invalidates_the_previous_session_cache() -> None:
     fake.connected = True
     assert worker.fetch_umc_position() == 396.0
     assert fake.req_positions_calls == 2
+
+
+class FakePnlIb(FakeIb):
+    """reqPnL is a SUBSCRIPTION: the object comes back empty and fills in later.
+
+    Empty is NaN, not None -- verified against a live Gateway on 2026-08-20,
+    where reqPnL returned PnL(dailyPnL=nan, unrealizedPnL=nan, realizedPnL=nan)
+    and populated a quarter-second later. A fake that used None instead let a
+    wait loop written against `is None` pass its tests while never waiting at
+    all in production.
+
+    `updates_after` models the delay: the figures read NaN until the fake has
+    been pumped that many times.
+    """
+
+    def __init__(
+        self,
+        *,
+        updates_after: int = 1,
+        realized: float = 49.540918,
+        ledger_rows: tuple[tuple[str, str, str], ...] = (
+            ("$LEDGER-RealizedPnL", "49.54", "USD"),
+            ("$LEDGER-RealizedPnL", "49.54", "BASE"),
+        ),
+    ) -> None:
+        super().__init__()
+        self.updates_after = updates_after
+        self.realized = realized
+        self.ledger_rows = ledger_rows
+        self.pnl_requests: list[str] = []
+        self.pnl_cancels: list[str] = []
+        self._pumps = 0
+        self._pnl: SimpleNamespace | None = None
+
+    def reqPnL(self, account: str, _model: str = "") -> object:
+        self.pnl_requests.append(account)
+        self._pumps = 0
+        empty = float("nan")
+        self._pnl = SimpleNamespace(
+            account=account, dailyPnL=empty, unrealizedPnL=empty, realizedPnL=empty
+        )
+        return self._pnl
+
+    def cancelPnL(self, account: str, _model: str = "") -> None:
+        self.pnl_cancels.append(account)
+
+    def sleep(self, _seconds: float) -> None:
+        self._pumps += 1
+        if self._pnl is not None and self._pumps >= self.updates_after:
+            self._pnl.realizedPnL = self.realized
+            self._pnl.unrealizedPnL = 0.0
+            self._pnl.dailyPnL = 58.0718
+
+    def accountSummary(self) -> list[object]:
+        return [
+            SimpleNamespace(account="All", tag=tag, value=value, currency=currency)
+            for tag, value, currency in self.ledger_rows
+        ]
+
+    def positions(self) -> list[object]:
+        return []
+
+    def openTrades(self) -> list[object]:
+        return []
+
+
+def test_realized_pnl_waits_for_the_subscription_and_cancels_it() -> None:
+    fake = FakePnlIb(updates_after=3)
+    worker = _IbkrWorkerClient(
+        IbkrConnectionConfig(client_id=17_112),
+        ib_factory=lambda: fake,
+        clock=fixed_clock,
+    )
+
+    payload = worker.fetch_realized_pnl(wait_seconds=5.0)
+
+    assert payload["pnl"] == [
+        {
+            "account": "U1234567",
+            "realized_pnl_usd": 49.540918,
+            "unrealized_pnl_usd": 0.0,
+            "daily_pnl_usd": 58.0718,
+        }
+    ]
+    # BASE repeats every figure under a synthetic currency; carrying it would
+    # mix currencies on a multi-currency account.
+    assert payload["ledger_realized"] == {"USD": 49.54}
+    assert fake.pnl_requests == ["U1234567"]
+    assert fake.pnl_cancels == ["U1234567"]
+
+
+def test_realized_pnl_reports_no_answer_rather_than_zero_on_timeout() -> None:
+    """A subscription that never updates must not read as a flat, profitless day."""
+    fake = FakePnlIb(updates_after=10_000)
+    worker = _IbkrWorkerClient(
+        IbkrConnectionConfig(client_id=17_113),
+        ib_factory=lambda: fake,
+        clock=fixed_clock,
+    )
+
+    payload = worker.fetch_realized_pnl(wait_seconds=0.5)
+
+    assert payload["pnl"][0]["realized_pnl_usd"] is None
+    # Still cancelled: the deadline is not a reason to leak the subscription.
+    assert fake.pnl_cancels == ["U1234567"]
+
+
+def test_realized_pnl_survives_a_ledger_that_reports_nothing() -> None:
+    fake = FakePnlIb(ledger_rows=(("$LEDGER-RealizedPnL", "", "USD"),))
+    worker = _IbkrWorkerClient(
+        IbkrConnectionConfig(client_id=17_114),
+        ib_factory=lambda: fake,
+        clock=fixed_clock,
+    )
+
+    payload = worker.fetch_realized_pnl(wait_seconds=1.0)
+
+    assert payload["ledger_realized"] == {}
+    assert payload["pnl"][0]["realized_pnl_usd"] == 49.540918

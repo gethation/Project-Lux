@@ -402,6 +402,81 @@ class SQLiteStore:
         result["original_state"] = json.loads(result.pop("original_state_json"))
         return result
 
+    def load_fills_in_row_range(
+        self, first_row_index: int, last_row_index: int
+    ) -> list[dict[str, Any]]:
+        """Recorded fills between two bar indices, inclusive at both ends."""
+        rows = self.connection.execute(
+            """
+            SELECT * FROM fills
+            WHERE row_index BETWEEN ? AND ?
+            ORDER BY row_index, timestamp
+            """,
+            (int(first_row_index), int(last_row_index)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def load_usd_twd_near(self, moment: datetime) -> dict[str, Any] | None:
+        """The recorded USD/TWD tick closest in time to `moment`.
+
+        A settlement needs a rate to carry a USD figure into the TWD ledger,
+        and the honest one is what this system actually observed rather than
+        whatever an operator types months later. Nearest rather than latest
+        because a manual close is settled after the fact, and the feed usually
+        stopped at the incident.
+        """
+        row = self.connection.execute(
+            """
+            SELECT observed_at, price,
+                   ABS(julianday(observed_at) - julianday(?)) AS distance
+            FROM market_ticks
+            WHERE source = 'twelvedata' AND symbol = 'USD/TWD' AND price > 0
+            ORDER BY distance
+            LIMIT 1
+            """,
+            (timestamp_text(moment),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "observed_at": str(row["observed_at"]),
+            "usd_twd": float(row["price"]),
+            # Days, straight from julianday; the caller reports it so an
+            # operator can see how far the rate was reached for.
+            "distance_seconds": float(row["distance"]) * 86_400.0,
+        }
+
+    def record_manual_close_settlement(
+        self,
+        *,
+        recovery_id: str,
+        settled_at: datetime,
+        settlement: dict[str, Any],
+    ) -> None:
+        """Close out a pending manual close, exactly once.
+
+        The status predicate in the WHERE clause is the whole safety story: a
+        second settlement of the same recovery matches no row, so it raises
+        instead of booking the PnL twice.
+        """
+        cursor = self.connection.execute(
+            """
+            UPDATE pending_manual_closes
+            SET settled_at = ?, status = 'settled', settlement_json = ?
+            WHERE recovery_id = ? AND status = 'pending'
+            """,
+            (
+                timestamp_text(settled_at),
+                json.dumps(settlement, default=json_default),
+                recovery_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                f"manual close {recovery_id} is not pending settlement "
+                f"(matched {cursor.rowcount} rows)"
+            )
+
     def record_manual_flat_recovery(
         self,
         *,

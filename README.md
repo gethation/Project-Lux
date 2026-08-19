@@ -143,6 +143,23 @@ $env:LUX_READONLY_BROKER='1'
 env gates; `manual-close` is close-only and refuses anything that would grow or
 flip a position.
 
+When a leg is closed by hand outside the system, `recover manual-flat` squares
+the ledger without inventing fill prices — which leaves the round trip's PnL
+unbooked and `pnl_status` pending. `recover settle-manual-close` books it:
+
+```powershell
+.\scripts\lux.ps1 recover settle-manual-close --config <cfg> --from-broker --readonly
+```
+
+A hand-placed order's executions are not reachable over the API — IBKR returns
+executions only to the client that placed them, unless that client holds the
+Gateway's master client id — so this settles on the account's realized PnL
+instead, which IBKR reports net of real commissions. That figure covers the
+current trading day only; after the nightly reset, pass `--umc-exit-price` from
+your own statement. Supplying both cross-checks one against the other and
+refuses if they disagree. Dry-run by default, like every other recovery
+command; both it and `manual-flat` refuse while a live run holds the lease.
+
 ### Tests
 
 ```powershell

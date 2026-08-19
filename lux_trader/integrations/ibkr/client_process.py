@@ -23,6 +23,11 @@ DEFAULT_TERMINATE_TIMEOUT_SECONDS = 3.0
 # are applied. Short on purpose: the live loop polls once a second.
 _QUOTE_PUMP_SECONDS = 0.1
 
+# reqPnL is a subscription, not a query: the object it returns is empty until
+# the first update arrives.
+DEFAULT_PNL_WAIT_SECONDS = 8.0
+_PNL_POLL_SECONDS = 0.25
+
 # IBKR market-data types. Requesting 3 (delayed) OVERRIDES an entitlement you
 # actually hold -- the subscription cannot upgrade what the client explicitly
 # asked for -- so the default is 1 and an unentitled session fails loudly.
@@ -525,6 +530,86 @@ class _IbkrWorkerClient:
             "fetched_at": self.clock(),
         }
 
+    def fetch_realized_pnl(
+        self, *, wait_seconds: float = DEFAULT_PNL_WAIT_SECONDS
+    ) -> dict[str, Any]:
+        """Account-level realized PnL for IBKR's current trading day.
+
+        Exists because executions are NOT reachable from an ordinary API
+        client. `reqExecutions` returns only the orders the requesting client
+        placed unless it holds the Gateway's master client id, so a leg closed
+        by hand -- from the phone, Client Portal, anywhere outside this system
+        -- is invisible to it. Verified 2026-08-19 against a real manual close:
+        both a fresh client id and clientId 0 returned zero fills while the
+        account plainly had one.
+
+        The account's PnL is not filtered that way, and IBKR reports realized
+        PnL NET of commissions, which is exactly what a settlement needs and
+        is a figure no fee model has to guess at.
+
+        Current trading day only. A close settled after IBKR's nightly reset is
+        past retention here and has to be entered from the operator's own
+        record instead.
+        """
+        self._ensure_connected()
+        accounts = [str(account) for account in self.ib.managedAccounts()]
+        rows: list[dict[str, Any]] = []
+        for account in accounts:
+            pnl = self.ib.reqPnL(account)
+            try:
+                # reqPnL returns an object that fills in asynchronously, and
+                # its unpopulated sentinel is NaN -- not None, and not zero.
+                # Waiting on `is None` never waits at all: NaN passes it, the
+                # loop exits on the first test, and the figure reads as a
+                # timeout while the update was still in flight.
+                remaining = float(wait_seconds)
+                while remaining > 0 and not _is_finite(
+                    getattr(pnl, "realizedPnL", None)
+                ):
+                    self.ib.sleep(_PNL_POLL_SECONDS)
+                    remaining -= _PNL_POLL_SECONDS
+                rows.append(
+                    {
+                        "account": account,
+                        "realized_pnl_usd": _finite_or_none(
+                            getattr(pnl, "realizedPnL", None)
+                        ),
+                        "unrealized_pnl_usd": _finite_or_none(
+                            getattr(pnl, "unrealizedPnL", None)
+                        ),
+                        "daily_pnl_usd": _finite_or_none(
+                            getattr(pnl, "dailyPnL", None)
+                        ),
+                    }
+                )
+            finally:
+                try:
+                    self.ib.cancelPnL(account)
+                except Exception:
+                    # Cancelling a subscription we are about to drop anyway is
+                    # housekeeping; failing it must not lose the figure we came
+                    # for.
+                    pass
+        # The ledger row is an independent read of the same number, so a
+        # disagreement between them is a reason to stop rather than to settle.
+        ledger: dict[str, float] = {}
+        for row in self.ib.accountSummary():
+            tag = str(row.tag)
+            if tag not in {"RealizedPnL", "$LEDGER-RealizedPnL"}:
+                continue
+            currency = str(row.currency or "").upper()
+            if currency == "BASE":
+                continue
+            value = _finite_or_none(row.value)
+            if value is not None:
+                ledger[currency or "USD"] = value
+        return {
+            "accounts": accounts,
+            "pnl": rows,
+            "ledger_realized": ledger,
+            "fetched_at": self.clock(),
+        }
+
     # -- orders ------------------------------------------------------------
     #
     # Confirmation is tiered here rather than in the parent, because the Trade
@@ -869,6 +954,13 @@ class IbkrClientProcess:
     def fetch_account_snapshot(self) -> dict[str, Any]:
         return dict(self._request_guarded("fetch_account_snapshot"))
 
+    def fetch_realized_pnl(
+        self, *, wait_seconds: float = DEFAULT_PNL_WAIT_SECONDS
+    ) -> dict[str, Any]:
+        return dict(
+            self._request_guarded("fetch_realized_pnl", wait_seconds=wait_seconds)
+        )
+
     def fetch_umc_position(self) -> float:
         return float(self._request_guarded("fetch_umc_position"))
 
@@ -938,9 +1030,20 @@ def _is_finite(value: Any) -> bool:
         return False
 
 
+def _finite_or_none(value: Any) -> float | None:
+    """Float, or None for anything that is not a real number.
+
+    IBKR sends an unavailable figure as an empty string or its own sentinel,
+    and a subscription that has not updated yet holds None. All three have to
+    read as "no answer" rather than as zero, because zero is a valid PnL.
+    """
+    return float(value) if _is_finite(value) else None
+
+
 __all__ = [
     "DEFAULT_CLIENT_ID",
     "DEFAULT_CONNECT_TIMEOUT_SECONDS",
+    "DEFAULT_PNL_WAIT_SECONDS",
     "DEFAULT_REQUEST_TIMEOUT_SECONDS",
     "DEFAULT_TERMINATE_TIMEOUT_SECONDS",
     "IbkrClientProcess",

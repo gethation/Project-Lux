@@ -10,7 +10,10 @@ from .commands_execution import (
     command_live_execute,
     command_manual_close,
 )
-from .commands_recovery import command_recover_manual_flat
+from .commands_recovery import (
+    command_recover_manual_flat,
+    command_settle_manual_close,
+)
 from .commands_live import (
     command_clear_pause,
     command_live_dry_run,
@@ -42,6 +45,7 @@ COMMAND_HANDLERS = {
     ("status", "margin"): command_margin_check,
     ("recover", "clear-pause"): command_clear_pause,
     ("recover", "manual-flat"): command_recover_manual_flat,
+    ("recover", "settle-manual-close"): command_settle_manual_close,
     ("admin", "exec-smoke"): command_exec_smoke,
     ("admin", "manual-close"): command_manual_close,
 }

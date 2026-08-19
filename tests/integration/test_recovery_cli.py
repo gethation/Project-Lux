@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
+
+import pytest
 
 import lux_trader.cli.commands_live as commands_live
 import lux_trader.cli.commands_recovery as commands_recovery
@@ -581,3 +584,541 @@ def test_manual_flat_on_a_square_ledger_is_still_a_no_op(
     assert "already applied" in out
     assert "ledger square" in out
     assert "Ledger repair applied" not in out
+
+
+# --- settle-manual-close --------------------------------------------------
+#
+# Shape of the 2026-08-19 incident: both entry legs filled, the CCF exit
+# filled, the UMC exit was closed by hand outside the system, and manual-flat
+# already squared the ledger and left pnl_status pending.
+
+ENTRY_ROW = 10
+EXIT_ROW = 20
+ENTRY_UMC_PRICE_USD = 18.463926
+ENTRY_UMC_TWD_FAIR = 117.7922973  # x5 = 588.9615 TWD/ADR at usd_twd 31.898
+ENTRY_UMC_FEE_TWD = 71.3724624783318
+SETTLE_FX = 31.85683
+REALIZED_USD = 49.540918
+
+
+def settle_open_trade() -> dict:
+    return {
+        "entry_signal_idx": ENTRY_ROW,
+        "entry_signal_time": "2026-02-01T22:18:00+08:00",
+        "entry_signal_zscore": 1.14,
+        "entry_idx": ENTRY_ROW,
+        "entry_time": "2026-02-01T22:18:00+08:00",
+        "entry_delay_minutes": 0,
+        "entry_fill_zscore": 1.14,
+        "direction": "short_umc_long_ccf",
+        "entry_umc_twd_fair": ENTRY_UMC_TWD_FAIR,
+        # The BAR price. The recorded fill below is 116.5 -- they differ, which
+        # is the point of test_settle_manual_close_prices_ccf_from_the_fill.
+        "entry_ccf_close": 116.25,
+        "entry_fill_price_type": "close",
+        "umc_units": -394.0,
+        "ccf_units": 2000.0,
+        "ccf_contracts": 1,
+        "raw_ccf_contracts": 1.0,
+        "leg_notional_twd": 1000000.0,
+        "actual_leg_notional_twd": 233000.0,
+        "ccf_contract_multiplier": 2000.0,
+        "entry_umc_fee_twd": ENTRY_UMC_FEE_TWD,
+        "entry_ccf_fee_twd": 88.0,
+        "entry_ccf_tax_twd": 5,
+        "entry_fee_twd": 164.37246247833178,
+        "ccf_symbol": "CCFG6",
+        "ccf_expiry": "2026-09-16",
+        "contract_policy_state": "active",
+    }
+
+
+def record_settle_fill(
+    store: SQLiteStore,
+    *,
+    order_id: str,
+    broker: BrokerName,
+    symbol: str,
+    side: OrderSide,
+    quantity: float,
+    price: float,
+    fee_twd: float,
+    row_index: int,
+) -> None:
+    request = OrderRequest(
+        broker=broker,
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        price=price,
+        timestamp=ts(),
+        row_index=row_index,
+        ccf_symbol="CCFG6",
+    )
+    store.record_order(
+        OrderResult(order_id=order_id, request=request, status=OrderStatus.FILLED)
+    )
+    store.record_fill(
+        Fill(
+            fill_id=f"fill-{order_id}",
+            order_id=order_id,
+            broker=broker,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=price,
+            fee_twd=fee_twd,
+            timestamp=ts(),
+            row_index=row_index,
+            ccf_symbol="CCFG6",
+        )
+    )
+
+
+def seed_pending_settlement(
+    config_path: Path,
+    *,
+    with_ccf_exit_fill: bool = True,
+    with_fx_tick: bool = True,
+    still_holding: bool = False,
+) -> str:
+    config = load_config(config_path)
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        record_settle_fill(
+            store,
+            order_id="entry-ibkr",
+            broker=BrokerName.IBKR_UMC,
+            symbol=config.live.umc_symbol,
+            side=OrderSide.SELL,
+            quantity=394.0,
+            price=ENTRY_UMC_PRICE_USD,
+            fee_twd=ENTRY_UMC_FEE_TWD,
+            row_index=ENTRY_ROW,
+        )
+        record_settle_fill(
+            store,
+            order_id="entry-fubon",
+            broker=BrokerName.FUBON_CCF,
+            symbol="CCFG6",
+            side=OrderSide.BUY,
+            quantity=1.0,
+            price=116.5,
+            fee_twd=93.0,
+            row_index=ENTRY_ROW,
+        )
+        if with_ccf_exit_fill:
+            record_settle_fill(
+                store,
+                order_id="exit-fubon",
+                broker=BrokerName.FUBON_CCF,
+                symbol="CCFG6",
+                side=OrderSide.SELL,
+                quantity=1.0,
+                price=116.5,
+                fee_twd=93.0,
+                row_index=EXIT_ROW - 1,
+            )
+        if with_fx_tick:
+            store.connection.execute(
+                "INSERT INTO market_ticks ("
+                " observed_at, source, symbol, quote_timestamp, price,"
+                " bid, ask, raw_json"
+                ") VALUES (?, 'twelvedata', 'USD/TWD', ?, ?, NULL, NULL, '{}')",
+                (ts().isoformat(), ts().isoformat(), SETTLE_FX),
+            )
+
+        original = StrategyRuntimeState(state=StrategyState.PAUSED)
+        original.position_direction = Direction.SHORT_UMC_LONG_CCF
+        original.umc_units = -394.0
+        original.ccf_units = 2000.0
+        original.ccf_contracts = 1
+        original.trading_ccf_symbol = "CCFG6"
+        original.realized_pnl = 409.6384113152398
+        original.realized_fee_twd = 486.2660486847582
+        original.open_trade = settle_open_trade()
+        store.record_manual_flat_recovery(
+            recovery_id="manual-flat-test",
+            created_at=ts(),
+            row_index=EXIT_ROW,
+            ccf_symbol="CCFG6",
+            umc_symbol=config.live.umc_symbol,
+            umc_adjustment=394.0,
+            ccf_adjustment=0.0,
+            reason="test",
+            original_state=original,
+        )
+
+        settled = StrategyRuntimeState(state=StrategyState.PAUSED)
+        settled.realized_pnl = original.realized_pnl
+        settled.realized_fee_twd = original.realized_fee_twd
+        settled.trading_ccf_symbol = "CCFG6"
+        settled.pnl_status = "pending"
+        if still_holding:
+            settled.position_direction = Direction.SHORT_UMC_LONG_CCF
+            settled.umc_units = -394.0
+            settled.ccf_contracts = 1
+        store.save_state(EXIT_ROW, ts(), settled, IndicatorEngine(window=500))
+        store.commit()
+    finally:
+        store.close()
+    return "manual-flat-test"
+
+
+class FakePnlBroker:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.closed = False
+
+    def fetch_realized_pnl(self) -> dict:
+        return self.payload
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def realized_payload(
+    realized: float | None = REALIZED_USD,
+    *,
+    ledger: float | None = REALIZED_USD,
+) -> dict:
+    return {
+        "accounts": ["U00000001"],
+        "pnl": [
+            {
+                "account": "U00000001",
+                "realized_pnl_usd": realized,
+                "unrealized_pnl_usd": 0.0,
+                "daily_pnl_usd": 58.0718,
+            }
+        ],
+        "ledger_realized": {} if ledger is None else {"USD": ledger},
+        "fetched_at": ts(),
+    }
+
+
+def use_fake_pnl_broker(monkeypatch, payload: dict) -> FakePnlBroker:
+    broker = FakePnlBroker(payload)
+    monkeypatch.setattr(
+        commands_recovery.helpers,
+        "build_umc_readonly_broker",
+        lambda config, *, readonly: broker,
+    )
+    return broker
+
+
+def settle_args(config_path: Path, *extra: str):
+    return build_parser().parse_args(
+        ["recover", "settle-manual-close", "--config", str(config_path), *extra]
+    )
+
+
+def load_pending_row(config_path: Path) -> dict | None:
+    config = load_config(config_path)
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        row = store.connection.execute(
+            "SELECT * FROM pending_manual_closes "
+            "WHERE recovery_id = 'manual-flat-test'"
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        store.close()
+
+
+def load_trades(config_path: Path) -> list[dict]:
+    config = load_config(config_path)
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        return [dict(row) for row in store.connection.execute("SELECT * FROM trades")]
+    finally:
+        store.close()
+
+
+def test_settle_manual_close_books_the_brokers_number_exactly(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_pending_settlement(config_path)
+    use_fake_pnl_broker(monkeypatch, realized_payload())
+
+    args = settle_args(
+        config_path, "--from-broker", "--readonly", "--apply", "--reason", "test"
+    )
+    assert commands_recovery.command_settle_manual_close(args) == 0
+
+    trades = load_trades(config_path)
+    assert len(trades) == 1
+    trade = trades[0]
+    # The whole point of the broker basis: the UMC leg's NET equals IBKR's own
+    # figure, whatever the fee model would have guessed.
+    umc_leg_net = trade["umc_pnl"] - ENTRY_UMC_FEE_TWD - trade["exit_umc_fee_twd"]
+    assert umc_leg_net == pytest.approx(REALIZED_USD * SETTLE_FX, abs=1e-6)
+
+    state = load_persisted_state(config_path)
+    assert state.pnl_status == "complete"
+    assert state.realized_pnl == pytest.approx(
+        409.6384113152398 + trade["gross_pnl_twd"] - trade["exit_fee_twd"]
+    )
+
+    pending = load_pending_row(config_path)
+    assert pending["status"] == "settled"
+    assert pending["settled_at"] is not None
+    settlement = json.loads(pending["settlement_json"])
+    assert settlement["basis"] == "broker_realized"
+    assert settlement["realized_usd"] == pytest.approx(REALIZED_USD)
+
+
+def test_settle_manual_close_dry_run_changes_nothing(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_pending_settlement(config_path)
+    use_fake_pnl_broker(monkeypatch, realized_payload())
+
+    args = settle_args(config_path, "--from-broker", "--readonly")
+    assert commands_recovery.command_settle_manual_close(args) == 0
+
+    assert "Dry-run only" in capsys.readouterr().out
+    assert load_trades(config_path) == []
+    assert load_persisted_state(config_path).pnl_status == "pending"
+    assert load_pending_row(config_path)["status"] == "pending"
+
+
+def test_settle_manual_close_refuses_a_second_settlement(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_pending_settlement(config_path)
+    use_fake_pnl_broker(monkeypatch, realized_payload())
+    apply_args = settle_args(
+        config_path, "--from-broker", "--readonly", "--apply", "--reason", "test"
+    )
+    assert commands_recovery.command_settle_manual_close(apply_args) == 0
+
+    with pytest.raises(SystemExit) as excinfo:
+        commands_recovery.command_settle_manual_close(
+            settle_args(
+                config_path,
+                "--from-broker",
+                "--readonly",
+                "--apply",
+                "--reason",
+                "again",
+            )
+        )
+    assert "No pending manual close" in str(excinfo.value)
+    assert len(load_trades(config_path)) == 1
+
+
+def test_settle_manual_close_refuses_while_the_strategy_still_holds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_pending_settlement(config_path, still_holding=True)
+    use_fake_pnl_broker(monkeypatch, realized_payload())
+
+    with pytest.raises(SystemExit) as excinfo:
+        commands_recovery.command_settle_manual_close(
+            settle_args(config_path, "--from-broker", "--readonly")
+        )
+    assert "manual-flat" in str(excinfo.value)
+
+
+def test_settle_manual_close_refuses_a_price_that_contradicts_the_broker(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_pending_settlement(config_path)
+    use_fake_pnl_broker(monkeypatch, realized_payload())
+
+    args = settle_args(
+        config_path,
+        "--from-broker",
+        "--readonly",
+        "--umc-exit-price",
+        "17.10",
+        "--apply",
+        "--reason",
+        "test",
+    )
+    assert commands_recovery.command_settle_manual_close(args) == 1
+    assert "disagree" in capsys.readouterr().out
+    assert load_trades(config_path) == []
+    assert load_persisted_state(config_path).pnl_status == "pending"
+
+
+def test_settle_manual_close_accepts_a_price_that_matches_the_broker(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_pending_settlement(config_path)
+    use_fake_pnl_broker(monkeypatch, realized_payload())
+
+    config = load_config(config_path)
+    implied = commands_recovery.build_settlement(
+        config=config,
+        open_trade=settle_open_trade(),
+        umc_units=-394.0,
+        ccf_units=2000.0,
+        ccf_contracts=1,
+        entry_umc_price_usd=ENTRY_UMC_PRICE_USD,
+        entry_ccf_price=116.5,
+        entry_ccf_source="test",
+        ccf_exit_price=116.5,
+        usd_twd=SETTLE_FX,
+        realized_usd=REALIZED_USD,
+        umc_exit_price=None,
+        price_tolerance_usd=0.05,
+    )["umc_exit_price_implied_usd"]
+
+    args = settle_args(
+        config_path,
+        "--from-broker",
+        "--readonly",
+        "--umc-exit-price",
+        f"{implied:.6f}",
+        "--apply",
+        "--reason",
+        "test",
+    )
+    assert commands_recovery.command_settle_manual_close(args) == 0
+    assert "price cross-check" in capsys.readouterr().out
+    assert len(load_trades(config_path)) == 1
+
+
+def test_settle_manual_close_prices_ccf_from_the_fill_not_the_bar(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_pending_settlement(config_path)
+    use_fake_pnl_broker(monkeypatch, realized_payload())
+
+    args = settle_args(
+        config_path, "--from-broker", "--readonly", "--apply", "--reason", "test"
+    )
+    assert commands_recovery.command_settle_manual_close(args) == 0
+
+    output = capsys.readouterr().out
+    assert "the strategy booked its entry at the bar price 116.25" in output
+    trade = load_trades(config_path)[0]
+    # Entry and exit fills were both 116.5, so the leg made nothing. Pricing
+    # against the bar's 116.25 would have invented +500 TWD.
+    assert trade["ccf_pnl"] == pytest.approx(0.0)
+    assert trade["entry_ccf_close"] == pytest.approx(116.5)
+
+
+def test_settle_manual_close_works_from_a_supplied_price_with_no_broker(
+    tmp_path: Path, capsys
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_pending_settlement(config_path)
+
+    args = settle_args(
+        config_path, "--umc-exit-price", "18.3276", "--apply", "--reason", "test"
+    )
+    assert commands_recovery.command_settle_manual_close(args) == 0
+
+    pending = load_pending_row(config_path)
+    settlement = json.loads(pending["settlement_json"])
+    assert settlement["basis"] == "model"
+    assert settlement["realized_usd"] is None
+    assert load_persisted_state(config_path).pnl_status == "complete"
+
+
+def test_settle_manual_close_needs_a_source(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    seed_pending_settlement(config_path)
+    with pytest.raises(SystemExit) as excinfo:
+        commands_recovery.command_settle_manual_close(settle_args(config_path))
+    assert "Nothing to settle from" in str(excinfo.value)
+
+
+def test_settle_manual_close_uses_the_recorded_fx_tick(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_pending_settlement(config_path)
+    use_fake_pnl_broker(monkeypatch, realized_payload())
+
+    assert (
+        commands_recovery.command_settle_manual_close(
+            settle_args(config_path, "--from-broker", "--readonly")
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert f"{SETTLE_FX:.5f}" in output
+    assert "recorded tick" in output
+
+
+def test_settle_manual_close_refuses_without_a_usable_fx_rate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_pending_settlement(config_path, with_fx_tick=False)
+    use_fake_pnl_broker(monkeypatch, realized_payload())
+
+    with pytest.raises(SystemExit) as excinfo:
+        commands_recovery.command_settle_manual_close(
+            settle_args(config_path, "--from-broker", "--readonly")
+        )
+    assert "--usd-twd" in str(excinfo.value)
+
+
+def test_settle_manual_close_refuses_without_a_ccf_exit_price(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_pending_settlement(config_path, with_ccf_exit_fill=False)
+    use_fake_pnl_broker(monkeypatch, realized_payload())
+
+    with pytest.raises(SystemExit) as excinfo:
+        commands_recovery.command_settle_manual_close(
+            settle_args(config_path, "--from-broker", "--readonly")
+        )
+    assert "--ccf-exit-price" in str(excinfo.value)
+
+
+def test_settle_manual_close_refuses_a_contradicted_ccf_exit_price(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    seed_pending_settlement(config_path)
+    use_fake_pnl_broker(monkeypatch, realized_payload())
+
+    with pytest.raises(SystemExit) as excinfo:
+        commands_recovery.command_settle_manual_close(
+            settle_args(
+                config_path, "--from-broker", "--readonly", "--ccf-exit-price", "120"
+            )
+        )
+    assert "contradicts the recorded CCF exit fill" in str(excinfo.value)
+
+
+# --- realized-PnL payload guards ------------------------------------------
+
+
+def test_single_account_realized_refuses_multiple_accounts() -> None:
+    payload = realized_payload()
+    payload["pnl"].append(dict(payload["pnl"][0], account="U00000002"))
+    with pytest.raises(SystemExit) as excinfo:
+        commands_recovery.single_account_realized_usd(payload)
+    assert "accounts" in str(excinfo.value)
+
+
+def test_single_account_realized_refuses_a_ledger_disagreement() -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        commands_recovery.single_account_realized_usd(
+            realized_payload(49.54, ledger=101.0)
+        )
+    assert "disagree on realized PnL" in str(excinfo.value)
+
+
+def test_single_account_realized_refuses_an_unpopulated_subscription() -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        commands_recovery.single_account_realized_usd(realized_payload(None))
+    assert "never updated" in str(excinfo.value)
