@@ -4243,3 +4243,29 @@ def test_a_dry_run_rollover_does_not_need_a_contract_to_retarget(tmp_path) -> No
         reporter=LiveTerminalReporter(io.StringIO(), color=False),
         timestamp=ts("2026-08-18T21:30:00+08:00"),
     )
+
+
+def test_a_flat_rollover_retargets_the_order_path_too(tmp_path) -> None:
+    """REGRESSION: the retarget added in 6ccf109 went onto the after-flat path
+    only. The FLAT / ENTRY_PENDING path is the one an ordinary roll takes --
+    pending_symbol_switch is set only while a position is open -- so the common
+    case still left the Fubon adapter bound to the expired contract and paused
+    on the next entry, exactly as on 2026-08-18.
+
+    This asserts the call exists on BOTH paths rather than the behaviour of one,
+    because the defect was an omission at a call site, not a wrong branch.
+    """
+    import inspect
+
+    from lux_trader.runtime.live import engine as live_engine
+
+    for name in (
+        "_switch_contract_before_processing",
+        "_complete_contract_switch_after_flat",
+    ):
+        source = inspect.getsource(getattr(live_engine.LiveRuntime, name))
+        assert "switch_to_contract(" in source, f"{name} no longer switches contract"
+        assert "on_contract_switched(" in source, (
+            f"{name} switches the contract without retargeting the order path; "
+            "the adapter keeps the expired symbol and the next entry is refused"
+        )

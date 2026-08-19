@@ -859,6 +859,17 @@ class LiveRuntime:
             self.reporter,
             bar.timestamp,
         )
+        # The order path has to follow the contract here too. This is the path a
+        # roll takes when the strategy is already flat -- the common case, since
+        # pending_symbol_switch is only ever set while a position is open -- and
+        # it was missed when the same call was added to the after-flat path.
+        # Without it the adapter keeps the expired symbol and the first entry on
+        # the new contract is refused, exactly as on 2026-08-18.
+        self.handler.on_contract_switched(
+            ccf_symbol=ccf_symbol,
+            reporter=self.reporter,
+            timestamp=bar.timestamp,
+        )
         return (
             ccf_symbol,
             ccf_expiry,

@@ -268,6 +268,35 @@ class IbkrUmcExecutionAdapter:
                 payload=payload,
             )
 
+        # Shares this order demonstrably moved, even though the final state is
+        # undecided. client_process classifies "some executed, not all" as
+        # unknown, and this branch used to drop that quantity entirely: the
+        # outcome carried orders but no fills, so the coordinator's
+        # filled_quantity() summed to zero and treated a partly-hedged leg as
+        # one that never traded. It would then unwind the OTHER leg in full and
+        # leave the executed remainder naked, unrecorded by anything.
+        #
+        # A fill here does not claim the order is finished -- the status stays
+        # UNKNOWN and still pauses. It only stops the executed part from being
+        # invisible. Fubon's adapter already attaches partial fills; this makes
+        # the two venues agree.
+        unknown_fills: tuple[Fill, ...] = ()
+        if filled_shares > 0.0:
+            unknown_fills = (
+                Fill(
+                    fill_id=f"IBKR-FILL-{id_suffix}",
+                    order_id=order_id,
+                    broker=self.broker,
+                    symbol=leg.symbol,
+                    side=leg.side,
+                    quantity=filled_shares,
+                    price=float(result.get("avg_fill_price") or leg.price),
+                    fee_twd=leg.fee_twd,
+                    timestamp=leg.timestamp,
+                    row_index=leg.row_index,
+                ),
+            )
+
         return ExecutionOutcome(
             plan_id=plan.plan_id,
             timestamp=self.clock(),
@@ -279,6 +308,7 @@ class IbkrUmcExecutionAdapter:
             ),
             recommended_state=StrategyState.PAUSED,
             orders=(order,),
+            fills=unknown_fills,
             payload=payload,
         )
 

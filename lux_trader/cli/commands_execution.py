@@ -703,13 +703,13 @@ def command_manual_close(args: argparse.Namespace) -> int:
             args, venue="ibkr", foreign=(("lot", "--lot"),)
         )
         return ibkr_manual_close(args)
+    # --allow-position-mismatch is accepted for Fubon now that Fubon actually
+    # has a close-only check to override. Blocking it while no check existed
+    # guarded an escape hatch for a door that was standing open.
     refuse_foreign_venue_args(
         args,
         venue="fubon",
-        foreign=(
-            ("shares", "--shares"),
-            ("allow_position_mismatch", "--allow-position-mismatch"),
-        ),
+        foreign=(("shares", "--shares"),),
     )
     if args.lot is None:
         raise SystemExit("--lot is required for --venue fubon")
@@ -936,11 +936,39 @@ def fubon_manual_close(args: argparse.Namespace) -> int:
                 "Refusing Fubon manual close with existing open orders: "
                 f"{len(pre_open_orders)}"
             )
+        # Close-only, on the same terms as the IBKR half. This branch used to
+        # print a warning and send anyway, which made the recovery tool
+        # reproduce the incident it gets reached for: on 2026-08-19 a `--side
+        # buy --lot 1` meant to restore a hedge would have gone out as
+        # FutOptOrderType.Close against a position already at zero and been
+        # rejected with 8481301, exactly as the automatic emergency close was.
+        #
+        # Refusing says the true thing -- this tool cannot re-open a hedge --
+        # instead of sending an order the exchange is certain to reject.
+        mismatch: str | None = None
         if abs(pre_position) <= 1e-12:
-            print(
-                "WARN Fubon position query returned zero before manual close; "
-                "continuing because --side/--lot were explicitly provided"
+            mismatch = (
+                "Fubon reports no position in "
+                f"{symbol}; there is nothing for --side {args.side} to close"
             )
+        elif not side_closes_position(pre_position, side):
+            mismatch = (
+                f"--side {args.side} does not close a position of "
+                f"{pre_position:g}; it would grow or flip it"
+            )
+        elif lot > abs(pre_position) + 1e-12:
+            mismatch = (
+                f"--lot {lot} exceeds the position of {abs(pre_position):g}; "
+                "the remainder would open the opposite side"
+            )
+        if mismatch is not None:
+            if not bool(getattr(args, "allow_position_mismatch", False)):
+                raise SystemExit(
+                    f"Refusing Fubon manual close: {mismatch}. This tool is "
+                    "close-only. Pass --allow-position-mismatch if the broker's "
+                    "reported position is the thing you believe is wrong."
+                )
+            print(f"WARN overriding close-only check: {mismatch}")
 
         timestamp = datetime.now().astimezone().replace(microsecond=0)
         close_plan = build_fubon_smoke_plan(

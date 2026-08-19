@@ -1041,3 +1041,198 @@ def test_a_matching_exit_still_goes_through() -> None:
     assert outcome.status == ExecutionOutcomeStatus.FILLED
     assert len(engine.adapters[BrokerName.FUBON_CCF].plans) == 1
     assert len(engine.adapters[BrokerName.IBKR_UMC].plans) == 1
+
+
+class MovingPositionAdapter(FakeExecutionAdapter):
+    """An adapter whose reported position changes after it is asked to trade.
+
+    The plain fake returns a constant, so a leg that reports UNKNOWN looks
+    identical to one that did nothing. That is exactly the ambiguity the
+    coordinator now has to resolve, so it needs a fake that can be on either
+    side of it.
+    """
+
+    def __init__(
+        self,
+        broker: BrokerName,
+        outcomes: list[dict],
+        *,
+        position_quantity: float = 0.0,
+        position_after_execute: float | None = None,
+        unreadable_after_execute: bool = False,
+    ) -> None:
+        super().__init__(broker, outcomes, position_quantity=position_quantity)
+        self.position_after_execute = position_after_execute
+        self.unreadable_after_execute = unreadable_after_execute
+        self.unreadable = False
+        self.position_reads = 0
+
+    def fetch_position_quantity(self) -> float:
+        self.position_reads += 1
+        if self.unreadable:
+            raise RuntimeError("broker cannot answer right now")
+        return self.position_quantity
+
+    def execute(self, plan: PairExecutionPlan) -> ExecutionOutcome:
+        outcome = super().execute(plan)
+        if self.position_after_execute is not None:
+            self.position_quantity = self.position_after_execute
+        if self.unreadable_after_execute:
+            self.unreadable = True
+        return outcome
+
+
+def coordinator_with(
+    store: FakeStore,
+    *,
+    ccf_adapter,
+    umc_adapter,
+) -> RealExecutionCoordinator:
+    return RealExecutionCoordinator(
+        store=store,
+        fubon_adapter=ccf_adapter,
+        umc_adapter=umc_adapter,
+        ccf_first=True,
+        clock=ts,
+    )
+
+
+def test_an_unknown_second_leg_that_actually_moved_is_not_reversed() -> None:
+    """REGRESSION: UNKNOWN was read as 'did not fill', so the coordinator
+    reversed the leg that HAD filled. When the unknown order was in fact
+    working at the venue, that turns a half-open pair into a fully reversed
+    one -- a position nobody asked for, created by the recovery path itself."""
+    store = FakeStore()
+    ccf = MovingPositionAdapter(
+        BrokerName.FUBON_CCF,
+        [{"status": ExecutionOutcomeStatus.FILLED}],
+    )
+    umc = MovingPositionAdapter(
+        BrokerName.IBKR_UMC,
+        [{"status": ExecutionOutcomeStatus.UNKNOWN}],
+        position_quantity=0.0,
+        # The order really did reach the market, whatever the reply said.
+        position_after_execute=-100.0,
+    )
+    runner = coordinator_with(store, ccf_adapter=ccf, umc_adapter=umc)
+
+    _, outcome = runner.execute(pair_plan())
+
+    assert outcome.recommended_state == StrategyState.PAUSED
+    assert "emergency_close_attempted" not in event_types(store)
+    assert event_types(store) == [
+        "unverified_second_leg",
+        "critical_manual_intervention_required",
+    ]
+    # One CCF order only: the plan's own leg, never a reversal.
+    assert len(ccf.plans) == 1
+
+
+def test_an_unreadable_second_leg_is_not_reversed_either() -> None:
+    """A broker that cannot say what it holds is not a broker that says zero.
+    Reversing on that basis is guessing with real money."""
+    store = FakeStore()
+    ccf = MovingPositionAdapter(
+        BrokerName.FUBON_CCF,
+        [{"status": ExecutionOutcomeStatus.FILLED}],
+    )
+    umc = MovingPositionAdapter(
+        BrokerName.IBKR_UMC,
+        [{"status": ExecutionOutcomeStatus.UNKNOWN}],
+        # Readable before the order, silent afterwards -- the socket died
+        # somewhere around the send, which is when this actually happens.
+        unreadable_after_execute=True,
+    )
+    runner = coordinator_with(store, ccf_adapter=ccf, umc_adapter=umc)
+
+    _, outcome = runner.execute(pair_plan())
+
+    assert outcome.recommended_state == StrategyState.PAUSED
+    assert "emergency_close_attempted" not in event_types(store)
+    assert "critical_manual_intervention_required" in event_types(store)
+    assert len(ccf.plans) == 1
+
+
+def test_a_second_leg_the_broker_confirms_untouched_is_still_unwound() -> None:
+    """The other half: positive evidence of no movement is what authorises the
+    reversal, and it must still authorise it. Without this the fix would trade
+    one failure mode for a worse one -- never unwinding anything."""
+    store = FakeStore()
+    ccf = MovingPositionAdapter(
+        BrokerName.FUBON_CCF,
+        [
+            {"status": ExecutionOutcomeStatus.FILLED},
+            {"status": ExecutionOutcomeStatus.FILLED},
+        ],
+    )
+    umc = MovingPositionAdapter(
+        BrokerName.IBKR_UMC,
+        [{"status": ExecutionOutcomeStatus.FAILED}],
+        position_quantity=0.0,
+        position_after_execute=0.0,
+    )
+    runner = coordinator_with(store, ccf_adapter=ccf, umc_adapter=umc)
+
+    _, outcome = runner.execute(pair_plan())
+
+    assert "emergency_close_attempted" in event_types(store)
+    assert "emergency_close_filled" in event_types(store)
+    assert len(ccf.plans) == 2
+
+
+def test_an_exit_emergency_reopens_rather_than_closes() -> None:
+    """REGRESSION 2026-08-19: the emergency plan hardcoded EXIT, so Fubon
+    tagged it FutOptOrderType.Close. On an EXIT parent the emergency RE-OPENS
+    the hedge the exit just removed, against a position already at zero, and
+    the exchange rejected it with 8481301."""
+    store = FakeStore()
+    ccf = MovingPositionAdapter(
+        BrokerName.FUBON_CCF,
+        [
+            {"status": ExecutionOutcomeStatus.FILLED},
+            {"status": ExecutionOutcomeStatus.FILLED},
+        ],
+        # Closing SHORT_UMC_LONG_CCF, the exact shape of the 2026-08-19
+        # incident: the CCF long is sold and the UMC short is bought back. The
+        # guard checks each leg against the position it closes.
+        position_quantity=2.0,
+        position_after_execute=2.0,
+    )
+    umc = MovingPositionAdapter(
+        BrokerName.IBKR_UMC,
+        [{"status": ExecutionOutcomeStatus.FAILED}],
+        position_quantity=-100.0,
+        position_after_execute=-100.0,
+    )
+    runner = coordinator_with(store, ccf_adapter=ccf, umc_adapter=umc)
+
+    runner.execute(exit_plan())
+
+    emergency = ccf.plans[-1]
+    assert "EMERGENCY" in emergency.plan_id
+    # The order that restores a hedge is an OPEN, whatever the parent was.
+    assert emergency.plan_type == ExecutionPlanType.ENTRY
+
+
+def test_an_entry_emergency_still_closes() -> None:
+    """The mirror case must not regress: reversing a leg an ENTRY just opened
+    genuinely is a close, and must still be tagged as one."""
+    store = FakeStore()
+    ccf = MovingPositionAdapter(
+        BrokerName.FUBON_CCF,
+        [
+            {"status": ExecutionOutcomeStatus.FILLED},
+            {"status": ExecutionOutcomeStatus.FILLED},
+        ],
+    )
+    umc = MovingPositionAdapter(
+        BrokerName.IBKR_UMC,
+        [{"status": ExecutionOutcomeStatus.FAILED}],
+    )
+    runner = coordinator_with(store, ccf_adapter=ccf, umc_adapter=umc)
+
+    runner.execute(pair_plan())
+
+    emergency = ccf.plans[-1]
+    assert "EMERGENCY" in emergency.plan_id
+    assert emergency.plan_type == ExecutionPlanType.EXIT

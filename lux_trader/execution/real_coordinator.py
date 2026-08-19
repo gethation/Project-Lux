@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 
 from .outcome import ExecutionAdapter, ExecutionOutcome, ExecutionOutcomeStatus
 from .position_guard import (
@@ -116,6 +116,11 @@ class RealExecutionCoordinator:
             self.store.record_execution_outcome(outcome)
             return recorded, outcome
 
+        # The guard above just asked both brokers what they hold. Keep that
+        # answer: it is the only baseline against which a leg whose outcome is
+        # UNKNOWN can later be judged.
+        positions_before = self._observed_positions(recorded)
+
         primary_outcomes: dict[BrokerName, ExecutionOutcome] = {}
         primary_leg_timings: dict[BrokerName, dict[str, Any]] = {}
         emergency_outcomes: list[ExecutionOutcome] = []
@@ -177,23 +182,68 @@ class RealExecutionCoordinator:
             self.store.record_execution_outcome(outcome)
             return recorded, outcome
 
-        exposed_legs: list[tuple[ExecutionLeg, float]] = [
-            (first_leg, first_filled_quantity)
-        ]
-        breach_type = "single_leg_exposure"
-        if second_filled_quantity > 0:
-            exposed_legs.append((second_leg, second_filled_quantity))
-            breach_type = "imbalanced_pair_exposure"
-        emergency_outcomes.extend(
-            self._handle_exposure_breach(
-                recorded,
-                exposed_legs=exposed_legs,
-                failed_broker=second_leg.broker,
-                failed_status=second_outcome.status,
-                breach_type=breach_type,
-                events=events,
-            )
+        # "Did not report filled" is not "did nothing". An UNKNOWN outcome means
+        # the order may already be working or done at the venue, and the fills
+        # tuple is silent about it. Reversing the leg that DID fill on that
+        # assumption is how a half-open pair becomes a fully REVERSED one --
+        # UMC flat and CCF long, a position nobody asked for.
+        #
+        # So ask the broker. Auto-reversal is safe only when it confirms the
+        # other side is untouched; if it moved, or if it cannot answer, the
+        # exposure is real but the remedy is not ours to guess.
+        second_moved = self._leg_moved_at_broker(
+            second_leg,
+            before=positions_before,
         )
+        if second_moved is False:
+            exposed_legs: list[tuple[ExecutionLeg, float]] = [
+                (first_leg, first_filled_quantity)
+            ]
+            breach_type = "single_leg_exposure"
+            if second_filled_quantity > 0:
+                exposed_legs.append((second_leg, second_filled_quantity))
+                breach_type = "imbalanced_pair_exposure"
+            emergency_outcomes.extend(
+                self._handle_exposure_breach(
+                    recorded,
+                    exposed_legs=exposed_legs,
+                    failed_broker=second_leg.broker,
+                    failed_status=second_outcome.status,
+                    breach_type=breach_type,
+                    events=events,
+                )
+            )
+        else:
+            breach_type = "unverified_second_leg"
+            self._record_event(
+                recorded,
+                events,
+                breach_type,
+                "second leg outcome unverified; not reversing the filled leg",
+                {
+                    "plan_id": recorded.plan_id,
+                    "failed_broker": second_leg.broker.value,
+                    "failed_status": second_outcome.status.value,
+                    "second_leg_moved": second_moved,
+                    "position_before": positions_before.get(second_leg.broker),
+                    "position_after": self._observed_positions(recorded).get(
+                        second_leg.broker
+                    ),
+                },
+            )
+            self._record_event(
+                recorded,
+                events,
+                "critical_manual_intervention_required",
+                "CRITICAL manual intervention required",
+                {
+                    "plan_id": recorded.plan_id,
+                    "reason": (
+                        "second leg moved at the broker, or the broker could "
+                        "not be read; the filled leg was left in place"
+                    ),
+                },
+            )
         outcome = self._combined_outcome(
             recorded,
             status=second_outcome.status,
@@ -440,6 +490,49 @@ class RealExecutionCoordinator:
                 )
         return emergency_outcomes
 
+    def _observed_positions(
+        self,
+        plan: PairExecutionPlan,
+    ) -> dict[BrokerName, float | None]:
+        """What each broker says it holds right now, None if it cannot say.
+
+        A broker that cannot answer must read as None and never as flat: the
+        whole point of asking is to stop an unreadable venue from looking like
+        an empty one.
+        """
+        observed: dict[BrokerName, float | None] = {}
+        for leg in plan.legs:
+            try:
+                observed[leg.broker] = self.read_position(leg.broker, leg.symbol)
+            except Exception:
+                observed[leg.broker] = None
+        return observed
+
+    def _leg_moved_at_broker(
+        self,
+        leg: ExecutionLeg,
+        *,
+        before: Mapping[BrokerName, float | None],
+    ) -> bool | None:
+        """Did this leg change the broker's position? None when unknowable.
+
+        Returns False only on positive evidence of no movement -- both readings
+        present and equal within the broker's tolerance. That asymmetry is
+        deliberate: False is the only answer that authorises reversing the other
+        leg, so it is the only one that has to be earned.
+        """
+        prior = before.get(leg.broker)
+        if prior is None:
+            return None
+        try:
+            current = self.read_position(leg.broker, leg.symbol)
+        except Exception:
+            return None
+        if current is None:
+            return None
+        tolerance = float(self.position_tolerances.get(leg.broker, 0.0))
+        return abs(current - prior) > tolerance
+
     def _record_event(
         self,
         plan: PairExecutionPlan,
@@ -683,7 +776,22 @@ def emergency_close_plan(
     )
     return PairExecutionPlan(
         plan_id=f"{plan.plan_id}-EMERGENCY-{leg.broker.value}",
-        plan_type=ExecutionPlanType.EXIT,
+        # The OPPOSITE of the parent, because this leg is the reverse of the one
+        # that filled. An ENTRY's emergency really does close the leg it just
+        # opened; an EXIT's emergency RE-OPENS the hedge the exit just removed.
+        # Hardcoding EXIT sent the second case to Fubon as FutOptOrderType.Close
+        # against a position already at zero, which the back office rejected
+        # with 8481301 "exceeds closeable lots" -- measured live 2026-08-19,
+        # leaving the pair single-legged with no automatic remedy left.
+        #
+        # Flipping is also what the side checks already expect: the reverse of
+        # an exit leg IS the entry side for that broker, so expected_leg_sides
+        # agrees with the order actually sent.
+        plan_type=(
+            ExecutionPlanType.ENTRY
+            if plan.plan_type == ExecutionPlanType.EXIT
+            else ExecutionPlanType.EXIT
+        ),
         direction=plan.direction,
         timestamp=timestamp,
         row_index=plan.row_index,

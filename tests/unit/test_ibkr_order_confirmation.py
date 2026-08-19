@@ -332,3 +332,4 @@ def test_position_query_sums_umc_rows_and_ignores_others() -> None:
     ]
 
     assert worker(ib).fetch_umc_position() == -406.0
+

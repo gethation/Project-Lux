@@ -322,3 +322,53 @@ def test_close_releases_only_a_client_it_owns() -> None:
     adapter(client).close()
 
     assert client.closed is False
+
+
+def test_an_unknown_outcome_reports_the_shares_that_did_execute(gates_open) -> None:
+    """REGRESSION: the UNKNOWN branch returned orders but no fills, so a partly
+    executed leg summed to zero in the coordinator's filled_quantity() and read
+    as a leg that never traded. The coordinator would unwind the OTHER leg in
+    full and strand the executed remainder, recorded nowhere.
+
+    The status stays UNKNOWN and still pauses; this only stops the executed
+    part from being invisible, which is what the Fubon adapter already does.
+    """
+    client = FakeClient(
+        {
+            "classification": "unknown",
+            "order_id": 9,
+            "status": "Submitted",
+            "filled": 120.0,
+            "remaining": 286.0,
+            "avg_fill_price": 18.75,
+        }
+    )
+
+    outcome = adapter(client).execute(plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.UNKNOWN
+    assert outcome.recommended_state == StrategyState.PAUSED
+    assert len(outcome.fills) == 1
+    fill = outcome.fills[0]
+    assert fill.quantity == 120.0
+    assert fill.price == 18.75
+    assert fill.side == OrderSide.SELL
+
+
+def test_an_unknown_outcome_that_moved_nothing_reports_no_fill(gates_open) -> None:
+    """A fill means 'this much demonstrably moved'. Zero has to stay zero, or
+    every ambiguous outcome would look like a partial."""
+    client = FakeClient(
+        {
+            "classification": "unknown",
+            "order_id": 10,
+            "status": "Submitted",
+            "filled": 0.0,
+            "remaining": 406.0,
+        }
+    )
+
+    outcome = adapter(client).execute(plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.UNKNOWN
+    assert outcome.fills == ()
