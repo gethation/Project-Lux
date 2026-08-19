@@ -71,12 +71,60 @@ try {
                     '--config', $configPath, '--host', $webHost, '--port', $webPort
                 )
                 if ($webToken) { $webArgs += @('--token', $webToken) }
-                $webProcess = Start-Process -FilePath $conda -ArgumentList $webArgs -PassThru -WindowStyle Hidden
+                # Hidden means the viewer's own output goes NOWHERE. On
+                # 2026-08-20 one was announced as started, was gone minutes
+                # later, and had left not one byte behind to say why -- the
+                # crash was unreproducible and stayed uncaused. Keep the log.
+                $webLogOut = Join-Path $projectRoot 'data\web-viewer.out.log'
+                $webLogErr = Join-Path $projectRoot 'data\web-viewer.err.log'
+                try {
+                    $webProcess = Start-Process -FilePath $conda -ArgumentList $webArgs `
+                        -PassThru -WindowStyle Hidden `
+                        -RedirectStandardOutput $webLogOut -RedirectStandardError $webLogErr
+                }
+                catch {
+                    # A log file someone left locked must not be the thing that
+                    # stops the viewer from running.
+                    Write-Host "web viewer: logging unavailable ($($_.Exception.Message)); starting unlogged"
+                    $webLogErr = $null
+                    $webProcess = Start-Process -FilePath $conda -ArgumentList $webArgs -PassThru -WindowStyle Hidden
+                }
                 $shown = if ($webHost -eq '0.0.0.0') { '127.0.0.1' } else { $webHost }
                 $query = if ($webToken) { "/?token=$webToken" } else { '' }
-                Write-Host "web viewer (read-only): http://${shown}:${webPort}${query}"
-                if ($webToken) {
-                    Write-Host 'web viewer: plain HTTP, no TLS -- keep it on a VPN/LAN, not the open internet.'
+                # Confirm it BOUND rather than merely launched. Start-Process
+                # reports the wrapper, so a python child that dies on startup
+                # still looks like success -- which is exactly how a viewer got
+                # announced that was never there.
+                #
+                # The budget is 12s against a measured ~4.1s bind -- `conda
+                # run` alone eats most of that. A tighter one reports a viewer
+                # that is merely slow as a viewer that is broken, and the whole
+                # point here is to stop lying about whether it is up. The loop
+                # exits the moment it binds, so a healthy start pays only what
+                # it actually takes, and only a genuinely dead viewer waits out
+                # the full budget before trading begins.
+                $bound = $false
+                foreach ($attempt in 1..120) {
+                    Start-Sleep -Milliseconds 100
+                    if ($webProcess.HasExited) { break }
+                    if (Get-NetTCPConnection -State Listen -LocalPort $webPort -ErrorAction SilentlyContinue) {
+                        $bound = $true
+                        break
+                    }
+                }
+                if ($bound) {
+                    Write-Host "web viewer (read-only): http://${shown}:${webPort}${query}"
+                    if ($webToken) {
+                        Write-Host 'web viewer: plain HTTP, no TLS -- keep it on a VPN/LAN, not the open internet.'
+                        Write-Host '  the token is new every start; an old bookmark will answer 401.'
+                    }
+                }
+                else {
+                    Write-Host "web viewer: did not bind port $webPort; continuing without it"
+                    if ($webLogErr -and (Test-Path -LiteralPath $webLogErr)) {
+                        Get-Content -LiteralPath $webLogErr -Tail 15 |
+                            ForEach-Object { Write-Host "  $_" }
+                    }
                 }
             }
         }
