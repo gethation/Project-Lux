@@ -34,25 +34,27 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
             raise SystemExit("No persisted strategy state to recover")
         state = resume_state.strategy
         pending = store.load_pending_manual_close()
-        if pending is not None and not strategy_has_position(state):
-            print(
-                "Manual-flat recovery already applied: "
-                f"recovery_id={pending['recovery_id']}, pnl_status=pending"
-            )
-            return 0
-        if state.state != StrategyState.PAUSED:
-            raise SystemExit(
-                "Refusing recover-manual-flat: strategy must be PAUSED, got "
-                f"{state.state.value}"
-            )
-        if not strategy_has_position(state):
-            raise SystemExit(
-                "Refusing recover-manual-flat: persisted strategy has no position"
-            )
-        if state.position_direction is None:
-            raise SystemExit(
-                "Refusing recover-manual-flat: position direction is missing"
-            )
+        # A recovery that already ran still has to be checked, not waved past.
+        # The adjustment it wrote used to be derived from the strategy rather
+        # than the ledger, so an earlier run can have left recorded exposure
+        # off-square -- and that silently blocks clear-pause forever, with the
+        # operator holding no tool to correct it. Re-verify, and re-square if
+        # there is anything left over.
+        already_applied = pending is not None and not strategy_has_position(state)
+        if not already_applied:
+            if state.state != StrategyState.PAUSED:
+                raise SystemExit(
+                    "Refusing recover-manual-flat: strategy must be PAUSED, got "
+                    f"{state.state.value}"
+                )
+            if not strategy_has_position(state):
+                raise SystemExit(
+                    "Refusing recover-manual-flat: persisted strategy has no position"
+                )
+            if state.position_direction is None:
+                raise SystemExit(
+                    "Refusing recover-manual-flat: position direction is missing"
+                )
 
         observed_at = datetime.now().astimezone()
         prospective_state = deepcopy(state)
@@ -113,6 +115,55 @@ def command_recover_manual_flat(args: argparse.Namespace) -> int:
         # square prints "0" rather than "-0" to the operator reading it.
         umc_adjustment = -float(recorded.get(BrokerName.IBKR_UMC, 0.0)) + 0.0
         ccf_adjustment = -float(recorded.get(BrokerName.FUBON_CCF, 0.0)) + 0.0
+        if already_applied:
+            assert pending is not None
+            if abs(umc_adjustment) <= 1e-12 and abs(ccf_adjustment) <= 1e-12:
+                print(
+                    "Manual-flat recovery already applied: "
+                    f"recovery_id={pending['recovery_id']}, "
+                    "ledger square, brokers flat, pnl_status=pending"
+                )
+                return 0
+            print(
+                "Manual-flat recovery already applied but the ledger is NOT "
+                f"square: recovery_id={pending['recovery_id']}, "
+                f"recorded=(umc={recorded.get(BrokerName.IBKR_UMC, 0.0):g}, "
+                f"ccf={recorded.get(BrokerName.FUBON_CCF, 0.0):g}) "
+                "against flat brokers; "
+                f"repair umc_adjustment={umc_adjustment:g}, "
+                f"fubon_adjustment={ccf_adjustment:g}"
+            )
+            if not args.apply:
+                print(
+                    "Dry-run only; re-run with --apply --reason <reason> to persist"
+                )
+                return 0
+            store.record_manual_flat_ledger_repair(
+                recovery_id=str(pending["recovery_id"]),
+                created_at=observed_at,
+                ccf_symbol=ccf_symbol,
+                umc_symbol=config.live.umc_symbol,
+                umc_adjustment=umc_adjustment,
+                ccf_adjustment=ccf_adjustment,
+                reason=str(args.reason).strip(),
+            )
+            store.record_event(
+                resume_state.row_index,
+                observed_at,
+                "manual_flat_ledger_repair",
+                "recorded-fill ledger re-squared against flat brokers",
+                {
+                    "recovery_id": str(pending["recovery_id"]),
+                    "reason": str(args.reason).strip(),
+                    "umc_adjustment": umc_adjustment,
+                    "ccf_adjustment": ccf_adjustment,
+                    "ccf_symbol": ccf_symbol,
+                },
+            )
+            store.commit()
+            print("Ledger repair applied; clear-pause can now reconcile")
+            return 0
+
         print(
             "Manual-flat recovery verified: "
             f"recovery_id={recovery_id}, "

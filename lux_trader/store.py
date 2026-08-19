@@ -309,6 +309,78 @@ class SQLiteStore:
             exposure[BrokerName(str(row["broker"]))] = float(row["quantity"] or 0.0)
         return exposure
 
+    def record_manual_flat_ledger_repair(
+        self,
+        *,
+        recovery_id: str,
+        created_at: datetime,
+        ccf_symbol: str,
+        umc_symbol: str,
+        umc_adjustment: float,
+        ccf_adjustment: float,
+        reason: str,
+    ) -> None:
+        """Re-square a ledger an earlier recovery left off.
+
+        Separate from record_manual_flat_recovery because it must NOT open a
+        second pending manual close: the position was already reconciled, only
+        the ledger arithmetic was wrong.
+
+        The correction ACCUMULATES into the recovery's existing adjustment
+        rather than adding a row beside it. position_adjustments is UNIQUE on
+        (recovery_id, broker, symbol) -- one net correction per recovery per
+        instrument -- and adding to that number is what keeps the invariant
+        true while still reaching the right total.
+        """
+        stamp = timestamp_text(created_at)
+        rows = (
+            (
+                f"{recovery_id}:IBKR_UMC",
+                BrokerName.IBKR_UMC.value,
+                umc_symbol,
+                float(umc_adjustment),
+            ),
+            (
+                f"{recovery_id}:FUBON_CCF",
+                BrokerName.FUBON_CCF.value,
+                ccf_symbol,
+                float(ccf_adjustment),
+            ),
+        )
+        payload = json.dumps(
+            {
+                "source": "manual_flat_ledger_repair",
+                "price_status": "unknown",
+                "pnl_status": "pending",
+            }
+        )
+        for adjustment_id, broker, symbol, quantity in rows:
+            if abs(quantity) <= 1e-12:
+                continue
+            self.connection.execute(
+                """
+                INSERT INTO position_adjustments (
+                    adjustment_id, recovery_id, created_at, broker, symbol,
+                    quantity, reason, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(recovery_id, broker, symbol) DO UPDATE SET
+                    quantity = quantity + excluded.quantity,
+                    created_at = excluded.created_at,
+                    reason = excluded.reason,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    adjustment_id,
+                    recovery_id,
+                    stamp,
+                    broker,
+                    symbol,
+                    quantity,
+                    reason,
+                    payload,
+                ),
+            )
+
     def load_latest_live_run(self) -> dict[str, Any] | None:
         row = self.connection.execute(
             "SELECT * FROM live_runs ORDER BY run_id DESC LIMIT 1"

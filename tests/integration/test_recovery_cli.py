@@ -479,3 +479,105 @@ def test_manual_flat_squares_the_ledger_not_the_strategy(
     # Both legs now agree with the flat brokers, so clear-pause can proceed.
     assert after[BrokerName.IBKR_UMC] == 0.0
     assert after[BrokerName.FUBON_CCF] == 0.0
+
+
+def test_manual_flat_re_squares_a_ledger_an_earlier_recovery_left_off(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """REGRESSION 2026-08-19: the first recovery wrote an adjustment derived
+    from the strategy and left recorded exposure at CCF -1 against a flat
+    broker. clear-pause then refused forever, and re-running manual-flat just
+    printed 'already applied' and returned 0 -- the operator had no tool that
+    could correct it.
+    """
+    config_path = write_config(tmp_path)
+    seed_state(config_path, state=StrategyState.PAUSED, with_position=True)
+    seed_recorded_exposure(config_path)
+    use_fake_brokers(monkeypatch, "matched")
+
+    apply_args = build_parser().parse_args(
+        [
+            "recover", "manual-flat", "--config", str(config_path),
+            "--readonly", "--apply", "--reason", "first recovery",
+        ]
+    )
+    assert command_recover_manual_flat(apply_args) == 0
+    capsys.readouterr()
+
+    config = load_config(config_path)
+    # Simulate the damage the old formula did: a second, wrong adjustment.
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        pending = store.load_pending_manual_close()
+        assert pending is not None
+        store.record_manual_flat_ledger_repair(
+            recovery_id=str(pending["recovery_id"]),
+            created_at=ts(),
+            ccf_symbol="CCFG6",
+            umc_symbol=config.live.umc_symbol,
+            umc_adjustment=0.0,
+            ccf_adjustment=-2.0,
+            reason="simulating the old strategy-derived adjustment",
+        )
+        store.commit()
+        off = store.load_recorded_fill_exposure(
+            umc_symbol=config.live.umc_symbol, ccf_symbol="CCFG6"
+        )
+    finally:
+        store.close()
+    assert off[BrokerName.FUBON_CCF] == -2.0
+
+    # Re-running now detects the residual instead of waving it past.
+    repair_args = build_parser().parse_args(
+        [
+            "recover", "manual-flat", "--config", str(config_path),
+            "--readonly", "--apply", "--reason", "re-square the ledger",
+        ]
+    )
+    assert command_recover_manual_flat(repair_args) == 0
+    out = capsys.readouterr().out
+    assert "already applied but the ledger is NOT square" in out, out
+    assert "Ledger repair applied" in out, out
+
+    store = SQLiteStore(config.store_path)
+    try:
+        store.initialize()
+        after = store.load_recorded_fill_exposure(
+            umc_symbol=config.live.umc_symbol, ccf_symbol="CCFG6"
+        )
+        # No second pending close was opened; the position was already settled.
+        rows = store.connection.execute(
+            "SELECT COUNT(*) c FROM pending_manual_closes"
+        ).fetchone()
+    finally:
+        store.close()
+    assert after[BrokerName.FUBON_CCF] == 0.0
+    assert after[BrokerName.IBKR_UMC] == 0.0
+    assert rows["c"] == 1
+
+
+def test_manual_flat_on_a_square_ledger_is_still_a_no_op(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """The re-square path must not become a reason to write adjustments every
+    time the command is run."""
+    config_path = write_config(tmp_path)
+    seed_state(config_path, state=StrategyState.PAUSED, with_position=True)
+    seed_recorded_exposure(config_path)
+    use_fake_brokers(monkeypatch, "matched")
+
+    args = build_parser().parse_args(
+        [
+            "recover", "manual-flat", "--config", str(config_path),
+            "--readonly", "--apply", "--reason", "first recovery",
+        ]
+    )
+    assert command_recover_manual_flat(args) == 0
+    capsys.readouterr()
+
+    assert command_recover_manual_flat(args) == 0
+    out = capsys.readouterr().out
+    assert "already applied" in out
+    assert "ledger square" in out
+    assert "Ledger repair applied" not in out
