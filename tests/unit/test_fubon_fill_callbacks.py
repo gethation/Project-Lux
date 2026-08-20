@@ -316,3 +316,76 @@ def test_sell_side_callback_fill_confirms_exit_leg() -> None:
 
     assert outcome.status == ExecutionOutcomeStatus.FILLED
     assert outcome.payload["fill_source"] == "filled_callback"
+
+
+# --- session reset / listener close --------------------------------------
+#
+# REGRESSION 2026-08-20: _reset_session's FIRST statement is
+# `self.fill_listener.close()`, and the listener had no close(). That made an
+# AttributeError out of the ONLY path back from an expired Fubon token -- the
+# pre-submit health probe catches a session-invalid error, calls _reset_session
+# to re-authenticate, and blew up instead of re-logging-in. Found while an
+# overnight idle session was 21 hours past its login.
+
+
+def test_listener_exposes_close_for_session_reset() -> None:
+    assert hasattr(FubonFillReportListener, "close")
+
+
+def test_reset_session_re_authenticates_instead_of_raising() -> None:
+    sdk = CallbackFakeSdk()
+    adapter = adapter_for(sdk)
+    adapter._ensure_connected()
+    assert adapter.fill_listener is not None
+    generation_before = adapter.session_generation
+
+    adapter._reset_session("Fubon session event 301")
+
+    assert adapter.fill_listener is None
+    assert adapter.sdk is None
+    assert adapter.relogin_count == 1
+
+    # ...and the next call has to be able to stand a fresh session back up on
+    # top of that, which is the half that actually recovers the order path.
+    replacement = CallbackFakeSdk()
+    adapter.sdk_factory = lambda: replacement
+    adapter._login = lambda _sdk: [FakeAccount()]
+    adapter._ensure_connected()
+
+    assert adapter.sdk is replacement
+    assert adapter.fill_listener is not None
+    assert adapter.session_generation > generation_before
+    assert adapter.last_invalid_reason is None
+
+
+def test_close_wakes_waiters_and_stops_trusting_the_callback_stream() -> None:
+    sdk = CallbackFakeSdk()
+    listener = FubonFillReportListener.attach(sdk)
+    waiter = listener.register_waiter()
+    assert listener.active is True
+
+    listener.close()
+
+    assert listener.active is False
+    # A logged-out session will never deliver another callback, so anything
+    # still waiting must fall back to polling rather than block on it.
+    assert listener.stream_unreliable is True
+    listener.remove_waiter(waiter)
+
+
+def test_close_detaches_so_the_next_session_gets_a_new_listener() -> None:
+    sdk = CallbackFakeSdk()
+    first = FubonFillReportListener.attach(sdk)
+    assert FubonFillReportListener.attach(sdk) is first
+
+    first.close()
+
+    second = FubonFillReportListener.attach(sdk)
+    assert second is not first
+
+
+def test_close_is_idempotent_and_never_raises() -> None:
+    sdk = CallbackFakeSdk()
+    listener = FubonFillReportListener.attach(sdk)
+    listener.close()
+    listener.close()

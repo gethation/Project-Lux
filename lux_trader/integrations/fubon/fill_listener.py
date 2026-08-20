@@ -156,6 +156,10 @@ class FubonFillReportListener:
             maxlen=UNMATCHED_FILL_BUFFER_SIZE
         )
         self.event_observer = event_observer
+        # Held so close() can undo the registration attach() made. Without it a
+        # listener can outlive the session it was bound to and be handed back
+        # for the next one.
+        self._sdk: Any | None = sdk
         self._register(sdk)
 
     @classmethod
@@ -183,6 +187,44 @@ class FubonFillReportListener:
             except Exception:
                 _ATTACHED_LISTENERS[id(sdk)] = listener
             return listener
+
+    # ------------------------------------------------------------------
+    def close(self) -> None:
+        """Release this listener from the SDK session it was attached to.
+
+        The adapter's ``_reset_session`` calls this as its FIRST statement, and
+        that reset is the only route back from an expired Fubon token: the
+        pre-submit health probe raises session-invalid, the adapter resets and
+        re-authenticates, and the order goes out on the new session. So this
+        must never raise -- a close that throws turns a recoverable token
+        expiry into a failed order path, which is what it did until 2026-08-20,
+        when the method did not exist at all.
+
+        Detaching matters as much as the wake-up. ``attach`` caches one
+        listener per SDK object, so a listener left registered can be handed
+        back for a session it is no longer wired to.
+        """
+        with self.condition:
+            self.active = False
+            # Callbacks are dead with the session that fed them. Anything still
+            # waiting has to fall through to the polling backup rather than
+            # block for a report that can no longer arrive.
+            self.stream_unreliable = True
+            self.condition.notify_all()
+        sdk = self._sdk
+        self._sdk = None
+        if sdk is None:
+            return
+        try:
+            if getattr(sdk, "_lux_fill_listener", None) is self:
+                setattr(sdk, "_lux_fill_listener", None)
+        except Exception:
+            # A binding that refused the attribute on the way in will refuse to
+            # clear it too; the registry below is where that one lives.
+            pass
+        with _ATTACH_LOCK:
+            if _ATTACHED_LISTENERS.get(id(sdk)) is self:
+                del _ATTACHED_LISTENERS[id(sdk)]
 
     # ------------------------------------------------------------------
     def register_waiter(self) -> FillWaiter:
