@@ -8,7 +8,7 @@ them is safe.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -372,3 +372,45 @@ def test_an_unknown_outcome_that_moved_nothing_reports_no_fill(gates_open) -> No
 
     assert outcome.status == ExecutionOutcomeStatus.UNKNOWN
     assert outcome.fills == ()
+
+
+def test_fills_are_stamped_when_they_happened_not_with_the_plan_minute(
+    gates_open,
+) -> None:
+    """REGRESSION 2026-08-21: IBKR stamped fills with the plan's minute while
+    Fubon stamped them with the clock, so one column carried two kinds of time.
+    With ccf_first=true the CCF leg goes FIRST, yet the store showed the IBKR
+    leg filling 70 seconds earlier -- the legs read back in the wrong order,
+    and reconstructing an incident from that table misleads.
+    """
+    filled_at = TS + timedelta(seconds=37, microseconds=421_000)
+    client = FakeClient(filled_result())
+    subject = IbkrUmcExecutionAdapter(client=client, clock=lambda: filled_at)
+
+    outcome = subject.execute(plan())
+
+    assert outcome.fills[0].timestamp == filled_at
+    # Not the plan minute -- and nothing is lost, because execution_legs still
+    # records that.
+    assert outcome.fills[0].timestamp != umc_leg().timestamp
+
+
+def test_a_partial_fill_is_stamped_on_the_same_basis(gates_open) -> None:
+    """A partial is no less a fill that happened at a particular moment."""
+    filled_at = TS + timedelta(seconds=12)
+    client = FakeClient(
+        {
+            "classification": "unknown",
+            "order_id": 9,
+            "status": "Submitted",
+            "filled": 120.0,
+            "remaining": 286.0,
+            "avg_fill_price": 18.75,
+        }
+    )
+    subject = IbkrUmcExecutionAdapter(client=client, clock=lambda: filled_at)
+
+    outcome = subject.execute(plan())
+
+    assert outcome.status == ExecutionOutcomeStatus.UNKNOWN
+    assert outcome.fills[0].timestamp == filled_at

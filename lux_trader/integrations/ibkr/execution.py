@@ -243,7 +243,21 @@ class IbkrUmcExecutionAdapter:
                 quantity=filled_shares,
                 price=float(result.get("avg_fill_price") or leg.price),
                 fee_twd=leg.fee_twd,
-                timestamp=leg.timestamp,
+                # WHEN this fill was recorded, not which bar asked for it.
+                #
+                # leg.timestamp is the plan's minute, and Fubon's adapter has
+                # always stamped its fills with the clock -- so the two venues
+                # recorded different KINDS of time in one column. With
+                # ccf_first=true the CCF leg goes first, yet the store showed
+                # the IBKR leg filling 70 seconds EARLIER (2026-08-21 22:57),
+                # because one side was rounded to the bar and the other was
+                # not. Anyone reconstructing an incident from this table reads
+                # the legs in the wrong order.
+                #
+                # Nothing is lost by moving: execution_legs already carries the
+                # plan minute, so the two tables now hold the two different
+                # facts instead of one holding both inconsistently.
+                timestamp=self.clock(),
                 row_index=leg.row_index,
             )
             return ExecutionOutcome(
@@ -292,7 +306,9 @@ class IbkrUmcExecutionAdapter:
                     quantity=filled_shares,
                     price=float(result.get("avg_fill_price") or leg.price),
                     fee_twd=leg.fee_twd,
-                    timestamp=leg.timestamp,
+                    # Same basis as the filled branch above; a partial is no
+                    # less a fill that happened at a particular moment.
+                    timestamp=self.clock(),
                     row_index=leg.row_index,
                 ),
             )
