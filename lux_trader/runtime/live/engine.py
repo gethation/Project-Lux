@@ -83,6 +83,7 @@ from lux_trader.runtime.live.contracts import (
     ccf_book_is_fresh_for_signal,
     resolve_ccf_contract,
     reconnect_ccf_provider_if_supported,
+    reconnect_umc_provider_if_supported,
     resolve_force_exit_reason,
     restart_ccf_books_if_supported,
     should_switch_contract_before_processing,
@@ -365,6 +366,17 @@ class LiveRuntime:
                     # token, then restart the books on the new session.
                     reconnect_ccf_provider_if_supported(
                         ccf_provider,
+                        self.reporter,
+                        observed_at,
+                    )
+                    # UMC gets the same treatment, for a different failure. Its
+                    # socket sat idle through the gap between sessions and
+                    # IBKR's nightly reset, and a link the peer closed in the
+                    # night still reports itself connected -- so the cost lands
+                    # on the first quote of the session rather than on the idle
+                    # hours that caused it.
+                    reconnect_umc_provider_if_supported(
+                        umc_provider,
                         self.reporter,
                         observed_at,
                     )

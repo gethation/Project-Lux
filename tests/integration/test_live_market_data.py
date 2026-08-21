@@ -4269,3 +4269,84 @@ def test_a_flat_rollover_retargets_the_order_path_too(tmp_path) -> None:
             f"{name} switches the contract without retargeting the order path; "
             "the adapter keeps the expired symbol and the next entry is refused"
         )
+
+
+def test_reconnect_umc_provider_if_supported_mirrors_ccf_under_its_own_label() -> None:
+    """The UMC socket needs this for a different reason than CCF's token: it
+    sits idle for the 17.5 hours between sessions, through IBKR's nightly
+    reset, and a link the peer closed still reports itself connected."""
+    from lux_trader.runtime.live.contracts import reconnect_umc_provider_if_supported
+
+    class _ReconProvider:
+        def __init__(self, exc: Exception | None = None) -> None:
+            self.calls = 0
+            self.exc = exc
+
+        def reconnect(self) -> None:
+            self.calls += 1
+            if self.exc is not None:
+                raise self.exc
+
+    when = ts("2026-06-18T02:45:00+08:00")
+
+    out = io.StringIO()
+    provider = _ReconProvider()
+    reconnect_umc_provider_if_supported(
+        provider, LiveTerminalReporter(out, color=False), when
+    )
+    assert provider.calls == 1
+    # Its own label, so an operator can tell which venue reconnected.
+    assert "umc_quote" in out.getvalue()
+    assert "reconnect_login" in out.getvalue()
+
+    out_fail = io.StringIO()
+    raising = _ReconProvider(exc=RuntimeError("socket boom"))
+    reconnect_umc_provider_if_supported(
+        raising, LiveTerminalReporter(out_fail, color=False), when
+    )
+    assert raising.calls == 1
+    # A failed reconnect is reported and swallowed: the per-quote path still
+    # gets its chance, and trading is never stopped by it.
+    assert "reconnect_failed" in out_fail.getvalue()
+
+    reconnect_umc_provider_if_supported(
+        object(), LiveTerminalReporter(io.StringIO(), color=False), when
+    )
+
+
+def test_live_runtime_reconnects_the_umc_socket_on_session_open(tmp_path) -> None:
+    """The CCF leg has always been re-established at the open; the UMC leg was
+    left to discover its dead socket by failing a quote. Same transition, both
+    venues."""
+    config = small_live_config(tmp_path)
+    seed_warmup_bars(config)
+    ccf, umc, usd = dry_run_quote_providers(
+        [
+            "2026-06-23T03:58:01+08:00",
+            "2026-06-23T21:30:00+08:00",
+        ]
+    )
+    umc_reconnects: list[int] = []
+    umc.reconnect = lambda: umc_reconnects.append(1)
+
+    result = LiveDryRunRunner(
+        config,
+        ccf_provider=ccf,
+        umc_provider=umc,
+        usd_twd_provider=usd,
+        clock=dry_run_clock(
+            [
+                "2026-06-23T03:58:00+08:00",
+                "2026-06-23T03:58:01+08:00",
+                "2026-06-23T04:01:00+08:00",
+                "2026-06-23T21:30:00+08:00",
+                "2026-06-23T21:30:01+08:00",
+            ]
+        ),
+        sleeper=lambda _: None,
+    ).run(max_iterations=3, skip_warmup=True)
+
+    assert result.iterations == 3
+    assert ccf.restart_books_calls == ["CCFG6"]
+    # Once, on the reopen -- not on every trading iteration.
+    assert umc_reconnects == [1]

@@ -138,24 +138,59 @@ def restart_ccf_books_if_supported(
     return timestamp
 
 
-def reconnect_ccf_provider_if_supported(
+def reconnect_provider_if_supported(
     provider: object,
     reporter: Any,
     timestamp: datetime,
+    *,
+    label: str,
 ) -> None:
-    # Proactively re-login on entering a trading session so the marketdata token is
-    # fresh for the whole session. The longest continuous session (~11.5h night) is
-    # well within the observed token lifetime, so this avoids the overnight 401
-    # without parsing error strings. No-op for providers without reconnect support.
+    # Proactively re-establish the venue link on entering a trading session, so
+    # the session starts on something this process built rather than on
+    # whatever survived the idle gap. No-op for providers without reconnect
+    # support, and never a reason to stop: a failed reconnect is reported and
+    # the normal per-quote path still gets its chance.
     reconnect = getattr(provider, "reconnect", None)
     if not callable(reconnect):
         return
     timestamp = ensure_taipei(timestamp)
     try:
-        reporter.event(timestamp, "ccf_books", "reconnect_login")
+        reporter.event(timestamp, label, "reconnect_login")
         reconnect()
     except Exception as exc:
-        reporter.warn(timestamp, "ccf_books", f"reconnect_failed:{type(exc).__name__}")
+        reporter.warn(timestamp, label, f"reconnect_failed:{type(exc).__name__}")
+
+
+def reconnect_ccf_provider_if_supported(
+    provider: object,
+    reporter: Any,
+    timestamp: datetime,
+) -> None:
+    # The marketdata token is fresh for the whole session afterwards. The
+    # longest continuous session (~11.5h night) is well within the observed
+    # token lifetime, so this avoids the overnight 401 without parsing error
+    # strings.
+    reconnect_provider_if_supported(
+        provider, reporter, timestamp, label="ccf_books"
+    )
+
+
+def reconnect_umc_provider_if_supported(
+    provider: object,
+    reporter: Any,
+    timestamp: datetime,
+) -> None:
+    # The same treatment CCF has always had, for the venue that had none.
+    #
+    # IBKR needs it for a different reason than Fubon: not an expiring token,
+    # but a TCP socket left idle across the 17.5-hour gap between sessions and
+    # through IBKR's nightly reset. On 2026-08-21 that socket was closed by the
+    # peer during the night, still reported connected, and cost the first quote
+    # of the session -- one fetch_umc failure, and a skipped minute after it
+    # while the two legs' timestamps drifted back together.
+    reconnect_provider_if_supported(
+        provider, reporter, timestamp, label="umc_quote"
+    )
 
 
 def unsubscribe_ccf_books_if_supported(provider: object, symbol: str) -> None:

@@ -414,3 +414,83 @@ def test_realized_pnl_survives_a_ledger_that_reports_nothing() -> None:
 
     assert payload["ledger_realized"] == {}
     assert payload["pnl"][0]["realized_pnl_usd"] == 49.540918
+
+
+class FakeReconnectIb(FakeIb):
+    """Models the socket that lies: closed by the peer, still reporting up.
+
+    ib_async's isConnected() is a local flag. A link IBKR reset overnight keeps
+    returning True until something writes to it, which is why connect() alone
+    cannot replace it.
+    """
+
+    def __init__(self, *, disconnect_raises: bool = False) -> None:
+        super().__init__()
+        self.disconnect_raises = disconnect_raises
+        self.disconnect_calls = 0
+
+    def disconnect(self) -> None:
+        self.disconnect_calls += 1
+        if self.disconnect_raises:
+            raise OSError("WinError 10054")
+        super().disconnect()
+
+
+def test_force_reconnect_replaces_a_socket_that_still_claims_to_be_up() -> None:
+    """REGRESSION 2026-08-21: 17.5 idle hours across IBKR's nightly reset, then
+    the first quote of the session failed with "Peer closed connection" against
+    a link connect() had just declined to rebuild."""
+    fake = FakeReconnectIb()
+    worker = _IbkrWorkerClient(
+        IbkrConnectionConfig(client_id=17_115),
+        ib_factory=lambda: fake,
+        clock=fixed_clock,
+    )
+    worker.connect()
+    assert fake.isConnected() is True
+    connects_before = fake.connect_calls
+    # State belonging to the session that is about to be replaced.
+    worker._umc_ticker = object()
+    worker._positions_verified = True
+
+    health = worker.force_reconnect()
+
+    assert fake.disconnect_calls == 1
+    assert fake.connect_calls == connects_before + 1
+    assert health["connected"] is True
+    # A ticker or a verified-positions flag from the dead session would be
+    # exactly the stale truth this exists to destroy.
+    assert worker._umc_ticker is None
+    assert worker._positions_verified is False
+
+
+def test_force_reconnect_still_reconnects_when_the_close_fails() -> None:
+    fake = FakeReconnectIb(disconnect_raises=True)
+    worker = _IbkrWorkerClient(
+        IbkrConnectionConfig(client_id=17_116),
+        ib_factory=lambda: fake,
+        clock=fixed_clock,
+    )
+    worker.connect()
+    worker._positions_verified = True
+
+    health = worker.force_reconnect()
+
+    assert fake.disconnect_calls == 1
+    # The close threw, so its event never fired; the flags still have to clear.
+    assert worker._positions_verified is False
+    assert health["connected"] is True
+
+
+def test_force_reconnect_from_a_cold_client_just_connects() -> None:
+    fake = FakeReconnectIb()
+    worker = _IbkrWorkerClient(
+        IbkrConnectionConfig(client_id=17_117),
+        ib_factory=lambda: fake,
+        clock=fixed_clock,
+    )
+
+    health = worker.force_reconnect()
+
+    assert fake.disconnect_calls == 0
+    assert health["connected"] is True

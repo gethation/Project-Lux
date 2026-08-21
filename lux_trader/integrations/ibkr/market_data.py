@@ -233,7 +233,14 @@ class IbkrUmcQuoteProvider:
         return health
 
     def reconnect(self) -> dict[str, Any]:
-        return dict(self.client.session_health())
+        """Force a new Gateway socket, for the start of a trading session.
+
+        Used to return session_health() and nothing else, which reads as a
+        reconnect and is not one: health only re-dials when `isConnected()` is
+        already False, and the socket this is meant to replace is precisely the
+        one that still claims to be up. See client_process.force_reconnect.
+        """
+        return dict(self.client.force_reconnect())
 
     def close(self) -> None:
         if self._owns_client:

@@ -251,6 +251,44 @@ class _IbkrWorkerClient:
             )
         return self.session_health(reconnect=False)
 
+    def force_reconnect(self) -> dict[str, Any]:
+        """Dial a new socket without first asking whether the old one looks up.
+
+        `isConnected()` is a local flag, not a probe. A socket the peer has
+        already reset still reads as connected until something writes to it,
+        and `connect()` returns early on that flag -- so the usual path cannot
+        rebuild a link that died quietly.
+
+        That is how an idle gap ends. On 2026-08-21 this client sat unused for
+        the 17.5 hours between sessions, across IBKR's nightly reset, and the
+        first quote of the new session failed with "Peer closed connection"
+        against a link `connect()` had just declined to replace. Disconnecting
+        unconditionally means a trading session opens on a socket THIS process
+        opened, rather than on one it merely believes in.
+        """
+        if self.ib.isConnected():
+            try:
+                self.ib.disconnect()
+            except Exception as exc:
+                # Worth recording, never worth stopping for: the reconnect
+                # below is the point, and a failed close still leaves us
+                # wanting a new socket.
+                self._stamp(
+                    "gateway_unavailable",
+                    message=(
+                        "disconnect before reconnect failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                )
+        # Normally the disconnect event does both. Do them here too, because a
+        # disconnect that threw may never have fired it, and a ticker or a
+        # position cache belonging to the dead session is exactly the kind of
+        # stale truth this method exists to destroy.
+        self._umc_ticker = None
+        self._umc_ticker_time = None
+        self._positions_verified = False
+        return self.connect()
+
     def _ensure_connected(self) -> None:
         health = self.connect()
         if not health["connected"]:
@@ -913,6 +951,9 @@ class IbkrClientProcess:
 
     def connect(self) -> dict[str, Any]:
         return dict(self._request_guarded("connect"))
+
+    def force_reconnect(self) -> dict[str, Any]:
+        return dict(self._request_guarded("force_reconnect"))
 
     def resolve_umc_contract(self) -> IbkrContractDetails:
         result = self._request_guarded("resolve_umc_contract")

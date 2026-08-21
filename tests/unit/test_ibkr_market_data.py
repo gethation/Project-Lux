@@ -200,3 +200,33 @@ def test_umc_rth_clock_tracks_us_dst_without_taipei_offset() -> None:
     assert summer.closes_at.isoformat() == "2026-07-24T04:00:00+08:00"
     assert winter.opens_at.isoformat() == "2026-01-23T22:30:00+08:00"
     assert winter.closes_at.isoformat() == "2026-01-24T05:00:00+08:00"
+
+
+def test_provider_reconnect_forces_a_new_socket_not_a_health_read() -> None:
+    """REGRESSION 2026-08-21: reconnect() returned session_health() and nothing
+    else, which reads as a reconnect and is not one. session_health only
+    re-dials when isConnected() is already False, and the socket it needed to
+    replace was the one still claiming to be up after an idle overnight."""
+
+    class ReconnectClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__(live_payload())
+            self.health_calls = 0
+            self.force_calls = 0
+
+        def session_health(self) -> dict[str, Any]:
+            self.health_calls += 1
+            return super().session_health()
+
+        def force_reconnect(self) -> dict[str, Any]:
+            self.force_calls += 1
+            return {"connected": True, "status": "connected"}
+
+    client = ReconnectClient()
+    provider = IbkrUmcQuoteProvider(client)
+
+    health = provider.reconnect()
+
+    assert client.force_calls == 1
+    assert client.health_calls == 0
+    assert health["connected"] is True
